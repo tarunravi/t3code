@@ -18,7 +18,7 @@ import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
 import type { OpenCodeInventory } from "../opencodeRuntime.ts";
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
-const DEFAULT_VERSION_STDOUT = "opencode 1.14.19\n";
+const DEFAULT_VERSION_STDOUT = "slingshot 0.2.1 (test)\n";
 
 /**
  * The legacy `OpenCodeProviderLive` Layer + `OpenCodeProvider` service tag
@@ -87,8 +87,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed({ stdout: runtimeMock.state.versionStdout, stderr: "", code: 0 }),
-  createOpenCodeSdkClient: () =>
-    ({}) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
+  createOpenCodeSdkClient: ({ directory }) => {
+    runtimeMock.state.inventoryCwd = directory;
+    return {} as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>;
+  },
   loadOpenCodeInventory: () =>
     runtimeMock.state.inventoryError
       ? Effect.fail(
@@ -125,7 +127,7 @@ const testLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble).pipe
 const makeOpenCodeSettings = (overrides?: Partial<OpenCodeSettings>): OpenCodeSettings =>
   decodeOpenCodeSettings({
     enabled: true,
-    binaryPath: "opencode",
+    binaryPath: "sling",
     serverUrl: "",
     serverPassword: "",
     customModels: [],
@@ -135,14 +137,14 @@ const makeOpenCodeSettings = (overrides?: Partial<OpenCodeSettings>): OpenCodeSe
 it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
   it.effect("shows a codex-style missing binary message", () =>
     Effect.gen(function* () {
-      runtimeMock.state.runVersionError = new Error("spawn opencode ENOENT");
+      runtimeMock.state.runVersionError = new Error("spawn sling ENOENT");
       const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
       NodeAssert.equal(snapshot.status, "error");
       NodeAssert.equal(snapshot.installed, false);
       NodeAssert.equal(
         snapshot.message,
-        "OpenCode CLI (`opencode`) is not installed or not on PATH.",
+        "Slingshot CLI (`sling`) is not installed or not on PATH.",
       );
     }),
   );
@@ -154,7 +156,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
 
       NodeAssert.equal(snapshot.status, "error");
       NodeAssert.equal(snapshot.installed, true);
-      NodeAssert.equal(snapshot.message, "Failed to execute OpenCode CLI health check.");
+      NodeAssert.equal(snapshot.message, "Slingshot health check failed.");
     }),
   );
 
@@ -280,11 +282,11 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
-  it.effect("does not spawn a local server for health check (uses CLI instead)", () =>
+  it.effect("uses a scoped local server to discover the managed Sling inventory", () =>
     Effect.gen(function* () {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
-      NodeAssert.equal(runtimeMock.state.closeCalls, 0);
+      NodeAssert.equal(runtimeMock.state.closeCalls, 1);
       NodeAssert.equal(runtimeMock.state.inventoryCwd, process.cwd());
     }),
   );
@@ -297,10 +299,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       NodeAssert.equal(snapshot.status, "error");
       NodeAssert.equal(snapshot.installed, true);
       NodeAssert.equal(snapshot.models.length, 0);
-      NodeAssert.equal(
-        snapshot.message,
-        "Failed to execute OpenCode CLI health check: opencode models failed",
-      );
+      NodeAssert.equal(snapshot.message, "Slingshot health check failed: opencode models failed");
     }),
   );
 });
@@ -321,7 +320,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
       NodeAssert.equal(snapshot.installed, true);
       NodeAssert.equal(
         snapshot.message,
-        "OpenCode server rejected authentication. Check the server URL and password.",
+        "Slingshot server rejected authentication. Check the server URL and password.",
       );
     }),
   );
@@ -343,7 +342,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
       NodeAssert.equal(snapshot.installed, true);
       NodeAssert.equal(
         snapshot.message,
-        "Couldn't reach the configured OpenCode server at http://127.0.0.1:9999. Check that the server is running and the URL is correct.",
+        "Couldn't reach the configured Slingshot server at http://127.0.0.1:9999. Check that the server is running and the URL is correct.",
       );
     }),
   );

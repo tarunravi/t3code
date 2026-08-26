@@ -11,14 +11,10 @@
  * @module ServerSettings
  */
 import {
-  DEFAULT_TEXT_GENERATION_MODEL,
-  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
-  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
-  ProviderDriverKind,
   ProviderInstanceId,
   ServerSettings,
   ServerSettingsError,
@@ -259,16 +255,21 @@ function restoreUsedProviders(
     ),
   );
   const providerInstances = Object.fromEntries(
-    Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
-      instanceId,
-      instance.enabled === undefined &&
-      (instance.driver === "cursor" ||
-        instance.driver === "grok" ||
-        instance.driver === "opencode") &&
-      usedProviderInstances.has(instanceId)
-        ? { ...instance, enabled: true }
-        : instance,
-    ]),
+    Object.entries(settings.providerInstances).map(([instanceId, instance]) => {
+      if (instanceId === "opencode" && instance.driver === "opencode") {
+        return [instanceId, { ...instance, enabled: true }];
+      }
+      return [
+        instanceId,
+        instance.enabled === undefined &&
+        (instance.driver === "cursor" ||
+          instance.driver === "grok" ||
+          instance.driver === "opencode") &&
+        usedProviderInstances.has(instanceId)
+          ? { ...instance, enabled: true }
+          : instance,
+      ];
+    }),
   );
 
   return {
@@ -285,7 +286,7 @@ function restoreUsedProviders(
       },
       opencode: {
         ...settings.providers.opencode,
-        enabled: persisted.providers?.opencode?.enabled ?? usedProviders.has("opencode"),
+        enabled: true,
       },
     },
     providerInstances,
@@ -293,26 +294,44 @@ function restoreUsedProviders(
 }
 
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
+  const selection = settings.textGenerationModelSelection;
+  const instance = settings.providerInstances[selection.instanceId];
+  const isSlingshotSelection = instance
+    ? instance.driver === "opencode"
+    : selection.instanceId === "opencode";
+
+  return isSlingshotSelection && isModelSelectionProviderEnabled(settings, selection)
     ? settings
     : fallbackTextGenerationProvider(settings);
 }
 
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([, provider]) => provider.enabled);
-  const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
-  if (!fallback) {
+  const builtInSelection = {
+    instanceId: ProviderInstanceId.make("opencode"),
+    model: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection.model,
+  } satisfies ModelSelection;
+  const customInstanceId = Object.entries(settings.providerInstances).find(
+    ([instanceId, instance]) =>
+      instance.driver === "opencode" &&
+      isModelSelectionProviderEnabled(settings, {
+        instanceId: ProviderInstanceId.make(instanceId),
+        model: builtInSelection.model,
+      }),
+  )?.[0];
+  const fallbackInstanceId = settings.providers.opencode.enabled
+    ? builtInSelection.instanceId
+    : customInstanceId
+      ? ProviderInstanceId.make(customInstanceId)
+      : undefined;
+  if (!fallbackInstanceId) {
     return settings;
   }
 
   return {
     ...settings,
     textGenerationModelSelection: {
-      instanceId: ProviderInstanceId.make(fallback),
-      model:
-        DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_TEXT_GENERATION_MODEL,
+      instanceId: fallbackInstanceId,
+      model: builtInSelection.model,
     } satisfies ModelSelection,
   };
 }
@@ -333,7 +352,7 @@ const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
     ...DEFAULT_SERVER_SETTINGS.providers,
     cursor: { ...DEFAULT_SERVER_SETTINGS.providers.cursor, enabled: undefined },
     grok: { ...DEFAULT_SERVER_SETTINGS.providers.grok, enabled: undefined },
-    opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: undefined },
+    opencode: DEFAULT_SERVER_SETTINGS.providers.opencode,
   },
 };
 
@@ -461,8 +480,10 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    return foldProviderInstanceEnabledFlags(
-      restoreUsedProviders(settings, persisted, providerHistory),
+    return restoreUsedProviders(
+      foldProviderInstanceEnabledFlags(settings),
+      persisted,
+      providerHistory,
     );
   });
 

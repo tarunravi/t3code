@@ -23,7 +23,13 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  Event as OpenCodeEvent,
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -168,12 +174,38 @@ interface OpenCodeTurnSnapshot {
   readonly items: Array<unknown>;
 }
 
-type OpenCodeSubscribedEvent =
-  Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
-    readonly stream: AsyncIterable<infer TEvent>;
-  }
-    ? TEvent
-    : never;
+type OpenCodeSubscribedEvent = OpenCodeEvent;
+
+type SlingshotSessionModelClient = {
+  readonly client: {
+    readonly post: (input: {
+      readonly url: "/api/session/{sessionID}/model";
+      readonly path: { readonly sessionID: string };
+      readonly body: {
+        readonly model: { readonly id: string; readonly providerID: string };
+      };
+      readonly headers: { readonly "Content-Type": "application/json" };
+    }) => Promise<unknown>;
+  };
+};
+
+function setSlingshotSessionModel(
+  client: OpencodeClient,
+  sessionID: string,
+  model: { readonly modelID: string; readonly providerID: string },
+): Promise<unknown> {
+  return (client as unknown as SlingshotSessionModelClient).client.post({
+    url: "/api/session/{sessionID}/model",
+    path: { sessionID },
+    body: {
+      model: {
+        id: model.modelID,
+        providerID: model.providerID,
+      },
+    },
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 function trimText(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
@@ -192,7 +224,19 @@ function openCodeEventSessionId(event: OpenCodeSubscribedEvent): string | undefi
     return sessionIDFromProperties;
   }
 
-  const info = (properties as { readonly info?: { readonly id?: unknown } }).info;
+  const part = (properties as { readonly part?: { readonly sessionID?: unknown } }).part;
+  if (part && typeof part.sessionID === "string") {
+    return part.sessionID;
+  }
+
+  const info = (
+    properties as {
+      readonly info?: { readonly id?: unknown; readonly sessionID?: unknown };
+    }
+  ).info;
+  if (info && typeof info.sessionID === "string") {
+    return info.sessionID;
+  }
   return info && typeof info.id === "string" ? info.id : undefined;
 }
 
@@ -519,13 +563,13 @@ function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | und
 
 function sessionErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") {
-    return "OpenCode session failed.";
+    return "Slingshot session failed.";
   }
   const data = "data" in error && error.data && typeof error.data === "object" ? error.data : null;
   const message = data && "message" in data ? data.message : null;
   return typeof message === "string" && message.trim().length > 0
     ? message
-    : "OpenCode session failed.";
+    : "Slingshot session failed.";
 }
 
 function updateProviderSession(
@@ -609,7 +653,7 @@ export function makeOpenCodeAdapter(
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "crypto/randomUUIDv4",
-            detail: "Failed to generate OpenCode runtime identifier.",
+            detail: "Failed to generate Slingshot runtime identifier.",
             cause,
           }),
       ),
@@ -1151,8 +1195,8 @@ export function makeOpenCodeAdapter(
       // Fibers forked into `context.sessionScope` are interrupted
       // automatically when the scope closes — no bookkeeping required.
       yield* Effect.flatMap(
-        runOpenCodeSdk("event.subscribe", () =>
-          context.client.event.subscribe(undefined, {
+        runOpenCodeSdk("global.event", () =>
+          context.client.global.event({
             signal: eventsAbortController.signal,
           }),
         ),
@@ -1165,7 +1209,11 @@ export function makeOpenCodeAdapter(
                 detail: openCodeRuntimeErrorDetail(cause),
                 cause,
               }),
-          ).pipe(Stream.runForEach((event) => handleSubscribedEvent(context, event))),
+          ).pipe(
+            Stream.runForEach((event) =>
+              handleSubscribedEvent(context, event.payload as OpenCodeSubscribedEvent),
+            ),
+          ),
       ).pipe(
         Effect.exit,
         Effect.flatMap((exit) =>
@@ -1193,7 +1241,7 @@ export function makeOpenCodeAdapter(
               if (yield* Ref.get(context.stopped)) {
                 return;
               }
-              yield* emitUnexpectedExit(context, `OpenCode server exited unexpectedly (${code}).`);
+              yield* emitUnexpectedExit(context, `Slingshot server exited unexpectedly (${code}).`);
             }),
           ),
           Effect.forkIn(context.sessionScope),
@@ -1291,7 +1339,7 @@ export function makeOpenCodeAdapter(
                 // the full history, so the follow-up keeps its context (#3604).
                 if (adopted) {
                   yield* Effect.logInfo(
-                    `OpenCode session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
+                    `Slingshot session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
                   );
                   const forkedSession = yield* runOpenCodeSdk("session.fork", () =>
                     client.session.fork({ sessionID: adopted.id, directory }),
@@ -1300,7 +1348,7 @@ export function makeOpenCodeAdapter(
                   if (!forked) {
                     return yield* new OpenCodeRuntimeError({
                       operation: "session.fork",
-                      detail: "OpenCode session.fork returned no session payload.",
+                      detail: "Slingshot session.fork returned no session payload.",
                     });
                   }
                   yield* runOpenCodeSdk("session.update", () =>
@@ -1314,7 +1362,7 @@ export function makeOpenCodeAdapter(
 
                 if (resumeSessionId) {
                   yield* Effect.logWarning(
-                    `OpenCode session '${resumeSessionId}' no longer exists; starting a fresh session.`,
+                    `Slingshot session '${resumeSessionId}' no longer exists; starting a fresh session.`,
                   );
                 }
                 const createdSession = yield* runOpenCodeSdk("session.create", () =>
@@ -1326,7 +1374,7 @@ export function makeOpenCodeAdapter(
                 if (!createdSession.data) {
                   return yield* new OpenCodeRuntimeError({
                     operation: "session.create",
-                    detail: "OpenCode session.create returned no session payload.",
+                    detail: "Slingshot session.create returned no session payload.",
                   });
                 }
                 return { openCodeSession: createdSession.data, created: true };
@@ -1412,7 +1460,7 @@ export function makeOpenCodeAdapter(
           ...(yield* buildEventBase({ threadId: input.threadId })),
           type: "session.started",
           payload: {
-            message: "OpenCode session started",
+            message: "Slingshot session started",
           },
         });
         yield* emit({
@@ -1443,7 +1491,7 @@ export function makeOpenCodeAdapter(
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
-          issue: `OpenCode model selection is bound to instance '${modelSelection?.instanceId}', expected '${boundInstanceId}'.`,
+          issue: `Slingshot model selection is bound to instance '${modelSelection?.instanceId}', expected '${boundInstanceId}'.`,
         });
       }
       const parsedModel = parseOpenCodeModelSlug(modelSelection?.model);
@@ -1451,7 +1499,7 @@ export function makeOpenCodeAdapter(
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
-          issue: "OpenCode model selection must use the 'provider/model' format.",
+          issue: "Slingshot model selection must use the 'provider/model' format.",
         });
       }
 
@@ -1468,7 +1516,7 @@ export function makeOpenCodeAdapter(
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
-          issue: "OpenCode turns require text input or at least one attachment.",
+          issue: "Slingshot turns require text input or at least one attachment.",
         });
       }
 
@@ -1499,15 +1547,20 @@ export function makeOpenCodeAdapter(
         });
       }
 
-      yield* runOpenCodeSdk("session.promptAsync", () =>
-        context.client.session.promptAsync({
-          sessionID: context.openCodeSessionId,
-          model: parsedModel,
-          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
-          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
-        }),
-      ).pipe(
+      yield* Effect.gen(function* () {
+        yield* runOpenCodeSdk("session.model", () =>
+          setSlingshotSessionModel(context.client, context.openCodeSessionId, parsedModel),
+        );
+        yield* runOpenCodeSdk("session.promptAsync", () =>
+          context.client.session.promptAsync({
+            sessionID: context.openCodeSessionId,
+            model: parsedModel,
+            ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+            ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+            parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+          }),
+        );
+      }).pipe(
         Effect.mapError(toRequestError),
         // On failure of a fresh turn: clear active-turn state, flip the
         // session back to ready with lastError set, emit turn.aborted, then

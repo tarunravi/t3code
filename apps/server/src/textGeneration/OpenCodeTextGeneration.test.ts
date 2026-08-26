@@ -159,6 +159,7 @@ const OpenCodeTextGenerationExistingServerTestLayer = Layer.succeed(
 
 const DEFAULT_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
   binaryPath: "fake-opencode",
+  serverUrl: "",
 });
 const EXISTING_SERVER_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
   binaryPath: "fake-opencode",
@@ -261,7 +262,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           .pipe(Effect.flip);
 
         expect(error).toBeInstanceOf(TextGenerationError);
-        expect(error.message).toContain("OpenCode session.create request failed.");
+        expect(error.message).toContain("Slingshot session.create request failed.");
         expect(error.cause).toMatchObject({
           _tag: "OpenCodeTextGenerationSessionRequestError",
           operation: "generateCommitMessage",
@@ -282,7 +283,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           .generateCommitMessage(DEFAULT_COMMIT_MESSAGE_INPUT)
           .pipe(Effect.flip);
 
-        expect(error.message).toContain("OpenCode session.create returned no session payload.");
+        expect(error.message).toContain("Slingshot session.create returned no session payload.");
         expect(error.cause).toMatchObject({
           _tag: "OpenCodeTextGenerationSessionPayloadError",
           operation: "generateCommitMessage",
@@ -303,7 +304,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           .generateCommitMessage(DEFAULT_COMMIT_MESSAGE_INPUT)
           .pipe(Effect.flip);
 
-        expect(error.message).toContain("OpenCode session.prompt request failed.");
+        expect(error.message).toContain("Slingshot session.prompt request failed.");
         expect(error.cause).toMatchObject({
           _tag: "OpenCodeTextGenerationPromptRequestError",
           operation: "generateCommitMessage",
@@ -331,7 +332,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           .generateCommitMessage(DEFAULT_COMMIT_MESSAGE_INPUT)
           .pipe(Effect.flip);
 
-        expect(error.message).toContain("OpenCode returned empty output.");
+        expect(error.message).toContain("Slingshot returned empty output.");
         expect(error.cause).toMatchObject({
           _tag: "OpenCodeTextGenerationEmptyOutputError",
           operation: "generateCommitMessage",

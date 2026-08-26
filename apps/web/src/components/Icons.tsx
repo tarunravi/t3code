@@ -666,6 +666,23 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
+export const SlingshotIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M9.061 23.108C5.268 22.377-3.391 20.627 1.417 5.064c8.217 1.035 15.556 9 7.644 18.044Z"
+      fill="#18E299"
+    />
+    <path
+      d="M8.919 23.094C5.276 21.222.784 4.209 17.007 0c3.75 7.193 2.614 16.545-8.088 23.094Z"
+      fill="#16A34A"
+    />
+    <path
+      d="M8.914 23.079c-.179-3.198 1.245-13.994 14.656-9.968-.389 7.012-4.586 13.307-14.656 9.968Z"
+      fill="#4ADE80"
+    />
+  </svg>
+);
+
 export const GithubCopilotIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}

@@ -18,7 +18,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
@@ -41,12 +40,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import {
-  enrichProviderSnapshotWithVersionAdvisory,
-  makePackageManagedProviderMaintenanceResolver,
-  normalizeCommandPath,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -56,24 +50,9 @@ const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 
-function isOpenCodeNativeCommandPath(commandPath: string): boolean {
-  const normalized = normalizeCommandPath(commandPath);
-  return (
-    normalized.endsWith("/.opencode/bin/opencode") ||
-    normalized.endsWith("/.opencode/bin/opencode.exe")
-  );
-}
-
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
+const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
   provider: DRIVER_KIND,
-  npmPackageName: "opencode-ai",
-  homebrewFormula: "anomalyco/tap/opencode",
-  nativeUpdate: {
-    executable: "opencode",
-    args: ["upgrade"],
-    lockKey: "opencode-native",
-    isCommandPath: isOpenCodeNativeCommandPath,
-  },
+  packageName: null,
 });
 
 export type OpenCodeDriverEnv =
@@ -81,7 +60,6 @@ export type OpenCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
-  | HttpClient.HttpClient
   | OpenCodeRuntime
   | Path.Path
   | ProviderEventLoggers
@@ -107,7 +85,7 @@ const withInstanceIdentity =
 export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
-    displayName: "OpenCode",
+    displayName: "Slingshot",
     supportsMultipleInstances: true,
   },
   configSchema: OpenCodeSettings,
@@ -116,7 +94,6 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
     Effect.gen(function* () {
       const openCodeRuntime = yield* OpenCodeRuntime;
       const serverConfig = yield* ServerConfig;
-      const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
@@ -131,10 +108,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+      const maintenanceCapabilities = MAINTENANCE_CAPABILITIES;
 
       const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
         instanceId,
@@ -159,13 +133,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           initialSnapshot: (settings) =>
             makePendingOpenCodeProvider(settings.provider).pipe(Effect.map(stampIdentity)),
           checkProvider,
-          enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
-            enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
-              enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-            }).pipe(
-              Effect.provideService(HttpClient.HttpClient, httpClient),
-              Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
-            ),
+          enrichSnapshot: ({ snapshot, publishSnapshot }) => publishSnapshot(snapshot),
         },
       ).pipe(
         Effect.mapError(
@@ -173,7 +141,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
             new ProviderDriverError({
               driver: DRIVER_KIND,
               instanceId,
-              detail: `Failed to build OpenCode snapshot: ${cause.message ?? String(cause)}`,
+              detail: `Failed to build Slingshot snapshot: ${cause.message ?? String(cause)}`,
               cause,
             }),
         ),

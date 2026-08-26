@@ -4,11 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { ThreadEnvMode } from "./environment.ts";
-import {
-  DEFAULT_TEXT_GENERATION_MODEL,
-  DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
-  ProviderOptionSelections,
-} from "./model.ts";
+import { ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import {
   DEFAULT_PREVIEW_APPEARANCE,
@@ -500,18 +496,16 @@ export type GrokSettings = typeof GrokSettings.Type;
 
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
-    // Off by default (like Cursor and Grok): the binding is not yet stable
-    // enough to probe on every install. Users opt in from Settings.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
-    binaryPath: makeBinaryPathSetting("opencode").pipe(
+    binaryPath: makeBinaryPathSetting("sling").pipe(
       Schema.annotateKey({
         title: "Binary path",
-        description: "Path to the OpenCode binary.",
+        description: "Path to the Slingshot binary.",
         providerSettingsForm: {
-          placeholder: "opencode",
+          placeholder: "sling",
           clearWhenEmpty: "omit",
         },
       }),
@@ -520,7 +514,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Server URL",
-        description: "Leave blank to let T3 Code spawn the server when needed.",
+        description: "URL of the local Slingshot server. Leave blank to spawn one when needed.",
         providerSettingsForm: {
           placeholder: "http://127.0.0.1:4096",
           clearWhenEmpty: "omit",
@@ -531,7 +525,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Server password",
-        description: "Stored in plain text on disk.",
+        description: "Optional password for a protected Slingshot server. Stored in plain text.",
         providerSettingsForm: {
           control: "password",
           placeholder: "Optional",
@@ -662,14 +656,8 @@ export const ServerSettings = Schema.Struct({
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
-        instanceId: ProviderInstanceId.make("codex"),
-        model: DEFAULT_TEXT_GENERATION_MODEL,
-        options: [
-          {
-            id: "reasoningEffort",
-            value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
-          },
-        ],
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "sling/openai/gpt-5.6-luna",
       }),
     ),
   ),

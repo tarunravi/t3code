@@ -1,120 +1,36 @@
-# T3 Code
+# Slingshot
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+A desktop and web interface for a local [Slingshot](https://github.com/scaleapi/slingshot) server. This fork keeps T3 Code's polished thread UI while removing the other active harness integrations.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they're set up on your computer, T3 Code can control them.
+## What works
 
-## "Wait, what are you selling me?"
+- Slingshot is the only selectable provider.
+- Models and agents are discovered from the local Sling server.
+- Streaming text, shell tools, file tools, permission prompts, and `task` subagents render in the thread timeline.
+- Threads resume through Sling's persisted session IDs.
+- GPT, Claude, and other models exposed by Sling appear in the model picker.
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+Internally, the adapter retains its `opencode` identifier because Sling implements the OpenCode HTTP/SSE protocol. That name is a compatibility detail, not a second harness.
 
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+## Run locally
 
-## Installation
-
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build and OpenCode. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-
-### Try it out (install-free)
-
-The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):
+Requirements: Node.js 24.13.1, pnpm 11.10, and Slingshot 0.2.1 or newer.
 
 ```bash
-npx t3@latest
+pnpm install
+pnpm dev -- --browser
 ```
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+Fresh settings launch `sling serve` automatically. To use an existing server instead, set its URL in Settings; `http://127.0.0.1:4096` is Sling's default. Development state stays in this checkout's `.t3` directory.
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
-
-### Desktop app
-
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
-
-#### Windows (`winget`)
+## Build and test
 
 ```bash
-winget install T3Tools.T3Code
+pnpm typecheck
+pnpm test
+pnpm build:desktop
 ```
 
-#### macOS (Homebrew)
+## Attribution
 
-```bash
-brew install --cask t3-code
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Customize a project icon](./docs/user/project-settings.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- Linux: [run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
-vp i
-```
-
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
-
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
-
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+This project is a Slingshot-specific fork of [T3 Code](https://github.com/pingdotgg/t3code). The original project and this fork are licensed under the MIT License.

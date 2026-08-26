@@ -56,7 +56,7 @@ export class OpenCodeTextGenerationSessionRequestError extends Schema.TaggedErro
   },
 ) {
   override get message(): string {
-    return `OpenCode session creation request failed for ${this.operation} in ${this.cwd}.`;
+    return `Slingshot session creation request failed for ${this.operation} in ${this.cwd}.`;
   }
 }
 
@@ -65,7 +65,7 @@ export class OpenCodeTextGenerationSessionPayloadError extends Schema.TaggedErro
   openCodeTextGenerationErrorContext,
 ) {
   override get message(): string {
-    return `OpenCode session.create returned no session payload for ${this.operation} in ${this.cwd}.`;
+    return `Slingshot session.create returned no session payload for ${this.operation} in ${this.cwd}.`;
   }
 }
 
@@ -84,7 +84,7 @@ export class OpenCodeTextGenerationPromptRequestError extends Schema.TaggedError
   },
 ) {
   override get message(): string {
-    return `OpenCode prompt request failed for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}).`;
+    return `Slingshot prompt request failed for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}).`;
   }
 }
 
@@ -98,7 +98,7 @@ export class OpenCodeTextGenerationPromptResponseError extends Schema.TaggedErro
 ) {
   override get message(): string {
     const providerError = this.providerErrorName ? ` ${this.providerErrorName}` : "";
-    return `OpenCode prompt${providerError} failed for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}): ${this.providerMessage}`;
+    return `Slingshot prompt${providerError} failed for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}): ${this.providerMessage}`;
   }
 }
 
@@ -111,7 +111,7 @@ export class OpenCodeTextGenerationEmptyOutputError extends Schema.TaggedErrorCl
   },
 ) {
   override get message(): string {
-    return `OpenCode returned empty output for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}, ${this.responsePartCount} response parts, ${this.textPartCount} text parts).`;
+    return `Slingshot returned empty output for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId} (session ${this.sessionId}, ${this.responsePartCount} response parts, ${this.textPartCount} text parts).`;
   }
 }
 
@@ -269,7 +269,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           } else {
             if (sharedServerState.binaryPath !== input.binaryPath) {
               yield* Effect.logWarning(
-                "OpenCode shared server binary path mismatch: requested " +
+                "Slingshot shared server binary path mismatch: requested " +
                   input.binaryPath +
                   " but active server uses " +
                   sharedServerState.binaryPath +
@@ -370,7 +370,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     if (!parsedModel) {
       return yield* new TextGenerationError({
         operation: input.operation,
-        detail: "OpenCode model selection must use the 'provider/model' format.",
+        detail: "Slingshot model selection must use the 'provider/model' format.",
       });
     }
 
@@ -392,7 +392,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         const session = yield* Effect.tryPromise({
           try: () =>
             client.session.create({
-              title: `T3 Code ${input.operation}`,
+              title: `Slingshot ${input.operation}`,
               permission: [{ permission: "*", pattern: "*", action: "deny" }],
             }),
           catch: (cause) =>
@@ -457,7 +457,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           Effect.fail(
             new TextGenerationError({
               operation: cause.operation,
-              detail: "OpenCode session.create request failed.",
+              detail: "Slingshot session.create request failed.",
               cause,
             }),
           ),
@@ -465,7 +465,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           Effect.fail(
             new TextGenerationError({
               operation: cause.operation,
-              detail: "OpenCode session.create returned no session payload.",
+              detail: "Slingshot session.create returned no session payload.",
               cause,
             }),
           ),
@@ -473,7 +473,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           Effect.fail(
             new TextGenerationError({
               operation: cause.operation,
-              detail: "OpenCode session.prompt request failed.",
+              detail: "Slingshot session.prompt request failed.",
               cause,
             }),
           ),
@@ -489,7 +489,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           Effect.fail(
             new TextGenerationError({
               operation: cause.operation,
-              detail: "OpenCode returned empty output.",
+              detail: "Slingshot returned empty output.",
               cause,
             }),
           ),
@@ -515,7 +515,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           Effect.fail(
             new TextGenerationError({
               operation: input.operation,
-              detail: "OpenCode returned invalid structured output.",
+              detail: "Slingshot returned invalid structured output.",
               cause,
             }),
           ),

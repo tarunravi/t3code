@@ -11,14 +11,13 @@ import {
 
 describe("ProviderSettingsForm helpers", () => {
   it("derives visible provider config fields from the client definition schema", () => {
-    const codex = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("codex")];
+    const slingshot = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
 
-    expect(codex).toBeDefined();
-    expect(deriveProviderSettingsFields(codex!).map((field) => field.key)).toEqual([
+    expect(slingshot).toBeDefined();
+    expect(deriveProviderSettingsFields(slingshot!).map((field) => field.key)).toEqual([
       "binaryPath",
-      "homePath",
-      "shadowHomePath",
-      "launchArgs",
+      "serverUrl",
+      "serverPassword",
     ]);
   });
 
@@ -32,21 +31,9 @@ describe("ProviderSettingsForm helpers", () => {
 
     expect(serverPassword).toMatchObject({
       label: "Server password",
-      description: "Stored in plain text on disk.",
+      description: "Optional password for a protected Slingshot server. Stored in plain text.",
       control: "password",
     });
-  });
-
-  it("shows the auto-compaction threshold for Claude providers", () => {
-    const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
-    expect(claude).toBeDefined();
-
-    expect(deriveProviderSettingsFields(claude!).map((field) => field.key)).toEqual([
-      "binaryPath",
-      "homePath",
-      "autoCompactWindow",
-      "launchArgs",
-    ]);
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

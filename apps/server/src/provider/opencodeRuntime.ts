@@ -49,6 +49,7 @@ export function resolveOpenCodeConfigContent(
 }
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
+const SLINGSHOT_SERVER_READY_TEXT = "Application startup complete.";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
 const OPENCODE_SKILL_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -507,7 +508,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
-      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const args = ["serve", "--host", hostname, "--port", String(port)];
       const spawnCommand = yield* resolveCommand(input.binaryPath, args, input.environment);
 
       const child = yield* spawner
@@ -535,7 +536,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
             (cause) =>
               new OpenCodeRuntimeError({
                 operation: "startOpenCodeServerProcess",
-                detail: `Failed to spawn OpenCode server process: ${openCodeRuntimeErrorDetail(cause)}`,
+                detail: `Failed to spawn Slingshot server process: ${openCodeRuntimeErrorDetail(cause)}`,
                 cause,
               }),
           ),
@@ -573,6 +574,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               : Effect.void;
           }),
         );
+      const setReadyFromStderrChunk = (chunk: string) =>
+        Ref.updateAndGet(stderrRef, (stderr) => `${stderr}${chunk}`).pipe(
+          Effect.flatMap((nextStderr) =>
+            nextStderr.includes(SLINGSHOT_SERVER_READY_TEXT)
+              ? Deferred.succeed(readyDeferred, `http://${hostname}:${port}`).pipe(Effect.ignore)
+              : Effect.void,
+          ),
+        );
 
       const stdoutFiber = yield* child.stdout.pipe(
         Stream.decodeText(),
@@ -582,7 +591,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
       const stderrFiber = yield* child.stderr.pipe(
         Stream.decodeText(),
-        Stream.runForEach((chunk) => Ref.update(stderrRef, (stderr) => `${stderr}${chunk}`)),
+        Stream.runForEach(setReadyFromStderrChunk),
         Effect.ignore,
         Effect.forkIn(runtimeScope),
       );
@@ -598,7 +607,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               new OpenCodeRuntimeError({
                 operation: "startOpenCodeServerProcess",
                 detail: [
-                  `OpenCode server exited before startup completed (code: ${String(exitCode)}).`,
+                  `Slingshot server exited before startup completed (code: ${String(exitCode)}).`,
                   stdout.trim() ? `stdout:\n${stdout.trim()}` : null,
                   stderr.trim() ? `stderr:\n${stderr.trim()}` : null,
                 ]
@@ -628,7 +637,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         const squashed = Cause.squash(readyExit.cause);
         return yield* ensureRuntimeError(
           "startOpenCodeServerProcess",
-          `Failed while waiting for OpenCode server startup: ${openCodeRuntimeErrorDetail(squashed)}`,
+          `Failed while waiting for Slingshot server startup: ${openCodeRuntimeErrorDetail(squashed)}`,
           squashed,
         );
       }
@@ -638,7 +647,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         yield* Fiber.interrupt(exitFiber).pipe(Effect.ignore);
         return yield* new OpenCodeRuntimeError({
           operation: "startOpenCodeServerProcess",
-          detail: `Timed out waiting for OpenCode server start after ${timeoutMs}ms.`,
+          detail: `Timed out waiting for Slingshot server start after ${timeoutMs}ms.`,
         });
       }
 
@@ -700,7 +709,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
             : Result.fail(
                 new OpenCodeRuntimeError({
                   operation: "provider.list",
-                  detail: "OpenCode provider list was empty.",
+                  detail: "Slingshot provider list was empty.",
                 }),
               ),
         (result) => result,
@@ -786,14 +795,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         const cause = Cause.squash(modelsResult.cause);
         return yield* ensureRuntimeError(
           "loadInventoryFromCli",
-          `Failed to load OpenCode models: ${openCodeRuntimeErrorDetail(cause)}`,
+          `Failed to load Slingshot models: ${openCodeRuntimeErrorDetail(cause)}`,
           cause,
         );
       }
       if (modelsResult.value.code !== 0) {
         return yield* new OpenCodeRuntimeError({
           operation: "loadInventoryFromCli",
-          detail: `OpenCode models command exited with code ${modelsResult.value.code}.`,
+          detail: `Slingshot models command exited with code ${modelsResult.value.code}.`,
         });
       }
 

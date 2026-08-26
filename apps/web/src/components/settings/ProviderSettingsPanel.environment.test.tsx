@@ -88,13 +88,13 @@ vi.mock("../../state/session", () => ({
 import { EnvironmentProviderSettings } from "./ProviderSettingsPanel";
 
 const environmentId = EnvironmentId.make("remote-device");
-const codexId = ProviderInstanceId.make("codex");
-const customId = ProviderInstanceId.make("codex_work");
+const slingshotId = ProviderInstanceId.make("opencode");
+const customId = ProviderInstanceId.make("opencode_work");
 
 function provider(): ServerProvider {
   return {
-    instanceId: codexId,
-    driver: ProviderDriverKind.make("codex"),
+    instanceId: slingshotId,
+    driver: ProviderDriverKind.make("opencode"),
     enabled: true,
     installed: true,
     version: "1.0.0",
@@ -166,7 +166,7 @@ describe("EnvironmentProviderSettings routing", () => {
     const providerCard = visitElements(
       panel,
       (element) =>
-        element.props.instanceId === codexId && typeof element.props.onRunUpdate === "function",
+        element.props.instanceId === slingshotId && typeof element.props.onRunUpdate === "function",
     );
     expect(providerCard).not.toBeNull();
     (providerCard?.props.onRunUpdate as (() => void) | undefined)?.();
@@ -174,7 +174,7 @@ describe("EnvironmentProviderSettings routing", () => {
 
     expect(commands.updateProvider).toHaveBeenCalledWith({
       environmentId,
-      input: { provider: ProviderDriverKind.make("codex"), instanceId: codexId },
+      input: { provider: ProviderDriverKind.make("opencode"), instanceId: slingshotId },
     });
   });
 
@@ -184,7 +184,10 @@ describe("EnvironmentProviderSettings routing", () => {
 
     const inertWrapper = visitElements(panel, (element) => element.props.inert === true);
     expect(inertWrapper).not.toBeNull();
-    const providerCard = visitElements(panel, (element) => element.props.instanceId === codexId);
+    const providerCard = visitElements(
+      panel,
+      (element) => element.props.instanceId === slingshotId,
+    );
     expect(providerCard).not.toBeNull();
 
     const notice = visitElements(panel, (element) => element.props.title === "Limited permissions");
@@ -211,12 +214,12 @@ describe("EnvironmentProviderSettings routing", () => {
     settingsState.value = {
       ...DEFAULT_UNIFIED_SETTINGS,
       providerInstances: {
-        [codexId]: {
-          driver: ProviderDriverKind.make("codex"),
+        [slingshotId]: {
+          driver: ProviderDriverKind.make("opencode"),
           enabled: false,
         },
         [customId]: {
-          driver: ProviderDriverKind.make("codex"),
+          driver: ProviderDriverKind.make("opencode"),
           enabled: true,
         },
       },
@@ -232,12 +235,12 @@ describe("EnvironmentProviderSettings routing", () => {
 
     expect(settingsState.updateSettings).toHaveBeenLastCalledWith({
       providerInstances: {
-        [codexId]: settingsState.value.providerInstances?.[codexId],
+        [slingshotId]: settingsState.value.providerInstances?.[slingshotId],
       },
     });
 
     settingsState.updateSettings.mockClear();
-    const defaultCard = visitElements(panel, (element) => element.props.instanceId === codexId);
+    const defaultCard = visitElements(panel, (element) => element.props.instanceId === slingshotId);
     const resetAction = defaultCard?.props.headerAction;
     const resetButton = visitElements(
       resetAction,

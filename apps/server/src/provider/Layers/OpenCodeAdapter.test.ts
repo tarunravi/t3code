@@ -73,6 +73,10 @@ const runtimeMock = {
     transientErrorSessionIds: new Set<string>(),
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
+    sessionModelCalls: [] as Array<{
+      sessionID: string;
+      model: { id: string; providerID: string };
+    }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
   },
   reset() {
@@ -93,6 +97,7 @@ const runtimeMock = {
     this.state.transientErrorSessionIds.clear();
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
+    this.state.sessionModelCalls.length = 0;
     this.state.forkCalls.length = 0;
   },
 };
@@ -137,6 +142,18 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      client: {
+        post: async (input: {
+          path: { sessionID: string };
+          body: { model: { id: string; providerID: string } };
+        }) => {
+          runtimeMock.state.sessionModelCalls.push({
+            sessionID: input.path.sessionID,
+            model: input.body.model,
+          });
+          return { data: {} };
+        },
+      },
       session: {
         create: async (input: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
@@ -203,11 +220,11 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
               : runtimeMock.state.messages;
         },
       },
-      event: {
-        subscribe: async () => ({
+      global: {
+        event: async () => ({
           stream: (async function* () {
             for (const event of runtimeMock.state.subscribedEvents) {
-              yield event;
+              yield { directory: process.cwd(), payload: event };
             }
           })(),
         }),
@@ -853,6 +870,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         variant: "high",
         parts: [{ type: "text", text: "Fix it" }],
       });
+      NodeAssert.deepEqual(runtimeMock.state.sessionModelCalls.at(-1), {
+        sessionID: "http://127.0.0.1:9999/session",
+        model: {
+          id: "claude-sonnet-4-5",
+          providerID: "anthropic",
+        },
+      });
     }).pipe(Effect.provide(adapterLayer));
   });
 
@@ -894,6 +918,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           modelID: "claude-sonnet-4-5",
         },
         parts: [{ type: "text", text: "Fix it" }],
+      });
+      NodeAssert.deepEqual(runtimeMock.state.sessionModelCalls.at(-1), {
+        sessionID: "http://127.0.0.1:9999/session",
+        model: {
+          id: "claude-sonnet-4-5",
+          providerID: "anthropic",
+        },
       });
     }).pipe(Effect.provide(adapterLayer));
   });
@@ -937,7 +968,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       }
       NodeAssert.equal(
         error.issue,
-        "OpenCode model selection is bound to instance 'opencode', expected 'opencode_zen'.",
+        "Slingshot model selection is bound to instance 'opencode', expected 'opencode_zen'.",
       );
       NodeAssert.deepEqual(runtimeMock.state.promptCalls, []);
     }).pipe(Effect.provide(adapterLayer));
@@ -1085,9 +1116,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         {
           type: "message.updated",
           properties: {
-            sessionID: "http://127.0.0.1:9999/session",
             info: {
               id: "msg-raw-delta",
+              sessionID: "http://127.0.0.1:9999/session",
               role: "assistant",
             },
           },
@@ -1095,7 +1126,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         {
           type: "message.part.updated",
           properties: {
-            sessionID: "http://127.0.0.1:9999/session",
             part,
             time: 1,
           },
@@ -1113,7 +1143,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         {
           type: "message.part.updated",
           properties: {
-            sessionID: "http://127.0.0.1:9999/session",
             part: {
               ...part,
               text: "A BBonus",

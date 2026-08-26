@@ -26,10 +26,10 @@ import {
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
 const OPENCODE_PRESENTATION = {
-  displayName: "OpenCode",
+  displayName: "Slingshot",
   showInteractionModeToggle: false,
 } as const;
-const MINIMUM_OPENCODE_VERSION = "1.14.19";
+const MINIMUM_SLINGSHOT_VERSION = "0.2.1";
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause: unknown;
@@ -79,7 +79,7 @@ function formatOpenCodeProbeError(input: {
     ) {
       return {
         installed: true,
-        message: "OpenCode server rejected authentication. Check the server URL and password.",
+        message: "Slingshot server rejected authentication. Check the server URL and password.",
       };
     }
 
@@ -94,20 +94,20 @@ function formatOpenCodeProbeError(input: {
     ) {
       return {
         installed: true,
-        message: `Couldn't reach the configured OpenCode server at ${input.serverUrl}. Check that the server is running and the URL is correct.`,
+        message: `Couldn't reach the configured Slingshot server at ${input.serverUrl}. Check that the server is running and the URL is correct.`,
       };
     }
 
     return {
       installed: true,
-      message: detail ?? "Failed to connect to the configured OpenCode server.",
+      message: detail ?? "Failed to connect to the configured Slingshot server.",
     };
   }
 
   if (lower.includes("enoent") || lower.includes("notfound")) {
     return {
       installed: false,
-      message: "OpenCode CLI (`opencode`) is not installed or not on PATH.",
+      message: "Slingshot CLI (`sling`) is not installed or not on PATH.",
     };
   }
 
@@ -115,7 +115,7 @@ function formatOpenCodeProbeError(input: {
     return {
       installed: true,
       message:
-        "macOS is blocking the OpenCode binary (quarantine). Run `xattr -d com.apple.quarantine $(which opencode)` to fix this.",
+        "macOS is blocking the Slingshot binary (quarantine). Run `xattr -d com.apple.quarantine $(which sling)` to fix this.",
     };
   }
 
@@ -123,15 +123,13 @@ function formatOpenCodeProbeError(input: {
     return {
       installed: true,
       message:
-        "macOS killed the OpenCode process due to an invalid code signature. The binary may be corrupted — try reinstalling OpenCode.",
+        "macOS killed the Slingshot process due to an invalid code signature. The binary may be corrupted — try reinstalling Slingshot.",
     };
   }
 
   return {
     installed: true,
-    message: detail
-      ? `Failed to execute OpenCode CLI health check: ${detail}`
-      : "Failed to execute OpenCode CLI health check.",
+    message: detail ? `Slingshot health check failed: ${detail}` : "Slingshot health check failed.",
   };
 }
 
@@ -301,8 +299,8 @@ export const makePendingOpenCodeProvider = (
           auth: { status: "unknown" },
           message:
             openCodeSettings.serverUrl.trim().length > 0
-              ? "OpenCode is disabled in T3 Code settings. A server URL is configured."
-              : "OpenCode is disabled in T3 Code settings.",
+              ? "Slingshot is disabled in settings. A server URL is configured."
+              : "Slingshot is disabled in settings.",
         },
       });
     }
@@ -317,7 +315,7 @@ export const makePendingOpenCodeProvider = (
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "OpenCode provider status has not been checked in this session yet.",
+        message: "Slingshot status has not been checked in this session yet.",
       },
     });
   });
@@ -366,8 +364,8 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         status: "warning",
         auth: { status: "unknown" },
         message: isExternalServer
-          ? "OpenCode is disabled in T3 Code settings. A server URL is configured."
-          : "OpenCode is disabled in T3 Code settings.",
+          ? "Slingshot is disabled in settings. A server URL is configured."
+          : "Slingshot is disabled in settings.",
       },
     });
   }
@@ -395,12 +393,12 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     if (!version) {
       return fallback(
         new Error(
-          `Unable to determine OpenCode version from \`opencode --version\` output. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
+          `Unable to determine Slingshot version from \`sling --version\` output. Slingshot UI requires Slingshot v${MINIMUM_SLINGSHOT_VERSION} or newer.`,
         ),
         null,
       );
     }
-    if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
+    if (compareSemverVersions(version, MINIMUM_SLINGSHOT_VERSION) < 0) {
       return buildServerProvider({
         presentation: OPENCODE_PRESENTATION,
         enabled: openCodeSettings.enabled,
@@ -411,37 +409,30 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           version,
           status: "error",
           auth: { status: "unknown" },
-          message: `OpenCode v${version} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.`,
+          message: `Slingshot v${version} is too old. Upgrade to v${MINIMUM_SLINGSHOT_VERSION} or newer.`,
         },
       });
     }
   }
 
   const inventoryExit = yield* Effect.exit(
-    (isExternalServer
-      ? Effect.scoped(
-          Effect.gen(function* () {
-            const server = yield* openCodeRuntime.connectToOpenCodeServer({
-              binaryPath: openCodeSettings.binaryPath,
-              serverUrl: openCodeSettings.serverUrl,
-              environment: resolvedEnvironment,
-            });
-            return yield* openCodeRuntime.loadOpenCodeInventory(
-              openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory: cwd,
-                ...(openCodeSettings.serverPassword
-                  ? { serverPassword: openCodeSettings.serverPassword }
-                  : {}),
-              }),
-            );
-          }),
-        )
-      : openCodeRuntime.loadInventoryFromCli({
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* openCodeRuntime.connectToOpenCodeServer({
           binaryPath: openCodeSettings.binaryPath,
-          cwd,
+          serverUrl: openCodeSettings.serverUrl,
           environment: resolvedEnvironment,
-        })
+        });
+        return yield* openCodeRuntime.loadOpenCodeInventory(
+          openCodeRuntime.createOpenCodeSdkClient({
+            baseUrl: server.url,
+            directory: cwd,
+            ...(openCodeSettings.serverPassword
+              ? { serverPassword: openCodeSettings.serverPassword }
+              : {}),
+          }),
+        );
+      }),
     ).pipe(
       Effect.mapError(
         (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
@@ -475,10 +466,10 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       },
       message:
         connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
+          ? `${connectedCount} model catalog${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured Slingshot server" : "Slingshot"}.`
           : isExternalServer
-            ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
-            : "OpenCode is available, but it did not report any connected upstream providers.",
+            ? "Connected to the configured Slingshot server, but it did not report any models."
+            : "Slingshot is available, but it did not report any models.",
     },
   });
 });

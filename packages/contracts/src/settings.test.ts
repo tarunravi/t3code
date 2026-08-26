@@ -163,11 +163,10 @@ describe("ClientSettings sidebar", () => {
 });
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
-  it("defaults text generation to Luna at low reasoning effort", () => {
+  it("defaults text generation to Slingshot's Luna model", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5.6-luna",
-      options: [{ id: "reasoningEffort", value: "low" }],
+      instanceId: ProviderInstanceId.make("opencode"),
+      model: "sling/openai/gpt-5.6-luna",
     });
   });
 
@@ -233,11 +232,12 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
-    expect(decoded.providers.opencode.enabled).toBe(false);
+    expect(decoded.providers.opencode.enabled).toBe(true);
   });
 
   it("derives per-driver defaults from the settings schemas", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("codex"))).toBe(true);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("opencode"))).toBe(true);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
     // Unknown fork drivers stay enabled; their own build decides otherwise.

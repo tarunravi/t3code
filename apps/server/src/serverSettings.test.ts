@@ -237,14 +237,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
       assert.deepEqual(
         next.textGenerationModelSelection,
-        createModelSelection(
-          ProviderInstanceId.make("codex"),
-          DEFAULT_SERVER_SETTINGS.textGenerationModelSelection.model,
-          [
-            { id: "reasoningEffort", value: "high" },
-            { id: "fastMode", value: false },
-          ],
-        ),
+        DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -272,7 +265,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("preserves model when switching providers via textGenerationModelSelection", () =>
+  it.effect("falls back to Slingshot for unsupported text generation providers", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
 
@@ -301,12 +294,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         },
       });
 
-      assert.deepEqual(
-        next.textGenerationModelSelection,
-        createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
-          { id: "reasoningEffort", value: "high" },
-        ]),
-      );
+      assert.deepEqual(next.textGenerationModelSelection, {
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "sling/openai/gpt-5.6-luna",
+      });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -316,21 +307,21 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const next = yield* serverSettings.updateSettings({
         providerInstances: {
-          [ProviderInstanceId.make("claude_openrouter")]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
+          [ProviderInstanceId.make("opencode_remote")]: {
+            driver: ProviderDriverKind.make("opencode"),
             enabled: true,
-            config: { customModels: ["openai/gpt-5.5"] },
+            config: { customModels: ["sling/openai/gpt-5.5"] },
           },
         },
         textGenerationModelSelection: {
-          instanceId: ProviderInstanceId.make("claude_openrouter"),
-          model: "openai/gpt-5.5",
+          instanceId: ProviderInstanceId.make("opencode_remote"),
+          model: "sling/openai/gpt-5.5",
         },
       });
 
       assert.deepEqual(next.textGenerationModelSelection, {
-        instanceId: ProviderInstanceId.make("claude_openrouter"),
-        model: "openai/gpt-5.5",
+        instanceId: ProviderInstanceId.make("opencode_remote"),
+        model: "sling/openai/gpt-5.5",
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -340,35 +331,35 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     () =>
       Effect.gen(function* () {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
-        const instanceId = ProviderInstanceId.make("claude_openrouter");
+        const instanceId = ProviderInstanceId.make("opencode_remote");
 
         const next = yield* serverSettings.updateSettings({
           providers: {
-            claudeAgent: {
+            opencode: {
               enabled: false,
             },
           },
           providerInstances: {
             [instanceId]: {
-              driver: ProviderDriverKind.make("claudeAgent"),
+              driver: ProviderDriverKind.make("opencode"),
               enabled: true,
-              config: { customModels: ["openai/gpt-5.5"] },
+              config: { customModels: ["sling/openai/gpt-5.5"] },
             },
           },
           textGenerationModelSelection: {
             instanceId,
-            model: "openai/gpt-5.5",
+            model: "sling/openai/gpt-5.5",
           },
         });
 
         assert.deepEqual(next.textGenerationModelSelection, {
           instanceId,
-          model: "openai/gpt-5.5",
+          model: "sling/openai/gpt-5.5",
         });
       }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("preserves enabled text generation selections for non-built-in drivers", () =>
+  it.effect("falls back from non-Slingshot custom drivers", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const instanceId = ProviderInstanceId.make("openrouter_text");
@@ -388,8 +379,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
 
       assert.deepEqual(next.textGenerationModelSelection, {
-        instanceId,
-        model: "openai/gpt-5.5",
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "sling/openai/gpt-5.6-luna",
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -572,11 +563,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.isTrue(settings.providerInstances[ProviderInstanceId.make("opencode_work")]?.enabled);
       const unused = settings.providerInstances[ProviderInstanceId.make("opencode_unused")];
       assert.isDefined(unused);
-      assert.isFalse(resolveProviderInstanceEnabled(unused));
+      assert.isTrue(resolveProviderInstanceEnabled(unused));
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("preserves explicit provider disables in existing settings files", () =>
+  it.effect("re-enables Slingshot when loading legacy provider settings", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -592,15 +583,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.isFalse(settings.providers.grok.enabled);
-      assert.isFalse(settings.providers.opencode.enabled);
+      assert.isTrue(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
       assert.isFalse(settings.providerInstances[ProviderInstanceId.make("grok")]?.enabled);
-      assert.isFalse(settings.providerInstances[ProviderInstanceId.make("opencode")]?.enabled);
+      assert.isTrue(settings.providerInstances[ProviderInstanceId.make("opencode")]?.enabled);
       assert.isFalse(settings.providerInstances[ProviderInstanceId.make("cursor")]?.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("keeps unused providers disabled in existing sparse settings files", () =>
+  it.effect("keeps Slingshot enabled in existing sparse settings files", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -610,7 +601,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.isFalse(settings.providers.grok.enabled);
-      assert.isFalse(settings.providers.opencode.enabled);
+      assert.isTrue(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -623,7 +614,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.isTrue(settings.providers.grok.enabled);
-      assert.isFalse(settings.providers.opencode.enabled);
+      assert.isTrue(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -640,7 +631,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.isTrue(settings.providers.cursor.enabled);
       assert.isFalse(settings.providers.grok.enabled);
-      assert.isFalse(settings.providers.opencode.enabled);
+      assert.isTrue(settings.providers.opencode.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -659,7 +650,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.isFalse(settings.providers.cursor.enabled);
       assert.isTrue(settings.providers.grok.enabled);
-      assert.isFalse(settings.providers.opencode.enabled);
+      assert.isTrue(settings.providers.opencode.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -734,11 +725,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const persisted = JSON.parse(raw);
       assert.isTrue(persisted.providers.cursor.enabled);
       assert.isTrue(persisted.providers.grok.enabled);
-      assert.isTrue(persisted.providers.opencode.enabled);
+      assert.isUndefined(persisted.providers.opencode);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("keeps optional providers disabled after a new installation writes settings", () =>
+  it.effect("keeps Slingshot enabled after a new installation writes settings", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -746,7 +737,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const initial = yield* serverSettings.getSettings;
       assert.isFalse(initial.providers.grok.enabled);
-      assert.isFalse(initial.providers.opencode.enabled);
+      assert.isTrue(initial.providers.opencode.enabled);
       assert.isFalse(initial.providers.cursor.enabled);
 
       const next = yield* serverSettings.updateSettings({
@@ -760,7 +751,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
 
       assert.isFalse(next.providers.grok.enabled);
-      assert.isFalse(next.providers.opencode.enabled);
+      assert.isTrue(next.providers.opencode.enabled);
       assert.isFalse(next.providers.cursor.enabled);
       const grok = next.providerInstances[ProviderInstanceId.make("grok")];
       assert.isDefined(grok);
@@ -771,7 +762,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const persisted = JSON.parse(raw);
       assert.isFalse(persisted.providers.cursor.enabled);
       assert.isFalse(persisted.providers.grok.enabled);
-      assert.isFalse(persisted.providers.opencode.enabled);
+      assert.isUndefined(persisted.providers?.opencode);
       assert.isUndefined(persisted.providerInstances.grok.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -873,8 +864,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         autoCompactWindow: "",
       });
       assert.deepEqual(next.providers.opencode, {
-        // OpenCode is disabled by default; this update only touches paths.
-        enabled: false,
+        enabled: true,
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
         serverPassword: "secret-password",
@@ -967,7 +957,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             enabled: false,
           },
           opencode: {
-            enabled: false,
             serverUrl: "http://127.0.0.1:4096",
             serverPassword: "secret-password",
           },
