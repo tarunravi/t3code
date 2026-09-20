@@ -1079,6 +1079,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCodexVoiceInput } from "./voiceInput";
+import { VoiceRecordingWaveform } from "./VoiceRecordingWaveform";
 
 function formatVoiceElapsed(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -2329,6 +2330,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       scheduleComposerFocus();
     },
   });
+  const isVoiceRecordingBar =
+    voiceInput.state.phase === "recording" || voiceInput.state.phase === "transcribing";
   const voiceInputPhaseRef = useRef(voiceInput.state.phase);
   voiceInputPhaseRef.current = voiceInput.state.phase;
   const voiceErrorToastedRef = useRef<string | null>(null);
@@ -7403,17 +7406,89 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     (showInlineRestingControls ? "bottom-[calc(2rem+1px)]" : "bottom-px"),
                 )}
               >
-                <div
-                  ref={expandedControlsLayout.attachControls}
-                  data-chat-composer-controls="left"
-                  data-chat-composer-footer-controls="true"
-                  className={cn(
-                    "relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-                    isComposerResting && "hidden",
-                  )}
-                >
-                  {composerControlsCollapsed ? null : composerControls}
-                </div>
+                {isVoiceRecordingBar ? (
+                  <div
+                    data-chat-composer-voice-recording-bar="true"
+                    className="flex min-w-0 flex-1 items-center gap-2"
+                  >
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={voiceInput.state.phase === "transcribing"}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={() => voiceInput.cancel()}
+                            aria-label="Cancel voice input"
+                          />
+                        }
+                      >
+                        <XIcon />
+                      </TooltipTrigger>
+                      <TooltipPopup>Cancel voice input</TooltipPopup>
+                    </Tooltip>
+                    <VoiceRecordingWaveform
+                      levels={voiceInput.waveformLevels}
+                      active={voiceInput.state.phase === "recording"}
+                    />
+                    <span
+                      data-chat-composer-voice-status="true"
+                      className="shrink-0 text-xs font-medium text-rose-600 tabular-nums dark:text-rose-400"
+                    >
+                      {voiceInput.state.phase === "recording"
+                        ? formatVoiceElapsed(voiceInput.elapsedSeconds)
+                        : "Transcribing…"}
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={voiceInput.state.phase === "transcribing"}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={() => void voiceInput.stop()}
+                            aria-label="Stop recording and transcribe"
+                          />
+                        }
+                      >
+                        {voiceInput.state.phase === "transcribing" ? (
+                          <Spinner className="size-3.5" aria-hidden="true" />
+                        ) : (
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 12 12"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                          </svg>
+                        )}
+                      </TooltipTrigger>
+                      <TooltipPopup>
+                        {voiceInput.state.phase === "transcribing"
+                          ? "Transcribing…"
+                          : "Stop recording and transcribe"}
+                      </TooltipPopup>
+                    </Tooltip>
+                  </div>
+                ) : (
+                  <div
+                    ref={expandedControlsLayout.attachControls}
+                    data-chat-composer-controls="left"
+                    data-chat-composer-footer-controls="true"
+                    className={cn(
+                      "relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                      isComposerResting && "hidden",
+                    )}
+                  >
+                    {composerControlsCollapsed ? null : composerControls}
+                  </div>
+                )}
 
                 {/* Right side: send / stop button */}
                 <div
@@ -7424,7 +7499,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
-                  {showComposerAttachAction ? (
+                  {!isVoiceRecordingBar && showComposerAttachAction ? (
                     <>
                       <input
                         ref={attachmentInputRef}
@@ -7461,7 +7536,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
-                  {voiceInput.isAvailable ? (
+                  {!isVoiceRecordingBar && voiceInput.isAvailable ? (
                     <>
                       {voiceInput.state.phase === "recording" ||
                       voiceInput.state.phase === "transcribing" ? (
@@ -7549,11 +7624,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     </>
                   ) : null}
                   <ComposerFooterPrimaryActions
-                    compact={isComposerResting || isComposerPrimaryActionsCompact}
-                    activeContextWindow={
-                      settings.contextWindowMeterEnabled ? activeContextWindow : null
+                    compact={
+                      isVoiceRecordingBar || isComposerResting || isComposerPrimaryActionsCompact
                     }
-                    reserveContextWindowMeter={reserveContextWindowMeter}
+                    activeContextWindow={
+                      isVoiceRecordingBar || !settings.contextWindowMeterEnabled
+                        ? null
+                        : activeContextWindow
+                    }
+                    reserveContextWindowMeter={
+                      isVoiceRecordingBar ? false : reserveContextWindowMeter
+                    }
                     activeThreadModelDisplayName={activeThreadModelDisplayName}
                     pendingAction={pendingPrimaryAction}
                     isRunning={phase === "running"}
