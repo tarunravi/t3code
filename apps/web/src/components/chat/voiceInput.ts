@@ -49,9 +49,16 @@ function blobToBase64(blob: Blob): Promise<string> {
 export class WebVoiceRecorder implements VoiceRecorder {
   uri: string | null = null;
   onStatus: ((status: VoiceRecorderStatus) => void) | null = null;
+  onLevel: ((level: number) => void) | null = null;
 
   private stream: MediaStream | null = null;
   private mediaRecorder: MediaRecorder | null = null;
+  private levelMeterContext: AudioContext | null = null;
+  private levelMeterSource: MediaStreamAudioSourceNode | null = null;
+  private levelMeterAnalyser: AnalyserNode | null = null;
+  private levelMeterData: Uint8Array<ArrayBuffer> | null = null;
+  private levelMeterFrame: number | null = null;
+  private lastLevelAt = 0;
   private chunks: Blob[] = [];
   private readonly blobs = new Map<string, Blob>();
   private limitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -108,6 +115,7 @@ export class WebVoiceRecorder implements VoiceRecorder {
     const recorder = this.mediaRecorder;
     if (!recorder) throw new Error("Recorder was not prepared.");
     recorder.start(250);
+    this.startLevelMeter();
     if (Number.isFinite(options.forDuration) && options.forDuration > 0) {
       this.limitTimer = setTimeout(() => {
         if (this.mediaRecorder?.state === "recording") {
@@ -138,9 +146,72 @@ export class WebVoiceRecorder implements VoiceRecorder {
   }
 
   disposeStream(): void {
+    this.stopLevelMeter();
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.mediaRecorder = null;
+  }
+
+  private startLevelMeter(): void {
+    if (typeof window === "undefined" || !this.stream || typeof AudioContext === "undefined") {
+      return;
+    }
+
+    this.stopLevelMeter();
+    try {
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(this.stream);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+      this.levelMeterContext = context;
+      this.levelMeterSource = source;
+      this.levelMeterAnalyser = analyser;
+      this.levelMeterData = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+      this.lastLevelAt = 0;
+
+      const update = (timestamp: number) => {
+        const currentAnalyser = this.levelMeterAnalyser;
+        const data = this.levelMeterData;
+        if (!currentAnalyser || !data || this.mediaRecorder?.state !== "recording") {
+          this.levelMeterFrame = null;
+          return;
+        }
+
+        if (timestamp - this.lastLevelAt >= 50) {
+          currentAnalyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (const sample of data) {
+            const normalized = (sample - 128) / 128;
+            sum += normalized * normalized;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          this.onLevel?.(Math.min(1, Math.max(0, (rms - 0.01) * 5)));
+          this.lastLevelAt = timestamp;
+        }
+
+        this.levelMeterFrame = window.requestAnimationFrame(update);
+      };
+
+      this.levelMeterFrame = window.requestAnimationFrame(update);
+      void context.resume().catch(() => undefined);
+    } catch {
+      this.stopLevelMeter();
+    }
+  }
+
+  private stopLevelMeter(): void {
+    if (this.levelMeterFrame !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(this.levelMeterFrame);
+    }
+    this.levelMeterFrame = null;
+    this.levelMeterSource?.disconnect();
+    this.levelMeterAnalyser?.disconnect();
+    void this.levelMeterContext?.close().catch(() => undefined);
+    this.levelMeterSource = null;
+    this.levelMeterAnalyser = null;
+    this.levelMeterData = null;
+    this.levelMeterContext = null;
   }
 
   readBlob(uri: string): Blob | null {
@@ -207,6 +278,7 @@ export function useCodexVoiceInput(input: {
 }) {
   const [state, setState] = useState<VoiceInputState>(IDLE_STATE);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [waveformLevels, setWaveformLevels] = useState<number[]>([]);
   const recorderRef = useRef<WebVoiceRecorder | null>(null);
   const controllerRef = useRef<VoiceInputController | null>(null);
   const previousDraftRef = useRef({ ownerKey: input.ownerKey, text: input.draftText });
@@ -229,6 +301,9 @@ export function useCodexVoiceInput(input: {
   if (!controllerRef.current) {
     recorder.onStatus = (status) => {
       controllerRef.current?.handleRecorderStatus(status);
+    };
+    recorder.onLevel = (level) => {
+      setWaveformLevels((previous) => [...previous.slice(-71), level]);
     };
     controllerRef.current = new VoiceInputController({
       recorder,
@@ -278,6 +353,12 @@ export function useCodexVoiceInput(input: {
     return () => clearInterval(interval);
   }, [state.phase]);
 
+  useEffect(() => {
+    if (state.phase === "idle" || state.phase === "preparing" || state.phase === "error") {
+      setWaveformLevels([]);
+    }
+  }, [state.phase]);
+
   const start = useCallback(() => {
     if (!latestInputRef.current.disabled) void controller.start();
   }, [controller]);
@@ -296,6 +377,7 @@ export function useCodexVoiceInput(input: {
     isAvailable: getCodexVoiceTranscriber(recorder) !== null,
     state,
     elapsedSeconds,
+    waveformLevels,
     blocksSubmission: voiceInputBlocksSubmission(state),
     start,
     stop,
