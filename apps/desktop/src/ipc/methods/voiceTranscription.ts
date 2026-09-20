@@ -1,16 +1,24 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Electron from "electron";
-import { VoiceTranscribeInput, VoiceTranscribeResult } from "@t3tools/contracts";
+import {
+  VoiceRecordingAudio,
+  VoiceRecordingId,
+  VoiceRecordingMetadata,
+  VoiceTranscribeInput,
+  VoiceTranscribeResult,
+} from "@t3tools/contracts";
 
+import * as TranscribeWithRetry from "../../voice/transcribeWithRetry.ts";
+import * as VoiceRecordingStore from "../../voice/voiceRecordingStore.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
-import { TRANSCRIBE_VOICE_CHANNEL } from "../channels.ts";
-
-const CODEX_TRANSCRIBE_URL = "https://chatgpt.com/backend-api/transcribe";
+import {
+  DELETE_VOICE_RECORDING_CHANNEL,
+  LIST_VOICE_RECORDINGS_CHANNEL,
+  READ_VOICE_RECORDING_CHANNEL,
+  RETRY_VOICE_RECORDING_CHANNEL,
+  TRANSCRIBE_VOICE_CHANNEL,
+} from "../channels.ts";
 
 export class VoiceTranscriptionError extends Schema.TaggedError<VoiceTranscriptionError>()(
   "VoiceTranscriptionError",
@@ -19,88 +27,24 @@ export class VoiceTranscriptionError extends Schema.TaggedError<VoiceTranscripti
   },
 ) {}
 
-interface CodexAuthFile {
-  tokens?: {
-    access_token?: string;
-    account_id?: string;
-  };
+export class VoiceRecordingError extends Schema.TaggedError<VoiceRecordingError>()(
+  "VoiceRecordingError",
+  {
+    message: Schema.String,
+  },
+) {}
+
+const RECORDING_NOT_FOUND_MESSAGE = "Recording not found. It may have been deleted.";
+
+function recordingsDir(): string {
+  return VoiceRecordingStore.voiceRecordingsDir(Electron.app.getPath("userData"));
 }
 
-function readCodexCredentials(): { accessToken: string; accountId: string | null } {
-  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
-  const authPath = path.join(codexHome, "auth.json");
-  let parsed: CodexAuthFile;
-  try {
-    parsed = JSON.parse(fs.readFileSync(authPath, "utf8")) as CodexAuthFile;
-  } catch {
-    throw new Error(
-      "No Codex login found. Sign in with the Codex app or CLI first, then try again.",
-    );
-  }
-  const accessToken = parsed.tokens?.access_token;
-  if (!accessToken) {
-    throw new Error("Codex auth file is missing an access token. Re-run Codex login.");
-  }
-  const parts = accessToken.split(".");
-  if (parts.length === 3 && parts[1]) {
-    try {
-      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
-        exp?: number;
-      };
-      if (typeof payload.exp === "number" && payload.exp * 1000 <= Date.now()) {
-        throw new Error(
-          "Your Codex login has expired. Open the Codex app or CLI once to refresh it, then try again.",
-        );
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("expired")) throw error;
-    }
-  }
-  return { accessToken, accountId: parsed.tokens?.account_id ?? null };
-}
-
-async function transcribeWithCodex(
-  input: typeof VoiceTranscribeInput.Type,
-): Promise<typeof VoiceTranscribeResult.Type> {
-  const { accessToken, accountId } = readCodexCredentials();
-  const audioBytes = Buffer.from(input.audioBase64, "base64");
-  if (audioBytes.byteLength === 0) {
-    throw new Error("Recording was empty.");
-  }
-  const extension = input.mimeType.includes("mp4")
-    ? "mp4"
-    : input.mimeType.includes("ogg")
-      ? "ogg"
-      : "webm";
-  const form = new FormData();
-  form.append("file", new Blob([audioBytes], { type: input.mimeType }), `voice.${extension}`);
-  if (input.language) {
-    form.append("language", input.language);
-  }
-  const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
-  if (accountId) {
-    headers["ChatGPT-Account-Id"] = accountId;
-  }
-  // Electron's net.fetch uses Chromium's network stack, which passes the bot
-  // mitigation that rejects plain Node/curl TLS fingerprints on this endpoint.
-  const response = await Electron.net.fetch(CODEX_TRANSCRIBE_URL, {
-    method: "POST",
-    headers,
-    body: form,
-  });
-  if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error(
-        "Codex rejected the login token. Open the Codex app or CLI to refresh it, then try again.",
-      );
-    }
-    if (response.status === 403) {
-      throw new Error("Transcription request was blocked (403). Try again in a moment.");
-    }
-    throw new Error(`Transcription failed (${response.status}).`);
-  }
-  const payload = (await response.json()) as { text?: string };
-  return { text: typeof payload.text === "string" ? payload.text : "" };
+function fetchWithChromiumNetwork(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: FormData },
+): Promise<TranscribeWithRetry.TranscribeFetchResponse> {
+  return Electron.net.fetch(url, init);
 }
 
 export const transcribeVoice = DesktopIpc.makeIpcMethod({
@@ -109,9 +53,114 @@ export const transcribeVoice = DesktopIpc.makeIpcMethod({
   result: VoiceTranscribeResult,
   handler: (input) =>
     Effect.tryPromise({
-      try: () => transcribeWithCodex(input),
+      try: async () => {
+        const outcome = await TranscribeWithRetry.transcribeWithRetry(input, {
+          fetchImpl: fetchWithChromiumNetwork,
+        });
+        try {
+          VoiceRecordingStore.saveVoiceRecording(recordingsDir(), {
+            mimeType: input.mimeType,
+            audio: Buffer.from(input.audioBase64, "base64"),
+            status: outcome.ok ? "ok" : "error",
+            attempts: outcome.attempts,
+            error: outcome.ok ? null : outcome.error.message,
+            transcript: outcome.ok ? outcome.text : null,
+          });
+        } catch {
+          // Persistence must never fail transcription.
+        }
+        if (!outcome.ok) throw outcome.error;
+        return { text: outcome.text };
+      },
       catch: (error) =>
         new VoiceTranscriptionError({
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    }),
+});
+
+export const listVoiceRecordings = DesktopIpc.makeIpcMethod({
+  channel: LIST_VOICE_RECORDINGS_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(VoiceRecordingMetadata),
+  handler: () =>
+    Effect.tryPromise({
+      try: () => Promise.resolve(VoiceRecordingStore.listVoiceRecordings(recordingsDir())),
+      catch: (error) =>
+        new VoiceRecordingError({
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    }),
+});
+
+export const readVoiceRecording = DesktopIpc.makeIpcMethod({
+  channel: READ_VOICE_RECORDING_CHANNEL,
+  payload: VoiceRecordingId,
+  result: VoiceRecordingAudio,
+  handler: (id) =>
+    Effect.tryPromise({
+      try: () => {
+        const found = VoiceRecordingStore.readVoiceRecording(recordingsDir(), id);
+        if (!found) throw new Error(RECORDING_NOT_FOUND_MESSAGE);
+        return Promise.resolve({
+          audioBase64: found.audio.toString("base64"),
+          mimeType: found.metadata.mimeType,
+        });
+      },
+      catch: (error) =>
+        new VoiceRecordingError({
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    }),
+});
+
+export const retryVoiceRecording = DesktopIpc.makeIpcMethod({
+  channel: RETRY_VOICE_RECORDING_CHANNEL,
+  payload: VoiceRecordingId,
+  result: VoiceRecordingMetadata,
+  handler: (id) =>
+    Effect.tryPromise({
+      try: async () => {
+        const dir = recordingsDir();
+        const found = VoiceRecordingStore.readVoiceRecording(dir, id);
+        if (!found) throw new Error(RECORDING_NOT_FOUND_MESSAGE);
+        const outcome = await TranscribeWithRetry.transcribeWithRetry(
+          {
+            audioBase64: found.audio.toString("base64"),
+            mimeType: found.metadata.mimeType,
+          },
+          { fetchImpl: fetchWithChromiumNetwork },
+        );
+        const updated = VoiceRecordingStore.updateVoiceRecording(dir, id, {
+          status: outcome.ok ? "ok" : "error",
+          attempts: outcome.attempts,
+          error: outcome.ok ? null : outcome.error.message,
+          transcript: outcome.ok ? outcome.text : null,
+        });
+        if (!updated) throw new Error(RECORDING_NOT_FOUND_MESSAGE);
+        return updated;
+      },
+      catch: (error) =>
+        new VoiceRecordingError({
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    }),
+});
+
+export const deleteVoiceRecording = DesktopIpc.makeIpcMethod({
+  channel: DELETE_VOICE_RECORDING_CHANNEL,
+  payload: VoiceRecordingId,
+  result: Schema.Void,
+  handler: (id) =>
+    Effect.tryPromise({
+      try: () => {
+        if (!VoiceRecordingStore.deleteVoiceRecording(recordingsDir(), id)) {
+          throw new Error(RECORDING_NOT_FOUND_MESSAGE);
+        }
+        return Promise.resolve(undefined);
+      },
+      catch: (error) =>
+        new VoiceRecordingError({
           message: error instanceof Error ? error.message : String(error),
         }),
     }),
