@@ -75,7 +75,13 @@ import {
   takeLegacyLocalStorage,
 } from "./methods/legacyLocalStorage.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
-import { transcribeVoice } from "./methods/voiceTranscription.ts";
+import {
+  deleteVoiceRecording,
+  listVoiceRecordings,
+  readVoiceRecording,
+  retryVoiceRecording,
+  transcribeVoice,
+} from "./methods/voiceTranscription.ts";
 import {
   getCliCommandState,
   installCliCommand,
@@ -151,6 +157,10 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(pasteAsText);
   yield* ipc.handle(probeRemoteEditors);
   yield* ipc.handle(transcribeVoice);
+  yield* ipc.handle(listVoiceRecordings);
+  yield* ipc.handle(readVoiceRecording);
+  yield* ipc.handle(retryVoiceRecording);
+  yield* ipc.handle(deleteVoiceRecording);
   yield* ipc.handle(getUpdateState);
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
