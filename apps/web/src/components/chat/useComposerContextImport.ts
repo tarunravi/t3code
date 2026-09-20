@@ -5,6 +5,10 @@ import {
 import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
+import type { ScopedThreadRef, ThreadContextRecord } from "@t3tools/contracts";
+import { readThreadShell } from "~/state/entities";
+import { resolveThreadContextRecords } from "~/lib/threadContextSnapshot";
+import { fetchThreadSnapshotMessages, readEnvironmentLabel } from "~/state/threadContextSnapshot";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
 import {
@@ -262,6 +266,43 @@ export function useComposerContextImport(input: {
       pendingDraftWork.end(importTargetKey),
     );
   };
+  /** Thread records for this draft; foreign threads carry history fetched from their server. */
+  const resolveThreadRecords = async (
+    refs: ReadonlyArray<ScopedThreadRef>,
+    readTitle: (ref: ScopedThreadRef) => string | null = (ref) =>
+      readThreadShell(ref)?.title ?? null,
+  ): Promise<ReadonlyArray<ThreadContextRecord> | null> => {
+    const result = await resolveThreadContextRecords({
+      refs,
+      destinationEnvironmentId: environmentId,
+      readTitle,
+      readEnvironmentLabel,
+      fetchMessages: fetchThreadSnapshotMessages,
+    });
+    if (result.ok) return result.records;
+    toastManager.add({
+      type: "error",
+      title: `Couldn't read ${result.failedTitle}`,
+      description: "Its environment is not reachable. Reconnect it and attach the thread again.",
+    });
+    return null;
+  };
+  const importForeignThreadRecord = async (record: ThreadContextRecord, threadDraftTarget = attachmentDraftTarget) => {
+    // Like attachment imports, the pasted chip is pending draft work until its history
+    // arrives, so a send cannot carry a reference the agent cannot resolve.
+    const importTargetKey = attachmentTargetKey;
+    pendingDraftWork.begin(importTargetKey);
+    try {
+      const resolved = await resolveThreadRecords([record], () => record.title);
+      const snapshot = resolved?.[0]?.snapshot;
+      if (!snapshot || attachmentTargetKeyRef.current !== importTargetKey) return;
+      addComposerDraftThreadContexts(threadDraftTarget, [{ ...record, snapshot }], {
+        appendReference: false,
+      });
+    } finally {
+      pendingDraftWork.end(importTargetKey);
+    }
+  };
   const importContextRecords = (
     records: ReadonlyArray<ComposerContextRecord>,
     sourceEnvironmentId: EnvironmentId | null,
@@ -369,11 +410,19 @@ export function useComposerContextImport(input: {
           break;
         }
         case "thread": {
-          // The agent can only read threads on its own server; a pasted foreign one is dropped.
-          if (record.environmentId !== environmentId) break;
-          addComposerDraftThreadContexts(threadDraftTarget, [record], {
-            appendReference: false,
-          });
+          if (record.environmentId === environmentId) {
+            // Back on its own server, the agent pages full history instead of a stale copy.
+            const { snapshot: _snapshot, ...ownThread } = record;
+            addComposerDraftThreadContexts(threadDraftTarget, [ownThread], {
+              appendReference: false,
+            });
+          } else if (record.snapshot) {
+            addComposerDraftThreadContexts(threadDraftTarget, [record], {
+              appendReference: false,
+            });
+          } else {
+            void importForeignThreadRecord(record, threadDraftTarget);
+          }
           rewritten.set(record.contextId, record.contextId);
           break;
         }
@@ -403,6 +452,7 @@ export function useComposerContextImport(input: {
   const importContextFragmentStable = useStableCallback(importContextFragment);
 
   return {
+    resolveThreadRecords,
     loadThreadTranscript,
     countReservedAttachments,
     countReservedAttachmentsStable,

@@ -20,6 +20,7 @@ import type {
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
+import type { VoiceTranscribeInput, VoiceTranscribeResult } from "./voice.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -1095,6 +1096,13 @@ export interface DesktopBridge {
   /** Older builds lack this; fall back to VS Code only. */
   probeRemoteEditors?: () => Promise<readonly EditorId[]>;
   pasteAsText?: () => Promise<void>;
+  /**
+   * Transcribe audio in the desktop main process using the local Codex
+   * login. The main process uses Electron's Chromium network stack, which is
+   * required to reach the transcription endpoint without a bot challenge.
+   * Absent on web builds and older desktop shells.
+   */
+  transcribeVoice?: (input: VoiceTranscribeInput) => Promise<VoiceTranscribeResult>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent?: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   onQuitShortcut?: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
