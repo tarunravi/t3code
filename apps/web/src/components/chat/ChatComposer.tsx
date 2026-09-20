@@ -1063,6 +1063,7 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
   );
 }
 import { Button } from "../ui/button";
+import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
@@ -1070,12 +1071,20 @@ import {
   FileIcon,
   BotIcon,
   CircleAlertIcon,
+  MicIcon,
   PaperclipIcon,
   PencilRulerIcon,
   PlayIcon,
   ShieldIcon,
   XIcon,
 } from "lucide-react";
+import { useCodexVoiceInput } from "./voiceInput";
+
+function formatVoiceElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 import { proposedPlanTitle } from "../../proposedPlan";
 import { hasProviderSetup } from "./ProviderStatusBanner";
 import {
@@ -2309,6 +2318,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     resetTrigger: resetComposerTrigger,
   } = useComposerTriggerState(() => detectComposerTrigger(prompt, prompt.length));
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  const voiceInput = useCodexVoiceInput({
+    ownerKey: composerTargetKey(composerDraftTarget),
+    draftText: prompt,
+    cursor: composerCursor,
+    onCommit: (text, cursor) => {
+      // Write the ref synchronously so a send immediately after transcription
+      // (send-while-recording) reads the committed transcript.
+      promptRef.current = text;
+      setComposerDraftPrompt(composerDraftTarget, text);
+      const nextCursor = collapseExpandedComposerCursor(text, cursor);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(text, cursor));
+      scheduleComposerFocus();
+    },
+  });
+  const voiceInputPhaseRef = useRef(voiceInput.state.phase);
+  voiceInputPhaseRef.current = voiceInput.state.phase;
+  const voiceErrorToastedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (voiceInput.state.phase !== "error" || !voiceInput.state.error) {
+      voiceErrorToastedRef.current = null;
+      return;
+    }
+    if (voiceErrorToastedRef.current === voiceInput.state.error) return;
+    voiceErrorToastedRef.current = voiceInput.state.error;
+    toastManager.add({
+      type: "error",
+      title: "Voice input failed",
+      description: voiceInput.state.error,
+    });
+  }, [voiceInput.state]);
   // Active ArrowUp recall. Cleared on edit and on thread switch.
   const promptHistoryPositionRef = useRef<ComposerPromptHistoryPosition | null>(null);
   const [composerHighlightedSearchKey, setComposerHighlightedSearchKey] = useState<string | null>(
@@ -4071,6 +4111,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       dispatchMode?: ComposerDispatchMode,
       submissionIntent?: ComposerSubmissionIntent,
     ) => {
+      // Send while recording: stop, wait for the transcript to commit to the
+      // draft, then send the combined text. While a transcription is already
+      // in flight the send button is disabled, so only "recording" is here.
+      if (voiceInputPhaseRef.current === "recording") {
+        event?.preventDefault();
+        void (async () => {
+          const committed = await voiceInput.stopAndAwaitTranscript();
+          if (!committed) return;
+          submitComposer(event, dispatchMode, submissionIntent);
+        })();
+        return;
+      }
       if (noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
         return;
@@ -4141,6 +4193,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       phase,
       promptRef,
       shouldBlurMobileComposerOnSubmit,
+      voiceInput.stopAndAwaitTranscript,
     ],
   );
   const handleSubmitMessage = useCallback(
@@ -7408,6 +7461,93 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
+                  {voiceInput.isAvailable ? (
+                    <>
+                      {voiceInput.state.phase === "recording" ||
+                      voiceInput.state.phase === "transcribing" ? (
+                        <span
+                          data-chat-composer-voice-status="true"
+                          className="flex items-center gap-1.5 rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 tabular-nums dark:text-rose-400"
+                        >
+                          <span
+                            className={cn(
+                              "size-1.5 rounded-full bg-rose-500",
+                              voiceInput.state.phase === "recording" && "animate-pulse",
+                            )}
+                          />
+                          {voiceInput.state.phase === "recording"
+                            ? formatVoiceElapsed(voiceInput.elapsedSeconds)
+                            : "Transcribing…"}
+                        </span>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onPointerDown={(event) => event.preventDefault()}
+                              disabled={voiceInput.state.phase === "transcribing"}
+                              className={cn(
+                                voiceInput.state.phase === "recording" &&
+                                  "bg-rose-500/10 text-rose-600 hover:bg-rose-500/20 dark:text-rose-400",
+                                voiceInput.state.phase === "error" &&
+                                  "text-destructive hover:text-destructive",
+                              )}
+                              onClick={() => {
+                                switch (voiceInput.state.phase) {
+                                  case "idle":
+                                    voiceInput.start();
+                                    return;
+                                  case "recording":
+                                    void voiceInput.stop();
+                                    return;
+                                  case "error":
+                                    voiceInput.cancel();
+                                    return;
+                                }
+                              }}
+                              aria-label={
+                                voiceInput.state.phase === "recording"
+                                  ? "Stop recording and transcribe"
+                                  : voiceInput.state.phase === "transcribing"
+                                    ? "Transcribing voice input"
+                                    : voiceInput.state.phase === "error"
+                                      ? "Voice input failed, click to reset"
+                                      : "Start voice input"
+                              }
+                            />
+                          }
+                        >
+                          {voiceInput.state.phase === "recording" ? (
+                            <svg
+                              width="10"
+                              height="10"
+                              viewBox="0 0 12 12"
+                              fill="currentColor"
+                              aria-hidden="true"
+                            >
+                              <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                            </svg>
+                          ) : voiceInput.state.phase === "transcribing" ? (
+                            <Spinner className="size-3.5" aria-hidden="true" />
+                          ) : (
+                            <MicIcon />
+                          )}
+                        </TooltipTrigger>
+                        <TooltipPopup>
+                          {voiceInput.state.phase === "recording"
+                            ? "Stop recording and transcribe"
+                            : voiceInput.state.phase === "transcribing"
+                              ? "Transcribing…"
+                              : voiceInput.state.phase === "error"
+                                ? (voiceInput.state.error ?? "Voice input failed")
+                                : "Dictate with voice"}
+                        </TooltipPopup>
+                      </Tooltip>
+                    </>
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
                     activeContextWindow={
@@ -7433,7 +7573,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       pendingUserInputs.length === 0 && showPlanFollowUpPrompt
                     }
                     promptHasText={prompt.trim().length > 0}
-                    isSendBusy={isSendBusy}
+                    isSendBusy={
+                      isSendBusy ||
+                      voiceInput.state.phase === "preparing" ||
+                      voiceInput.state.phase === "transcribing"
+                    }
                     sendDisabledReason={sendDisabledReason}
                     isConnecting={isConnecting}
                     isEnvironmentUnavailable={
@@ -7442,7 +7586,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       projectSelectionRequired
                     }
                     isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={composerSendState.hasSendableContent}
+                    hasSendableContent={
+                      composerSendState.hasSendableContent ||
+                      voiceInput.state.phase === "recording"
+                    }
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
                     isEditingQueuedMessage={isEditingQueuedMessage}
                     onSubmitMessage={handleSubmitMessage}
