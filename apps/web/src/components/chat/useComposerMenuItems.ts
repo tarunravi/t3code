@@ -56,6 +56,7 @@ const EMPTY_PULL_REQUEST_LIST_TARGETS: ReadonlyArray<EnvironmentQueryTarget<Pull
 /** Builds the @, /, $ and # suggestion lists, running the searches each trigger needs. */
 export function useComposerMenuItems({
   composerTrigger,
+  routeKind,
   environmentId,
   linkedEnvironments,
   gitCwd,
@@ -71,6 +72,7 @@ export function useComposerMenuItems({
   showSkillsInSlashMenu,
   questionAttachmentTarget,
 }: {
+  readonly routeKind: "server" | "draft";
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
   readonly linkedEnvironments: ReadonlyMap<EnvironmentId, string>;
@@ -218,6 +220,17 @@ export function useComposerMenuItems({
           label: "/model",
           description: "Switch response model for this thread",
         },
+        ...(routeKind === "server" && composerTrigger.rangeStart === 0
+          ? ([
+              {
+                id: "slash:side",
+                type: "slash-command",
+                command: "side",
+                label: "/side",
+                description: "Ask a side question without interrupting this thread",
+              },
+            ] as const)
+          : []),
         ...(planModeUiEnabled
           ? ([
               {

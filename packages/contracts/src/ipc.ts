@@ -20,6 +20,13 @@ import type {
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
+import type {
+  VoiceRecordingAudio,
+  VoiceRecordingId,
+  VoiceRecordingMetadata,
+  VoiceTranscribeInput,
+  VoiceTranscribeResult,
+} from "./voice.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -553,6 +560,169 @@ export const DesktopWslStateSchema = Schema.Struct({
   preflightError: Schema.NullOr(Schema.String),
 });
 
+/** Long-running devbox operations. One runs per devbox at a time; its log is kept in memory. */
+export const DesktopDevboxActionSchema = Schema.Literals([
+  "launch",
+  "setup",
+  "start",
+  "stop",
+  "terminate",
+]);
+export type DesktopDevboxAction = typeof DesktopDevboxActionSchema.Type;
+
+export const DesktopDevboxActionInputSchema = Schema.Struct({
+  action: DesktopDevboxActionSchema,
+  /** The devbox's name (its ssh alias); for `launch`, the name of the new devbox. */
+  devbox: Schema.String,
+});
+export type DesktopDevboxActionInput = typeof DesktopDevboxActionInputSchema.Type;
+
+/** Where the devboxes live. Null config means the devbox panel is turned off on this machine. */
+export const DesktopDevboxConfigSchema = Schema.Struct({
+  awsProfile: Schema.String,
+  awsRegion: Schema.String,
+  instanceType: Schema.String,
+  subnetId: Schema.String,
+  securityGroupId: Schema.String,
+  instanceProfile: Schema.String,
+});
+export type DesktopDevboxConfig = typeof DesktopDevboxConfigSchema.Type;
+
+export const DesktopAwsProfileSchema = Schema.Struct({
+  name: Schema.String,
+  region: Schema.NullOr(Schema.String),
+});
+export type DesktopAwsProfile = typeof DesktopAwsProfileSchema.Type;
+
+/** `mac` for this Mac, otherwise a devbox's name. */
+export const DesktopDevboxLoginTargetSchema = Schema.String;
+export type DesktopDevboxLoginTarget = typeof DesktopDevboxLoginTargetSchema.Type;
+
+export const DesktopDevboxLoginProviderSchema = Schema.Literals([
+  "aws",
+  "teleport",
+  "github",
+  "codex",
+  "claude",
+]);
+export type DesktopDevboxLoginProvider = typeof DesktopDevboxLoginProviderSchema.Type;
+
+const DesktopDevboxCheckSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  detail: Schema.String,
+});
+
+/** A sign-in's health; `expiresAt` is when the session or access token lapses, when known. */
+const DesktopDevboxSignInCheckSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  detail: Schema.String,
+  expiresAt: Schema.NullOr(Schema.String),
+});
+
+const DesktopDevboxChecksSchema = Schema.Struct({
+  aws: DesktopDevboxSignInCheckSchema,
+  teleport: DesktopDevboxSignInCheckSchema,
+  github: DesktopDevboxSignInCheckSchema,
+  codex: DesktopDevboxSignInCheckSchema,
+  claude: DesktopDevboxSignInCheckSchema,
+  brain: DesktopDevboxSignInCheckSchema,
+});
+export type DesktopDevboxChecks = typeof DesktopDevboxChecksSchema.Type;
+
+/**
+ * A fresh sign-in (logout, then login) on the Mac or a devbox. Approval
+ * links open on the Mac; `phase` drives the progress bar and ends in
+ * `done` only after the follow-up health check confirms the session.
+ */
+export const DesktopDevboxLoginSchema = Schema.Struct({
+  id: Schema.String,
+  target: DesktopDevboxLoginTargetSchema,
+  provider: DesktopDevboxLoginProviderSchema,
+  phase: Schema.Literals(["connecting", "approve", "verifying", "done", "failed"]),
+  /** The CLI opens its own browser tab, so the client must not open a second. */
+  opensBrowser: Schema.Boolean,
+  links: Schema.Array(Schema.String),
+  codes: Schema.Array(Schema.String),
+  /** Failure detail or the tail of the command's output. */
+  output: Schema.String,
+});
+export type DesktopDevboxLogin = typeof DesktopDevboxLoginSchema.Type;
+
+export const DesktopDevboxStateSchema = Schema.Struct({
+  config: Schema.NullOr(DesktopDevboxConfigSchema),
+  aws: DesktopDevboxCheckSchema,
+  /** Every live instance tagged `t3-managed=true`, ordered by name. */
+  instances: Schema.Array(
+    Schema.Struct({
+      instanceId: Schema.String,
+      /** The Name tag, also the ssh alias; the instance id when the tag can't be one. */
+      name: Schema.String,
+      state: Schema.String,
+      instanceType: Schema.String,
+      launchedAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** Default name offered for the next devbox. */
+  nextName: Schema.String,
+  /** The latest run per devbox name, including a launch still waiting for its instance. */
+  jobs: Schema.Array(
+    Schema.Struct({
+      devbox: Schema.String,
+      action: DesktopDevboxActionSchema,
+      running: Schema.Boolean,
+      log: Schema.Array(Schema.String),
+      error: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** Sign-in health keyed by target (`mac` or a devbox name); missing or null until checked or while a devbox is not running. */
+  checks: Schema.Record(Schema.String, Schema.NullOr(DesktopDevboxChecksSchema)),
+  /** AWS profile used for sign-ins: the devbox profile, or the one chosen on the Machines page. */
+  signInAwsProfile: Schema.NullOr(Schema.String),
+  checking: Schema.Boolean,
+  logins: Schema.Array(DesktopDevboxLoginSchema),
+});
+export type DesktopDevboxState = typeof DesktopDevboxStateSchema.Type;
+
+export const DesktopDevboxStateOptionsSchema = Schema.Struct({
+  refresh: Schema.optional(Schema.Boolean),
+  checkHealth: Schema.optional(Schema.Boolean),
+});
+export type DesktopDevboxStateOptions = typeof DesktopDevboxStateOptionsSchema.Type;
+
+export const DesktopDevboxEnableInputSchema = Schema.NullOr(
+  Schema.Struct({ awsProfile: Schema.String }),
+);
+export type DesktopDevboxEnableInput = typeof DesktopDevboxEnableInputSchema.Type;
+
+export const DesktopDevboxLoginStartSchema = Schema.Struct({
+  target: DesktopDevboxLoginTargetSchema,
+  provider: DesktopDevboxLoginProviderSchema,
+  /** Profile for this AWS sign-in instead of `signInAwsProfile`; saved as it while the panel is off. */
+  awsProfile: Schema.optional(Schema.String),
+});
+export type DesktopDevboxLoginStart = typeof DesktopDevboxLoginStartSchema.Type;
+
+export const DesktopSignInAwsProfileInputSchema = Schema.Struct({ awsProfile: Schema.String });
+export type DesktopSignInAwsProfileInput = typeof DesktopSignInAwsProfileInputSchema.Type;
+
+/** "Require AWS login" on this machine: the profile to watch, or null when off. */
+export const DesktopAwsLoginGuardInputSchema = Schema.NullOr(
+  Schema.Struct({ awsProfile: Schema.String }),
+);
+export type DesktopAwsLoginGuardInput = typeof DesktopAwsLoginGuardInputSchema.Type;
+
+/** The watched profile's AWS sign-in; `awsProfile` is null when "Require AWS login" is off. */
+export const DesktopAwsLoginStatusSchema = Schema.Struct({
+  awsProfile: Schema.NullOr(Schema.String),
+  ok: Schema.Boolean,
+  detail: Schema.String,
+  /** When the SSO session lapses, when known. */
+  expiresAt: Schema.NullOr(Schema.String),
+});
+export type DesktopAwsLoginStatus = typeof DesktopAwsLoginStatusSchema.Type;
+
+/**
+ */
 export type DesktopPreviewNavStatus =
   | { kind: "Idle" }
   | { kind: "Loading"; url: string; title: string }
@@ -1025,6 +1195,9 @@ export interface DesktopBridge {
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentEnabled: () => boolean;
   setLocalEnvironmentEnabled: (enabled: boolean) => Promise<void>;
+  /** macOS only: whether T3 Code keeps the Mac from sleeping while it runs. */
+  getKeepAwakeEnabled?: () => boolean;
+  setKeepAwakeEnabled?: (enabled: boolean) => Promise<void>;
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
@@ -1074,6 +1247,19 @@ export interface DesktopBridge {
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
   setWslOnly: (enabled: boolean) => Promise<DesktopWslState>;
+  /** Optional while older desktop shells can host a newer web client. */
+  /** Returns the cached AWS read unless `refresh`; `checkHealth` also probes the box over SSH. */
+  getDevboxState?: (options?: DesktopDevboxStateOptions) => Promise<DesktopDevboxState>;
+  /** Starts the action in the background and returns immediately. */
+  runDevboxAction?: (input: DesktopDevboxActionInput) => Promise<DesktopDevboxState>;
+  listAwsProfiles?: () => Promise<readonly DesktopAwsProfile[]>;
+  /** Turns the panel on for an AWS profile (detecting the network from an existing devbox), or off with null. */
+  setDevboxEnabled?: (input: DesktopDevboxEnableInput) => Promise<DesktopDevboxState>;
+  startDevboxLogin?: (input: DesktopDevboxLoginStart) => Promise<DesktopDevboxState>;
+  setSignInAwsProfile?: (input: DesktopSignInAwsProfileInput) => Promise<DesktopDevboxState>;
+  /** Re-checks the watched profile's sign-in; a no-op returning `awsProfile: null` when off. */
+  getAwsLoginStatus?: () => Promise<DesktopAwsLoginStatus>;
+  setAwsLoginGuard?: (input: DesktopAwsLoginGuardInput) => Promise<DesktopAwsLoginStatus>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   pickProjectFavicon: (initialPath?: string) => Promise<string | null>;
   pickThemeFiles: () => Promise<readonly PickedThemeFile[] | null>;
@@ -1089,6 +1275,21 @@ export interface DesktopBridge {
   checkSystemPermission: (pane: SystemSettingsPane) => Promise<boolean>;
   probeRemoteEditors: () => Promise<readonly EditorId[]>;
   pasteAsText: () => Promise<void>;
+  /**
+   * Transcribe audio in the desktop main process using the local Codex
+   * login. The main process uses Electron's Chromium network stack, which is
+   * required to reach the transcription endpoint without a bot challenge.
+   * Absent on web builds and older desktop shells.
+   */
+  transcribeVoice?: (input: VoiceTranscribeInput) => Promise<VoiceTranscribeResult>;
+  /**
+   * Saved voice recordings persisted by the desktop main process (newest
+   * first, capped at 30). Absent on web builds and older desktop shells.
+   */
+  listVoiceRecordings?: () => Promise<readonly VoiceRecordingMetadata[]>;
+  readVoiceRecording?: (id: VoiceRecordingId) => Promise<VoiceRecordingAudio>;
+  retryVoiceRecording?: (id: VoiceRecordingId) => Promise<VoiceRecordingMetadata>;
+  deleteVoiceRecording?: (id: VoiceRecordingId) => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   onQuitShortcut: (listener: (event: QuitShortcutHintEvent) => void) => () => void;

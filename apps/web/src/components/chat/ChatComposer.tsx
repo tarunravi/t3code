@@ -1,3 +1,15 @@
+import { Button } from "../ui/button";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { Spinner } from "../ui/spinner";
+import { MicIcon, XIcon } from "lucide-react";
+import { useCodexVoiceInput } from "./voiceInput";
+import { VoiceRecordingWaveform } from "./VoiceRecordingWaveform";
+import { useNavigate } from "@tanstack/react-router";
+function formatVoiceElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -100,6 +112,7 @@ import {
   composerFileNeedsReattach,
   composerDraftHasUserContent,
   composerTargetKey,
+  resolveComposerDraftKey,
   useComposerDraftStore,
   useComposerThreadDraft,
 } from "../../composerDraftStore";
@@ -217,6 +230,7 @@ import {
 } from "./ExpandedImagePreview";
 import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import {
+  createVoiceDraftSubmitter,
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
@@ -995,6 +1009,63 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isLiteralPendingAnswer ? null : detectComposerTrigger(prompt, prompt.length),
   );
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  // Lets a transcript that finishes after a thread switch reach its original draft.
+  const voiceDraftTargetsRef = useRef(new Map<string, typeof composerDraftTarget>());
+  useEffect(() => {
+    voiceDraftTargetsRef.current.set(composerDraftTargetKey, composerDraftTarget);
+  }, [composerDraftTargetKey, composerDraftTarget]);
+  const voiceInput = useCodexVoiceInput({
+    ownerKey: composerDraftTargetKey,
+    draftText: prompt,
+    cursor: composerCursor,
+    onCommit: (text, cursor) => {
+      // Write the ref synchronously so a send immediately after transcription
+      // (send-while-recording) reads the committed transcript.
+      promptRef.current = text;
+      setComposerDraftPrompt(composerDraftTarget, text);
+      const nextCursor = collapseExpandedComposerCursor(text, cursor);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(text, cursor));
+      scheduleComposerFocus();
+    },
+    updateOwnerDraft: (ownerKey, update) => {
+      const target = voiceDraftTargetsRef.current.get(ownerKey);
+      const store = useComposerDraftStore.getState();
+      if (!target || !resolveComposerDraftKey(store, target)) return false;
+      store.setPrompt(target, update(store.getComposerDraft(target)?.prompt ?? ""));
+      return true;
+    },
+  });
+  const isVoiceRecordingBar =
+    voiceInput.state.phase === "recording" || voiceInput.state.phase === "transcribing";
+  const voiceErrorToastedRef = useRef<string | null>(null);
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (voiceInput.state.phase !== "error" || !voiceInput.state.error) {
+      voiceErrorToastedRef.current = null;
+      return;
+    }
+    if (voiceErrorToastedRef.current === voiceInput.state.error) return;
+    const error = voiceInput.state.error;
+    voiceErrorToastedRef.current = error;
+    void voiceInput.failedRecordingId().then((recordingId) => {
+      const toastId = toastManager.add({
+        type: "error",
+        title: "Voice input failed",
+        description: error,
+        actionProps: {
+          children: recordingId ? "View recording" : "View recordings",
+          onClick: () => {
+            toastManager.close(toastId);
+            void navigate({
+              to: "/settings/voice-recordings",
+              search: recordingId ? { recording: recordingId } : {},
+            });
+          },
+        },
+      });
+    });
+  }, [navigate, voiceInput]);
   const composerSuggestionId = useId();
   const composerSuggestionListId = `${composerSuggestionId}-${encodeURIComponent(draftId ?? activeThreadId ?? "new")}-suggestions`;
   const promptHistoryPositionRef = useRef<{
@@ -1111,6 +1182,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isLoading: isComposerMenuLoading,
     emptyState: composerMenuEmptyState,
   } = useComposerMenuItems({
+    routeKind,
     composerTrigger,
     environmentId,
     linkedEnvironments,
@@ -1335,6 +1407,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const buildContextClipboardFragmentStable = useStableCallback(buildContextClipboardFragment);
   const {
+    resolveThreadRecords,
     loadThreadTranscript,
     countReservedAttachments,
     countReservedAttachmentsStable,
@@ -1868,6 +1941,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
+      if (item.command === "side") {
+        const replacement = "/side ";
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
       if (!planModeUiEnabled) return;
       void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
       const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
@@ -1948,24 +2037,36 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if (item.type === "thread") {
       if (trigger.kind !== "path") return;
-      const shell = readThreadShell(item.thread);
-      if (!shell) return;
-      const record = threadContextRecord(item.thread, shell.title);
-      const replacement = `${formatInlineContextReference(threadContextReference(record))} `;
-      const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
-        snapshot.value,
-        trigger.rangeEnd,
-        replacement,
-      );
-      const applied = applyPromptReplacement(trigger.rangeStart, replacementRangeEnd, replacement, {
-        expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
-      });
-      if (applied) {
-        addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
-          appendReference: false,
-        });
-        setComposerHighlightedItemId(null);
+      const insertThread = (record: ThreadContextRecord) => {
+        const replacement = `${formatInlineContextReference(threadContextReference(record))} `;
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) {
+          addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+            appendReference: false,
+          });
+          setComposerHighlightedItemId(null);
+        }
+      };
+      if (item.thread.environmentId === environmentId) {
+        const shell = readThreadShell(item.thread);
+        if (shell) insertThread(threadContextRecord(item.thread, shell.title));
+        return;
       }
+      // The expected-text guard drops the insert if the user kept typing during the fetch.
+      void resolveThreadRecords([item.thread]).then((records) => {
+        const record = records?.[0];
+        if (record) insertThread(record);
+      });
       return;
     }
     if (item.type === "environment") {
@@ -2040,7 +2141,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     return showPlanFollowUpPrompt || composerSendState.hasSendableContent;
   };
 
-  const submitComposer = (
+  const submitReadyComposer = (
     event?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
     submissionIntent?: ComposerSubmissionIntent,
@@ -2100,6 +2201,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (shouldBlurMobileComposerOnSubmit()) {
       blurMobileComposerAfterSend();
     }
+  };
+  const submitReadyComposerStable = useStableCallback(submitReadyComposer);
+  const [submitVoiceDraft] = useState(createVoiceDraftSubmitter);
+  const submitComposer = (
+    event?: { preventDefault: () => void },
+    dispatchMode?: ComposerDispatchMode,
+    submissionIntent?: ComposerSubmissionIntent,
+  ) => {
+    if (voiceInput.state.phase === "recording") {
+      event?.preventDefault();
+      void submitVoiceDraft({
+        stopAndAwaitTranscript: voiceInput.stopAndAwaitTranscript,
+        isCurrentDraft: () => composerDraftTargetKeyRef.current === composerDraftTargetKey,
+        // Re-read send guards after transcription without re-entering the recording path.
+        submit: () => submitReadyComposerStable(event, dispatchMode, submissionIntent),
+      });
+      return;
+    }
+    if (voiceInput.blocksSubmission) {
+      event?.preventDefault();
+      return;
+    }
+    submitReadyComposer(event, dispatchMode, submissionIntent);
   };
   const submitComposerStable = useStableCallback(submitComposer);
   const handleSubmitMessage = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -3429,7 +3553,79 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   showMobilePendingAnswerActions && "hidden sm:flex",
                 )}
               >
-                {composerAttachButton ? <div className="me-2">{composerAttachButton}</div> : null}
+                {isVoiceRecordingBar ? (
+                  <div
+                    data-chat-composer-voice-recording-bar="true"
+                    className="flex min-w-0 flex-1 items-center gap-2"
+                  >
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={voiceInput.state.phase === "transcribing"}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={() => voiceInput.cancel()}
+                            aria-label="Cancel voice input"
+                          />
+                        }
+                      >
+                        <XIcon />
+                      </TooltipTrigger>
+                      <TooltipPopup>Cancel voice input</TooltipPopup>
+                    </Tooltip>
+                    <VoiceRecordingWaveform
+                      levels={voiceInput.waveformLevels}
+                      active={voiceInput.state.phase === "recording"}
+                    />
+                    <span
+                      data-chat-composer-voice-status="true"
+                      className="shrink-0 text-xs font-medium text-destructive tabular-nums"
+                    >
+                      {voiceInput.state.phase === "recording"
+                        ? formatVoiceElapsed(voiceInput.elapsedSeconds)
+                        : "Transcribing…"}
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={voiceInput.state.phase === "transcribing"}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={() => void voiceInput.stop()}
+                            aria-label="Stop recording and transcribe"
+                          />
+                        }
+                      >
+                        {voiceInput.state.phase === "transcribing" ? (
+                          <Spinner className="size-3.5" aria-hidden="true" />
+                        ) : (
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 12 12"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                          </svg>
+                        )}
+                      </TooltipTrigger>
+                      <TooltipPopup>
+                        {voiceInput.state.phase === "transcribing"
+                          ? "Transcribing…"
+                          : "Stop recording and transcribe"}
+                      </TooltipPopup>
+                    </Tooltip>
+                  </div>
+                ) : composerAttachButton ? (
+                  <div className="me-2">{composerAttachButton}</div>
+                ) : null}
                 <div
                   data-chat-composer-actions="right"
                   data-chat-composer-transition-actions="true"
@@ -3438,21 +3634,111 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-2"
                 >
-                  <div
-                    ref={attachExpandedComposerControls}
-                    data-chat-composer-controls="footer"
-                    data-chat-composer-footer-controls="true"
-                    className="relative flex min-w-0 flex-1 items-center justify-end gap-0.5"
-                  >
-                    {composerControls}
-                  </div>
+                  {isVoiceRecordingBar ? null : (
+                    <div
+                      ref={attachExpandedComposerControls}
+                      data-chat-composer-controls="footer"
+                      data-chat-composer-footer-controls="true"
+                      className="relative flex min-w-0 flex-1 items-center justify-end gap-0.5"
+                    >
+                      {composerControls}
+                    </div>
+                  )}
+                  {!isVoiceRecordingBar && voiceInput.isAvailable ? (
+                    <>
+                      {voiceInput.state.phase === "recording" ||
+                      voiceInput.state.phase === "transcribing" ? (
+                        <span
+                          data-chat-composer-voice-status="true"
+                          className="flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive tabular-nums"
+                        >
+                          <span
+                            className={cn(
+                              "size-1.5 rounded-full bg-destructive",
+                              voiceInput.state.phase === "recording" && "animate-pulse",
+                            )}
+                          />
+                          {voiceInput.state.phase === "recording"
+                            ? formatVoiceElapsed(voiceInput.elapsedSeconds)
+                            : "Transcribing…"}
+                        </span>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant={
+                                voiceInput.state.phase === "recording" ||
+                                voiceInput.state.phase === "error"
+                                  ? "destructive-outline"
+                                  : "ghost"
+                              }
+                              size="icon-sm"
+                              onPointerDown={(event) => event.preventDefault()}
+                              disabled={voiceInput.state.phase === "transcribing"}
+                              onClick={() => {
+                                switch (voiceInput.state.phase) {
+                                  case "idle":
+                                    voiceInput.start();
+                                    return;
+                                  case "recording":
+                                    void voiceInput.stop();
+                                    return;
+                                  case "error":
+                                    voiceInput.cancel();
+                                    return;
+                                }
+                              }}
+                              aria-label={
+                                voiceInput.state.phase === "recording"
+                                  ? "Stop recording and transcribe"
+                                  : voiceInput.state.phase === "transcribing"
+                                    ? "Transcribing voice input"
+                                    : voiceInput.state.phase === "error"
+                                      ? "Voice input failed, click to reset"
+                                      : "Start voice input"
+                              }
+                            />
+                          }
+                        >
+                          {voiceInput.state.phase === "recording" ? (
+                            <svg
+                              width="10"
+                              height="10"
+                              viewBox="0 0 12 12"
+                              fill="currentColor"
+                              aria-hidden="true"
+                            >
+                              <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                            </svg>
+                          ) : voiceInput.state.phase === "transcribing" ? (
+                            <Spinner className="size-3.5" aria-hidden="true" />
+                          ) : (
+                            <MicIcon />
+                          )}
+                        </TooltipTrigger>
+                        <TooltipPopup>
+                          {voiceInput.state.phase === "recording"
+                            ? "Stop recording and transcribe"
+                            : voiceInput.state.phase === "transcribing"
+                              ? "Transcribing…"
+                              : voiceInput.state.phase === "error"
+                                ? (voiceInput.state.error ?? "Voice input failed")
+                                : "Dictate with voice"}
+                        </TooltipPopup>
+                      </Tooltip>
+                    </>
+                  ) : null}
                   <ComposerFooterPrimaryActions
-                    compact={isComposerPrimaryActionsCompact}
+                    compact={isVoiceRecordingBar || isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}
                     activeContextWindow={
-                      settings.contextWindowMeterEnabled ? activeContextWindow : null
+                      !isVoiceRecordingBar && settings.contextWindowMeterEnabled
+                        ? activeContextWindow
+                        : null
                     }
-                    reserveContextWindowMeter={reserveContextWindowMeter}
+                    reserveContextWindowMeter={!isVoiceRecordingBar && reserveContextWindowMeter}
                     activeThreadModelDisplayName={activeThreadModelDisplayName}
                     pendingAction={pendingPrimaryAction}
                     isRunning={phase === "running"}
@@ -3478,7 +3764,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       pendingUserInputs.length === 0 && showPlanFollowUpPrompt
                     }
                     promptHasText={prompt.trim().length > 0}
-                    isSendBusy={isSendBusy}
+                    isSendBusy={
+                      isSendBusy ||
+                      voiceInput.state.phase === "preparing" ||
+                      voiceInput.state.phase === "transcribing"
+                    }
                     sendDisabledReason={sendDisabledReason}
                     isEnvironmentUnavailable={
                       environmentUnavailable !== null ||
@@ -3486,7 +3776,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       projectSelectionRequired
                     }
                     isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={composerSendState.hasSendableContent}
+                    hasSendableContent={
+                      composerSendState.hasSendableContent || voiceInput.state.phase === "recording"
+                    }
                     canResume={showResumeAction}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     isEditingQueuedMessage={isEditingQueuedMessage}
