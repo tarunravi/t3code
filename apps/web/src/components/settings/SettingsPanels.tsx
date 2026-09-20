@@ -3396,6 +3396,21 @@ export function GeneralSettingsPanel() {
             </Button>
           }
         />
+        {isElectron ? (
+          <SettingsRow
+            {...searchableSetting("voice-recordings")}
+            description="Replay or retry recent voice dictations saved on this device."
+            control={
+              <Button
+                render={<Link to="/settings/voice-recordings" />}
+                size="sm"
+                variant="outline"
+              >
+                View recordings
+              </Button>
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <LegacyFeaturesSection />
