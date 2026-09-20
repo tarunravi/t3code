@@ -328,6 +328,7 @@ export function makeCursorAgentOptions(input: {
       sandboxOptions: {
         enabled: policy.sandboxEnabled,
       },
+      settingSources: ["project"],
       enableAgentRetries: true,
     },
     ...(mcpServers === undefined ? {} : { mcpServers }),
