@@ -480,6 +480,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
   {
+    id: "voice-recordings",
+    title: "Voice recordings",
+    to: "/settings/general",
+    searchTerms: ["dictation transcription voice input retry replay recordings"],
+    desktopOnly: true,
+  },
+  {
     id: "open-source-licenses",
     title: "Open source licenses",
     to: "/settings/general",

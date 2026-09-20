@@ -28,7 +28,13 @@ import type {
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
-import type { VoiceTranscribeInput, VoiceTranscribeResult } from "./voice.ts";
+import type {
+  VoiceRecordingAudio,
+  VoiceRecordingId,
+  VoiceRecordingMetadata,
+  VoiceTranscribeInput,
+  VoiceTranscribeResult,
+} from "./voice.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -1235,6 +1241,14 @@ export interface DesktopBridge {
    * Absent on web builds and older desktop shells.
    */
   transcribeVoice?: (input: VoiceTranscribeInput) => Promise<VoiceTranscribeResult>;
+  /**
+   * Saved voice recordings persisted by the desktop main process (newest
+   * first, capped at 30). Absent on web builds and older desktop shells.
+   */
+  listVoiceRecordings?: () => Promise<readonly VoiceRecordingMetadata[]>;
+  readVoiceRecording?: (id: VoiceRecordingId) => Promise<VoiceRecordingAudio>;
+  retryVoiceRecording?: (id: VoiceRecordingId) => Promise<VoiceRecordingMetadata>;
+  deleteVoiceRecording?: (id: VoiceRecordingId) => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent?: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   /**
