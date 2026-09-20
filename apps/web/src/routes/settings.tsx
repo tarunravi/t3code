@@ -52,6 +52,7 @@ const DEVICE_ONLY_PATHS = new Set([
   "/settings/appearance",
   "/settings/snap-shot",
   "/settings/connections",
+  "/settings/voice-recordings",
 ]);
 
 function SettingsScopeBoundary({ pathname, children }: { pathname: string; children: ReactNode }) {

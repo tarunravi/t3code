@@ -1068,6 +1068,7 @@ import {
 } from "lucide-react";
 import { useCodexVoiceInput } from "./voiceInput";
 import { VoiceRecordingWaveform } from "./VoiceRecordingWaveform";
+import { useNavigate } from "@tanstack/react-router";
 
 function formatVoiceElapsed(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -2289,6 +2290,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const voiceInputPhaseRef = useRef(voiceInput.state.phase);
   voiceInputPhaseRef.current = voiceInput.state.phase;
   const voiceErrorToastedRef = useRef<string | null>(null);
+  const navigate = useNavigate();
   useEffect(() => {
     if (voiceInput.state.phase !== "error" || !voiceInput.state.error) {
       voiceErrorToastedRef.current = null;
@@ -2296,12 +2298,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if (voiceErrorToastedRef.current === voiceInput.state.error) return;
     voiceErrorToastedRef.current = voiceInput.state.error;
-    toastManager.add({
+    const toastId = toastManager.add({
       type: "error",
       title: "Voice input failed",
       description: voiceInput.state.error,
+      actionProps: {
+        children: "View recordings",
+        onClick: () => {
+          toastManager.close(toastId);
+          void navigate({ to: "/settings/voice-recordings" });
+        },
+      },
     });
-  }, [voiceInput.state]);
+  }, [navigate, voiceInput.state]);
   // Active ArrowUp recall. Cleared on edit and on thread switch.
   const promptHistoryPositionRef = useRef<ComposerPromptHistoryPosition | null>(null);
   const [composerHighlightedSearchKey, setComposerHighlightedSearchKey] = useState<string | null>(
