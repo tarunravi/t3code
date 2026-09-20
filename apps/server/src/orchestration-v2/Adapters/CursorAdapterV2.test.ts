@@ -854,6 +854,23 @@ describe("CursorAdapterV2", () => {
     assert.isFalse(CursorProviderCapabilitiesV2.approvals.supportsCommandApproval);
   });
 
+  it("enables project settings for normal Cursor agent sessions", () => {
+    const options = makeCursorAgentOptions({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("cursor"),
+        model: "composer-2.5",
+      },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: "/Users/tarun/Documents",
+      },
+      threadId: ThreadId.make("thread-cursor-project-settings"),
+    });
+
+    assert.deepEqual(options.local?.settingSources, ["project"]);
+  });
+
   it("injects thread-scoped MCP credentials without logging them", () => {
     const threadId = ThreadId.make("thread-cursor-mcp");
     McpProviderSession.setMcpProviderSession({
