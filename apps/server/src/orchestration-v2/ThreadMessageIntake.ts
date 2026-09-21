@@ -1,6 +1,10 @@
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import { appendUserInputAttachmentPaths } from "../provider/userInputAttachments.ts";
-import type { ChatAttachment, OrchestrationV2Command } from "@t3tools/contracts";
+import {
+  getProviderAttachmentLimitError,
+  type ChatAttachment,
+  type OrchestrationV2Command,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
@@ -55,6 +59,10 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;
+    const limitError = getProviderAttachmentLimitError(Object.values(incomingByQuestionId).flat());
+    if (limitError) {
+      return yield* new AttachmentClaims.AttachmentClaimError({ message: limitError });
+    }
     // Claims accumulate across questions, so all of preparation shares one
     // rollback boundary: any failure before dispatch removes every new copy.
     const claimedPaths: string[] = [];
@@ -180,6 +188,10 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
   input: ThreadLaunch.ThreadLaunchInput,
 ) {
   const launches = yield* ThreadLaunch.ThreadLaunchService;
+  const limitError = getProviderAttachmentLimitError(input.initialMessage?.attachments ?? []);
+  if (limitError) {
+    return yield* new AttachmentClaims.AttachmentClaimError({ message: limitError });
+  }
   if (!input.initialMessage?.attachments.some(AttachmentClaims.attachmentIsPendingUpload)) {
     return yield* launches.launch(input);
   }

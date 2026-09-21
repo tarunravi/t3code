@@ -1,8 +1,24 @@
+import { AcpProcessExitedError } from "effect-acp/errors";
 import { assert, describe, it } from "@effect/vitest";
 
 import { userFacingDispatchErrorMessage } from "./UserFacingErrors.ts";
 
 describe("userFacingDispatchErrorMessage", () => {
+  it("preserves ACP startup stderr through V2 dispatch wrappers", () => {
+    const stderr =
+      "Invalid project config at ~/.cursor/cli.json: Unrecognized keys: approvalMode, sandbox";
+    const cause = new AcpProcessExitedError({ code: 1, stderr });
+    assert.equal(
+      userFacingDispatchErrorMessage({
+        message: "Failed to dispatch orchestration command message.dispatch (command-1).",
+        cause,
+      }),
+      cause.message,
+    );
+    assert.include(cause.message, stderr);
+    assert.notInclude(cause.message, "adapter thread is closed");
+  });
+
   it("returns the deepest actionable domain error instead of generic dispatch wrappers", () => {
     const message = userFacingDispatchErrorMessage({
       message: "Failed to dispatch orchestration command checkpoint.rollback (command-1).",

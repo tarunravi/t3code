@@ -7,6 +7,8 @@ import {
   ChatAttachmentId,
   CommandId,
   EventId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -24,7 +26,8 @@ import {
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
 import { ThreadManagementService } from "./ThreadManagementService.ts";
-import { dispatchCommand } from "./ThreadMessageIntake.ts";
+import { ThreadLaunchService } from "./ThreadLaunchService.ts";
+import { dispatchCommand, launchThread } from "./ThreadMessageIntake.ts";
 
 const intakeTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
@@ -735,5 +738,64 @@ it.effect("a retried response re-claims the preserved pending uploads", () =>
         entry.startsWith("thread-retry-"),
       ),
     ).toHaveLength(2);
+  }).pipe(Effect.provide(intakeTestLayer)),
+);
+
+it.effect("enforces attachment limits across all questions before claiming uploads", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const attachments = Array.from({ length: 101 }, () => ({
+      type: "image" as const,
+      id: ChatAttachmentId.make(createPendingAttachmentId()!),
+      name: "screen.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+    }));
+    const captured: OrchestrationV2Command[] = [];
+    const error = yield* dispatchCommand({
+      type: "runtime-request.respond",
+      commandId: CommandId.make("answer-count-limit"),
+      threadId: ThreadId.make("thread-answer"),
+      requestId: RuntimeRequestId.make("request-1"),
+      answers: { first: "", second: "" },
+      attachmentsByQuestionId: { first: attachments.slice(0, 50), second: attachments.slice(50) },
+    }).pipe(Effect.provide(failingDispatch(captured)), Effect.flip);
+    expect(error.message).toContain("up to 100");
+    expect(captured).toHaveLength(0);
+    expect(NodeFS.readdirSync(config.attachmentsDir)).toHaveLength(0);
+  }).pipe(Effect.provide(intakeTestLayer)),
+);
+
+it.effect("rejects oversized existing attachments before launching a thread", () =>
+  Effect.gen(function* () {
+    const error = yield* launchThread({
+      commandId: CommandId.make("launch-byte-limit"),
+      projectId: ProjectId.make("project-limit"),
+      title: "New thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceStrategy: { type: "root" },
+      createdBy: "user",
+      creationSource: "web",
+      initialMessage: {
+        text: "Read these images",
+        attachments: Array.from({ length: 9 }, (_, index) => ({
+          type: "image" as const,
+          id: ChatAttachmentId.make(`stored-image-${index}`),
+          name: "screen.png",
+          mimeType: "image/png",
+          sizeBytes: 10 * 1024 * 1024,
+        })),
+      },
+    }).pipe(
+      Effect.provide(
+        Layer.mock(ThreadLaunchService)({
+          launch: () => Effect.die("Oversized attachments must not reach launch"),
+        }),
+      ),
+      Effect.flip,
+    );
+    expect(error.message).toContain("80 MiB");
   }).pipe(Effect.provide(intakeTestLayer)),
 );

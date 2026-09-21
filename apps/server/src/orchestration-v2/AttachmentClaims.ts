@@ -1,5 +1,9 @@
 import * as FileSystem from "effect/FileSystem";
-import { ChatAttachmentId, type ChatAttachment } from "@t3tools/contracts";
+import {
+  ChatAttachmentId,
+  getProviderAttachmentLimitError,
+  type ChatAttachment,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -53,6 +57,10 @@ export const claimPendingAttachments = Effect.fn("AttachmentClaims.claimPendingA
     readonly threadId: string;
     readonly attachments: ReadonlyArray<ChatAttachment>;
   }) {
+    const limitError = getProviderAttachmentLimitError(input.attachments);
+    if (limitError) {
+      return yield* new AttachmentClaimError({ message: limitError });
+    }
     if (
       new Set(input.attachments.map((attachment) => attachment.id)).size !==
       input.attachments.length

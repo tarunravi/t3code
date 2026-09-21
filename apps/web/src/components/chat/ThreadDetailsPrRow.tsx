@@ -127,7 +127,10 @@ export function ThreadDetailsPrRow({
   const detail =
     detailQuery.data === null
       ? null
-      : checksQuery.data !== null && checksQuery.dataUpdatedAt >= detailQuery.dataUpdatedAt
+      : checksQuery.data !== null &&
+          checksQuery.dataUpdatedAt !== null &&
+          (detailQuery.dataUpdatedAt === null ||
+            checksQuery.dataUpdatedAt >= detailQuery.dataUpdatedAt)
         ? { ...detailQuery.data, ...checksQuery.data }
         : detailQuery.data;
   const open = reference !== null && (detail?.state ?? pr?.state) === "open";

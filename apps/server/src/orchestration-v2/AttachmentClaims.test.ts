@@ -50,6 +50,57 @@ const stagePendingUpload = Effect.fn("test.stagePendingUpload")(function* (input
 });
 
 describe("AttachmentClaims", () => {
+  it.effect("accepts 100 uploads and rejects 101 before making thread copies", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const attachments = yield* Effect.forEach(Array.from({ length: 101 }), () =>
+        stagePendingUpload({
+          name: "screen.png",
+          bytes: new Uint8Array([1]),
+          mimeType: "image/png",
+        }),
+      );
+      const error = yield* claimPendingAttachments({
+        threadId: "thread-count-limit",
+        attachments,
+      }).pipe(Effect.flip);
+      expect(error.message).toContain("up to 100");
+      expect(NodeFS.readdirSync(config.attachmentsDir)).toHaveLength(101);
+
+      const claimed = yield* claimPendingAttachments({
+        threadId: "thread-count-limit",
+        attachments: attachments.slice(0, 100),
+      });
+      expect(claimed.attachments).toHaveLength(100);
+      expect(claimed.claimedPaths).toHaveLength(100);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("enforces the aggregate image limit on already-claimed attachments", () =>
+    Effect.gen(function* () {
+      const attachments: ChatAttachment[] = Array.from({ length: 8 }, (_, index) => ({
+        type: "image",
+        id: ChatAttachmentId.make(`stored-image-${index}`),
+        name: "screen.png",
+        mimeType: "image/png",
+        sizeBytes: 10 * 1024 * 1024,
+      }));
+      const accepted = yield* claimPendingAttachments({
+        threadId: "thread-byte-limit",
+        attachments,
+      });
+      expect(accepted.attachments).toHaveLength(8);
+      const error = yield* claimPendingAttachments({
+        threadId: "thread-byte-limit",
+        attachments: [
+          ...attachments,
+          { ...attachments[0]!, id: ChatAttachmentId.make("overflow"), sizeBytes: 1 },
+        ],
+      }).pipe(Effect.flip);
+      expect(error.message).toContain("80 MiB");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("claims a pending upload into the thread store and rewrites the id", () =>
     Effect.gen(function* () {
       const pending = yield* stagePendingUpload({

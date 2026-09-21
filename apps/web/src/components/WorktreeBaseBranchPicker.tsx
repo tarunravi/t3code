@@ -83,6 +83,10 @@ export function WorktreeBaseBranchPicker({
       query={query}
       resultsQuery={deferredQuery}
       onQueryChange={setQuery}
+      onSelect={(name) => {
+        onValueChange(name);
+        handleOpenChange(false);
+      }}
       open={open && !disabled}
       onOpenChange={handleOpenChange}
       hasNextPage={hasNextPage}
