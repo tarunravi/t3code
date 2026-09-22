@@ -4574,6 +4574,419 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  describe("subagent child-thread projection", () => {
+    const CHILD_TOOL_USE_ID = "toolu-child-narration";
+    const CHILD_TASK_ID = "task-child-narration";
+    const CHILD_MESSAGE_ID = "msg-child-narration";
+    const usage = {
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+    const parentAgentLaunch = (uuid: string) =>
+      claudeSdkFrame({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: `msg_${uuid}`,
+          model: "claude-sonnet-4-6",
+          usage,
+          content: [
+            {
+              type: "tool_use",
+              id: CHILD_TOOL_USE_ID,
+              name: "Agent",
+              input: { description: "Narrate", subagent_type: "general-purpose", prompt: "Go." },
+            },
+          ],
+        },
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+    const childTaskStarted = (uuid: string) =>
+      claudeSdkFrame({
+        type: "system",
+        subtype: "task_started",
+        task_id: CHILD_TASK_ID,
+        tool_use_id: CHILD_TOOL_USE_ID,
+        description: "Narrate",
+        task_type: "local_agent",
+        prompt: "Go.",
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+    const childStream = (event: unknown) =>
+      claudeSdkFrame({
+        type: "stream_event",
+        event,
+        parent_tool_use_id: CHILD_TOOL_USE_ID,
+        session_id: WAKE_NATIVE_SESSION,
+        uuid: "child-stream-frame",
+      });
+    const childStreamFrames = (thinking: string, text: string) => [
+      childStream({ type: "message_start", message: { id: CHILD_MESSAGE_ID } }),
+      childStream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "" },
+      }),
+      childStream({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: thinking },
+      }),
+      childStream({ type: "content_block_stop", index: 0 }),
+      childStream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "" },
+      }),
+      childStream({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "text_delta", text: text.slice(0, 6) },
+      }),
+      childStream({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "text_delta", text: text.slice(6) },
+      }),
+      childStream({ type: "content_block_stop", index: 1 }),
+    ];
+    const childSnapshot = (uuid: string, thinking: string, text: string) =>
+      claudeSdkFrame({
+        type: "assistant",
+        parent_tool_use_id: CHILD_TOOL_USE_ID,
+        message: {
+          id: CHILD_MESSAGE_ID,
+          model: "claude-sonnet-4-6",
+          usage,
+          content: [
+            { type: "thinking", thinking, signature: "sig" },
+            { type: "text", text },
+          ],
+        },
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+    const childToolUse = (uuid: string, toolUseId: string) =>
+      claudeSdkFrame({
+        type: "assistant",
+        parent_tool_use_id: CHILD_TOOL_USE_ID,
+        message: {
+          id: `msg_${uuid}`,
+          model: "claude-sonnet-4-6",
+          content: [
+            { type: "tool_use", id: toolUseId, name: "Read", input: { file_path: "/tmp/x" } },
+          ],
+        },
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+    const parentText = (uuid: string, text: string) =>
+      claudeSdkFrame({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: `msg_${uuid}`,
+          model: "claude-sonnet-4-6",
+          usage,
+          content: [{ type: "text", text }],
+        },
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+
+    const makeProjectionQueries = (harness: Effect.Success<typeof makeWakeHarness>) => {
+      const messages = () =>
+        harness.events.flatMap((event) =>
+          event.type === "message.updated" ? [event.message] : [],
+        );
+      const turnItems = () =>
+        harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" ? [event.turnItem] : [],
+        );
+      const usageUpdates = () =>
+        harness.events.filter(
+          (event) => event.type === "provider_turn.updated" && event.providerTurn.tokenUsage,
+        );
+      const childThreadId = () =>
+        harness.events.find((event) => event.type === "app_thread.created")?.appThread.id;
+      return { messages, turnItems, usageUpdates, childThreadId };
+    };
+
+    it.effect("projects child stream deltas, snapshots, and tools into the child thread", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const queries = makeProjectionQueries(harness);
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-child-narration"),
+              text: "Delegate.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            parentAgentLaunch("00000000-0000-4000-8000-000000000601"),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childTaskStarted("00000000-0000-4000-8000-000000000602"),
+          );
+          yield* awaitUntil(() => queries.childThreadId() !== undefined, "child thread");
+          const childThreadId = queries.childThreadId()!;
+          const usageBeforeChild = queries.usageUpdates().length;
+
+          for (const frame of childStreamFrames("Child thought", "Child answer")) {
+            yield* Queue.offer(harness.sdkMessages, frame);
+          }
+          yield* awaitUntil(
+            () =>
+              queries
+                .turnItems()
+                .some(
+                  (item) =>
+                    item.type === "reasoning" &&
+                    item.threadId === childThreadId &&
+                    item.text === "Child thought" &&
+                    item.status === "completed",
+                ),
+            "child reasoning",
+          );
+          yield* awaitUntil(
+            () =>
+              queries
+                .messages()
+                .some(
+                  (message) =>
+                    message.threadId === childThreadId &&
+                    message.text === "Child answer" &&
+                    !message.streaming,
+                ),
+            "child streamed answer",
+          );
+
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childSnapshot("00000000-0000-4000-8000-000000000603", "Child thought", "Child answer"),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childToolUse("00000000-0000-4000-8000-000000000604", "toolu-child-read"),
+          );
+          yield* awaitUntil(
+            () =>
+              queries
+                .turnItems()
+                .some((item) => item.nativeItemRef?.nativeId === "toolu-child-read"),
+            "child tool call",
+          );
+          // The child tool frame is processed after the child snapshot, so
+          // the snapshot's usage (if any were counted) would already be here.
+          assert.equal(queries.usageUpdates().length, usageBeforeChild);
+
+          yield* Queue.offer(
+            harness.sdkMessages,
+            parentText("00000000-0000-4000-8000-000000000605", "Parent summary"),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000606",
+              result: "Parent summary",
+            }),
+          );
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "turn terminal");
+
+          const childAnswers = queries
+            .messages()
+            .filter((message) => message.text === "Child answer");
+          assert.lengthOf(
+            new Set(childAnswers.map((message) => message.id)),
+            1,
+            "stream and snapshot converge on one child assistant message",
+          );
+          assert.isTrue(childAnswers.every((message) => message.threadId === childThreadId));
+          assert.isFalse(
+            queries
+              .messages()
+              .some((m) => m.threadId === harness.threadId && m.text === "Child answer"),
+          );
+          assert.isFalse(
+            queries
+              .turnItems()
+              .some((item) => item.type === "reasoning" && item.threadId === harness.threadId),
+          );
+          const childTool = queries
+            .turnItems()
+            .find((item) => item.nativeItemRef?.nativeId === "toolu-child-read");
+          assert.equal(childTool?.threadId, childThreadId);
+          assert.isTrue(
+            queries
+              .messages()
+              .some((m) => m.threadId === harness.threadId && m.text === "Parent summary"),
+          );
+          assert.equal(queries.usageUpdates().length, usageBeforeChild + 1);
+        }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+      ),
+    );
+
+    it.effect("replays child frames that arrive before task_started registers the subagent", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const queries = makeProjectionQueries(harness);
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-child-early"),
+              text: "Delegate.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            parentAgentLaunch("00000000-0000-4000-8000-000000000611"),
+          );
+          for (const frame of childStreamFrames("Early thought", "Early answer")) {
+            yield* Queue.offer(harness.sdkMessages, frame);
+          }
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childSnapshot("00000000-0000-4000-8000-000000000612", "Early thought", "Early answer"),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            parentText("00000000-0000-4000-8000-000000000613", "Parent waits"),
+          );
+          yield* awaitUntil(
+            () => queries.messages().some((m) => m.text === "Parent waits"),
+            "parent text after early child frames",
+          );
+          assert.isFalse(queries.messages().some((m) => m.text === "Early answer"));
+          assert.isUndefined(queries.childThreadId());
+
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childTaskStarted("00000000-0000-4000-8000-000000000614"),
+          );
+          yield* awaitUntil(() => queries.childThreadId() !== undefined, "child thread");
+          const childThreadId = queries.childThreadId()!;
+          yield* awaitUntil(
+            () =>
+              queries
+                .messages()
+                .some(
+                  (m) => m.threadId === childThreadId && m.text === "Early answer" && !m.streaming,
+                ),
+            "replayed child answer",
+          );
+          assert.isTrue(
+            queries
+              .turnItems()
+              .some(
+                (item) =>
+                  item.type === "reasoning" &&
+                  item.threadId === childThreadId &&
+                  item.text === "Early thought",
+              ),
+          );
+          assert.isFalse(
+            queries
+              .messages()
+              .some((m) => m.threadId === harness.threadId && m.text === "Early answer"),
+          );
+
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000615", result: "Done." }),
+          );
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "turn terminal");
+        }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+      ),
+    );
+
+    it.effect.each([
+      {
+        name: "summary field",
+        structured: { status: "completed", summary: "Short summary", usage: { input_tokens: 5 } },
+        expected: (result: string) => assert.equal(result, "Short summary"),
+      },
+      {
+        name: "opaque envelope",
+        structured: {
+          status: "completed",
+          agentId: "agent-1",
+          content: [{ type: "image", source: { data: "x".repeat(2000) } }],
+        },
+        expected: (result: string) => {
+          assert.isAtMost(result.length, 401);
+          assert.isTrue(result.endsWith("…"));
+        },
+      },
+    ])("normalizes structured subagent results ($name)", ({ structured, expected }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const subagentEvents = () =>
+            harness.events.filter(
+              (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+                event.type === "subagent.updated",
+            );
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-structured-result"),
+              text: "Delegate.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            childTaskStarted("00000000-0000-4000-8000-000000000621"),
+          );
+          yield* awaitUntil(() => subagentEvents().length === 1, "subagent node created");
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "user",
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: CHILD_TOOL_USE_ID, content: [] }],
+              },
+              parent_tool_use_id: null,
+              tool_use_result: structured,
+              uuid: "00000000-0000-4000-8000-000000000622",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* awaitUntil(
+            () => subagentEvents().at(-1)?.subagent.status === "completed",
+            "subagent terminal",
+          );
+          const result = subagentEvents().at(-1)?.subagent.result;
+          assert.isString(result);
+          expected(result!);
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000623", result: "Done." }),
+          );
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "turn terminal");
+        }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+      ),
+    );
+  });
+
   it.effect("extracts text from direct content-block subagent results", () =>
     Effect.scoped(
       Effect.gen(function* () {

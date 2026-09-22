@@ -16,6 +16,7 @@ import {
   type SDKAssistantMessage,
   type SDKAPIRetryMessage,
   type SDKMessage,
+  type SDKPartialAssistantMessage,
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKUserMessage,
@@ -1698,13 +1699,25 @@ function claudeNativeToolOutputText(output: ClaudeNativeToolOutput): string {
   return typeof value === "string" ? value : value === undefined ? "" : jsonStringifyForTool(value);
 }
 
+/** Structured results without readable text are summarized, not dumped as JSON. */
+const CLAUDE_SUBAGENT_RESULT_FALLBACK_MAX_CHARS = 400;
+
 function claudeSubagentResultText(output: ClaudeNativeToolOutput): string {
   const value = claudeNativeToolOutputValue(output);
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
   const content = Array.isArray(value)
     ? value
-    : typeof value === "object" && value !== null && "content" in value
+    : typeof value === "object" && "content" in value
       ? value.content
       : undefined;
+  if (typeof content === "string" && content.length > 0) {
+    return content;
+  }
   if (Array.isArray(content)) {
     const text = content
       .flatMap((part) =>
@@ -1722,7 +1735,18 @@ function claudeSubagentResultText(output: ClaudeNativeToolOutput): string {
       return text;
     }
   }
-  return claudeNativeToolOutputText(output);
+  if (typeof value === "object" && !Array.isArray(value)) {
+    for (const key of ["result", "summary", "text", "message", "description"]) {
+      const field = Reflect.get(value, key);
+      if (typeof field === "string" && field.trim().length > 0) {
+        return field.trim();
+      }
+    }
+  }
+  const serialized = jsonStringifyForTool(value);
+  return serialized.length <= CLAUDE_SUBAGENT_RESULT_FALLBACK_MAX_CHARS
+    ? serialized
+    : `${serialized.slice(0, CLAUDE_SUBAGENT_RESULT_FALLBACK_MAX_CHARS)}…`;
 }
 
 function isClaudeSubagentAsyncLaunchAck(output: ClaudeNativeToolOutput): boolean {
@@ -2363,6 +2387,52 @@ interface ActiveClaudeTurnContext {
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
   readonly pendingSubagentModelsByToolUseId: Map<string, string>;
+  readonly subagentStreamBlocks: Map<string, ActiveClaudeSubagentStreamBlock>;
+  readonly pendingSubagentFramesByToolUseId: Map<string, Array<ClaudeSubagentFrame>>;
+}
+
+/** Child frames the SDK tags with the launching Agent tool_use id. */
+type ClaudeSubagentFrame = SDKPartialAssistantMessage | SDKAssistantMessage;
+
+type ClaudeSubagentStreamBlockKind = "text" | "thinking";
+
+/** Mirrors the root `reasoning` state so child stream/snapshot ids converge. */
+interface ClaudeSubagentStreamState {
+  messageId: string | null;
+  readonly streamBlocks: Map<number, string>;
+  readonly nextBlockIndex: Map<string, number>;
+  readonly snapshotBlockIndex: Map<string, number>;
+  readonly snapshots: Set<string>;
+}
+
+interface ActiveClaudeSubagentStreamBlock {
+  readonly kind: ClaudeSubagentStreamBlockKind;
+  readonly childThreadId: ThreadId;
+  readonly childRootNodeId: OrchestrationV2ExecutionNode["id"];
+  readonly ordinal: number;
+  readonly startedAt: DateTime.Utc;
+  text: string;
+}
+
+function makeClaudeSubagentStreamState(): ClaudeSubagentStreamState {
+  return {
+    messageId: null,
+    streamBlocks: new Map(),
+    nextBlockIndex: new Map(),
+    snapshotBlockIndex: new Map(),
+    snapshots: new Set(),
+  };
+}
+
+function claudeSubagentBlockItemId(input: {
+  readonly counters: Map<string, number>;
+  readonly messageId: string;
+  readonly kind: ClaudeSubagentStreamBlockKind;
+}): string {
+  const counterKey = `${input.messageId}:${input.kind}`;
+  const index = input.counters.get(counterKey) ?? 0;
+  input.counters.set(counterKey, index + 1);
+  return `${input.messageId}:${input.kind}:${index}`;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -2382,6 +2452,7 @@ interface ActiveClaudeSubagent {
   progressItemOrdinal: number | null;
   progressStartedAt: DateTime.Utc | null;
   resultItemOrdinal: number | null;
+  readonly stream: ClaudeSubagentStreamState;
 }
 
 interface ClaudeLiveQueryContext {
@@ -2406,6 +2477,27 @@ interface ActiveClaudeToolCall {
 }
 
 const PENDING_CLAUDE_SUBAGENT_MODEL_CAP = 64;
+const PENDING_CLAUDE_SUBAGENT_FRAMES_PER_TOOL_USE_CAP = 256;
+
+function rememberPendingClaudeSubagentFrame(
+  pending: Map<string, Array<ClaudeSubagentFrame>>,
+  toolUseId: string,
+  frame: ClaudeSubagentFrame,
+): void {
+  const frames = pending.get(toolUseId) ?? [];
+  frames.push(frame);
+  if (frames.length > PENDING_CLAUDE_SUBAGENT_FRAMES_PER_TOOL_USE_CAP) {
+    frames.shift();
+  }
+  pending.set(toolUseId, frames);
+  if (pending.size <= PENDING_CLAUDE_SUBAGENT_MODEL_CAP) {
+    return;
+  }
+  const oldest = pending.keys().next();
+  if (!oldest.done) {
+    pending.delete(oldest.value);
+  }
+}
 
 function rememberPendingClaudeSubagentModel(
   pending: Map<string, string>,
@@ -3427,6 +3519,7 @@ export function makeClaudeAdapterV2(
             progressItemOrdinal: existingSubagent?.progressItemOrdinal ?? null,
             progressStartedAt: existingSubagent?.progressStartedAt ?? null,
             resultItemOrdinal: existingSubagent?.resultItemOrdinal ?? null,
+            stream: existingSubagent?.stream ?? makeClaudeSubagentStreamState(),
           } satisfies ActiveClaudeSubagent;
           input.context.subagentsByTaskId.set(input.taskId, subagent);
           if (input.toolUseId !== undefined) {
@@ -4038,6 +4131,233 @@ export function makeClaudeAdapterV2(
             }),
         });
 
+        const emitSubagentStreamItem = Effect.fnUntraced(function* (input: {
+          readonly itemId: string;
+          readonly block: ActiveClaudeSubagentStreamBlock;
+          readonly text: string;
+          readonly completed: boolean;
+        }) {
+          const now = yield* DateTime.now;
+          const nativeItemRef = {
+            driver: CLAUDE_PROVIDER,
+            nativeId: input.itemId,
+            strength: "strong" as const,
+          };
+          const base = {
+            id: idAllocator.derive.turnItemFromProviderItem({
+              driver: CLAUDE_PROVIDER,
+              nativeItemId: input.itemId,
+            }),
+            threadId: input.block.childThreadId,
+            runId: null,
+            nodeId: input.block.childRootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef,
+            parentItemId: null,
+            ordinal: input.block.ordinal,
+            status: input.completed ? ("completed" as const) : ("running" as const),
+            startedAt: input.block.startedAt,
+            completedAt: input.completed ? now : null,
+            updatedAt: now,
+          };
+          if (input.block.kind === "thinking") {
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: {
+                ...base,
+                type: "reasoning",
+                title: "Thinking",
+                text: input.text,
+                streaming: !input.completed,
+              },
+            });
+            return;
+          }
+          const messageId = idAllocator.derive.messageFromProviderItem({
+            driver: CLAUDE_PROVIDER,
+            nativeItemId: input.itemId,
+          });
+          yield* emitProviderEvent({
+            type: "message.updated",
+            driver: CLAUDE_PROVIDER,
+            message: {
+              createdBy: "agent",
+              creationSource: "provider",
+              id: messageId,
+              threadId: input.block.childThreadId,
+              runId: null,
+              nodeId: input.block.childRootNodeId,
+              role: "assistant",
+              text: input.text,
+              attachments: [],
+              streaming: !input.completed,
+              createdAt: input.block.startedAt,
+              updatedAt: now,
+            },
+          });
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: CLAUDE_PROVIDER,
+            turnItem: {
+              ...base,
+              type: "assistant_message",
+              title: null,
+              messageId,
+              text: input.text,
+              streaming: !input.completed,
+            },
+          });
+        });
+        const subagentDeltas = yield* makeProviderTextDeltaCoalescer({
+          flushIntervalMs: 50,
+          emit: (update) =>
+            Effect.gen(function* () {
+              const context = yield* Ref.get(activeTurn);
+              if (context === null || context.nativeTurnId !== update.turnId) return;
+              const block = context.subagentStreamBlocks.get(update.itemId);
+              if (block === undefined || update.text.length === 0) return;
+              block.text = update.text;
+              yield* emitSubagentStreamItem({
+                itemId: update.itemId,
+                block,
+                text: update.text,
+                completed: update.completed,
+              });
+            }),
+        });
+        const ensureSubagentStreamBlock = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly subagent: ActiveClaudeSubagent;
+          readonly itemId: string;
+          readonly kind: ClaudeSubagentStreamBlockKind;
+        }) {
+          const existing = input.context.subagentStreamBlocks.get(input.itemId);
+          if (existing !== undefined) {
+            return existing;
+          }
+          const block: ActiveClaudeSubagentStreamBlock = {
+            kind: input.kind,
+            childThreadId: input.subagent.childThreadId,
+            childRootNodeId: input.subagent.childRootNodeId,
+            ordinal: ++input.subagent.nextChildItemOrdinal,
+            startedAt: yield* DateTime.now,
+            text: "",
+          };
+          input.context.subagentStreamBlocks.set(input.itemId, block);
+          return block;
+        });
+
+        /**
+         * Child narration (stream deltas and assistant snapshots) lands in the
+         * synthetic child thread. Tool blocks stay with the shared tool loop,
+         * which already routes by parent_tool_use_id.
+         */
+        const projectSubagentFrame = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly subagent: ActiveClaudeSubagent;
+          readonly message: ClaudeSubagentFrame;
+        }) {
+          const { context, subagent, message } = input;
+          const stream = subagent.stream;
+          if (message.type === "stream_event") {
+            const event = message.event;
+            if (event.type === "message_start") {
+              stream.messageId = event.message.id;
+              stream.streamBlocks.clear();
+            } else if (event.type === "content_block_start" && stream.messageId !== null) {
+              const block = event.content_block;
+              const opening =
+                block.type === "thinking"
+                  ? { kind: "thinking" as const, delta: block.thinking }
+                  : block.type === "text"
+                    ? { kind: "text" as const, delta: block.text }
+                    : null;
+              if (opening === null) return;
+              const itemId = claudeSubagentBlockItemId({
+                counters: stream.nextBlockIndex,
+                messageId: stream.messageId,
+                kind: opening.kind,
+              });
+              stream.streamBlocks.set(event.index, itemId);
+              yield* ensureSubagentStreamBlock({ context, subagent, itemId, kind: opening.kind });
+              yield* subagentDeltas.append({
+                turnId: context.nativeTurnId,
+                itemId,
+                delta: opening.delta,
+              });
+            } else if (event.type === "content_block_delta") {
+              const itemId = stream.streamBlocks.get(event.index);
+              const delta =
+                event.delta.type === "thinking_delta"
+                  ? event.delta.thinking
+                  : event.delta.type === "text_delta"
+                    ? event.delta.text
+                    : undefined;
+              if (itemId !== undefined && delta !== undefined) {
+                yield* subagentDeltas.append({ turnId: context.nativeTurnId, itemId, delta });
+              }
+            } else if (event.type === "content_block_stop") {
+              const itemId = stream.streamBlocks.get(event.index);
+              if (itemId !== undefined) {
+                yield* subagentDeltas.complete({
+                  turnId: context.nativeTurnId,
+                  itemId,
+                  emitEmpty: false,
+                });
+                stream.streamBlocks.delete(event.index);
+              }
+            }
+            return;
+          }
+          if (stream.snapshots.has(message.uuid)) return;
+          stream.snapshots.add(message.uuid);
+          const messageId =
+            typeof message.message.id === "string" && message.message.id.length > 0
+              ? message.message.id
+              : message.uuid;
+          for (const block of message.message.content) {
+            if (block.type !== "thinking" && block.type !== "text") continue;
+            const kind: ClaudeSubagentStreamBlockKind = block.type;
+            const itemId = claudeSubagentBlockItemId({
+              counters: stream.snapshotBlockIndex,
+              messageId,
+              kind,
+            });
+            const streamed = yield* ensureSubagentStreamBlock({ context, subagent, itemId, kind });
+            const finalText =
+              (block.type === "thinking" ? block.thinking : block.text) || streamed.text;
+            yield* subagentDeltas.complete({
+              turnId: context.nativeTurnId,
+              itemId,
+              ...(finalText ? { finalText } : {}),
+              emitEmpty: false,
+            });
+          }
+        });
+
+        const routeSubagentFrame = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly parentToolUseId: string;
+          readonly message: ClaudeSubagentFrame;
+        }) {
+          const subagent = input.context.subagentsByToolUseId.get(input.parentToolUseId);
+          if (subagent === undefined) {
+            // The child thread id derives from the task id, which only
+            // task_started carries, so a child frame that outruns registration
+            // cannot be projected yet; hold it per tool_use_id and replay it
+            // when task_started registers the subagent.
+            rememberPendingClaudeSubagentFrame(
+              input.context.pendingSubagentFramesByToolUseId,
+              input.parentToolUseId,
+              input.message,
+            );
+            return;
+          }
+          yield* projectSubagentFrame({ context: input.context, subagent, message: input.message });
+        });
+
         const finalizeActiveTurn = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly status: Extract<
@@ -4050,6 +4370,7 @@ export function makeClaudeAdapterV2(
           readonly result?: SDKResultMessage;
         }) {
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
+          yield* subagentDeltas.flushTurn(input.context.nativeTurnId);
           for (const toolCall of input.context.toolCalls.values()) {
             const artifacts = buildToolCallArtifacts({
               context: input.context,
@@ -4686,7 +5007,15 @@ export function makeClaudeAdapterV2(
           }
 
           // Subagent narration belongs to its child thread, never the parent log.
-          if (message.type === "stream_event" && !message.parent_tool_use_id) {
+          if (message.type === "stream_event") {
+            if (message.parent_tool_use_id) {
+              yield* routeSubagentFrame({
+                context,
+                parentToolUseId: message.parent_tool_use_id,
+                message,
+              });
+              return;
+            }
             const event = message.event;
             const reasoning = context.reasoning;
             if (event.type === "message_start") {
@@ -4732,9 +5061,14 @@ export function makeClaudeAdapterV2(
             }
             return;
           }
-          if (
+          if (message.type === "assistant" && message.parent_tool_use_id) {
+            yield* routeSubagentFrame({
+              context,
+              parentToolUseId: message.parent_tool_use_id,
+              message,
+            });
+          } else if (
             message.type === "assistant" &&
-            !message.parent_tool_use_id &&
             !context.reasoning.snapshots.has(message.uuid)
           ) {
             context.reasoning.snapshots.add(message.uuid);
@@ -5009,6 +5343,18 @@ export function makeClaudeAdapterV2(
                 status: "running",
                 reopen: true,
               });
+              if (message.tool_use_id !== undefined) {
+                const pendingFrames = context.pendingSubagentFramesByToolUseId.get(
+                  message.tool_use_id,
+                );
+                context.pendingSubagentFramesByToolUseId.delete(message.tool_use_id);
+                const subagent = context.subagentsByToolUseId.get(message.tool_use_id);
+                if (pendingFrames !== undefined && subagent !== undefined) {
+                  for (const frame of pendingFrames) {
+                    yield* projectSubagentFrame({ context, subagent, message: frame });
+                  }
+                }
+              }
             }
           }
 
@@ -5149,7 +5495,11 @@ export function makeClaudeAdapterV2(
             context.toolCalls.delete(toolCall.nativeItemId);
           }
 
-          const assistantText = assistantTextFromSdkMessage(message);
+          // Child snapshots were already projected into their child thread above.
+          const assistantText =
+            parentToolUseIdFromSdkMessage(message) === null
+              ? assistantTextFromSdkMessage(message)
+              : null;
           if (assistantText !== null && assistantText.text.length > 0) {
             yield* emitAssistantTextArtifacts({
               context,
@@ -5750,6 +6100,8 @@ export function makeClaudeAdapterV2(
               subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),
               pendingSubagentModelsByToolUseId: new Map(),
+              subagentStreamBlocks: new Map(),
+              pendingSubagentFramesByToolUseId: new Map(),
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake
