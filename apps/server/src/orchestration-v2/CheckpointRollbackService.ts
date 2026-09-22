@@ -1,6 +1,8 @@
 import {
   CheckpointId,
   CheckpointScopeId,
+  CommandId,
+  type OrchestrationV2ProviderThread,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   ProviderThreadId,
@@ -25,6 +27,12 @@ import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
+import {
+  checkpointTurnOrdinal,
+  decideRollbackExecution,
+  isRewriteTarget,
+} from "./CommandPolicy.ts";
+import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
 import { CheckpointRestoreError, CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -106,6 +114,7 @@ export const layer: Layer.Layer<
   CheckpointRollbackServiceV2,
   never,
   | CheckpointServiceV2
+  | ContextHandoffServiceV2
   | GitWorkflowService.GitWorkflowService
   | EventSinkV2
   | IdAllocator.IdAllocatorV2
@@ -122,6 +131,7 @@ export const layer: Layer.Layer<
   CheckpointRollbackServiceV2,
   Effect.gen(function* () {
     const checkpoints = yield* CheckpointServiceV2;
+    const handoffs = yield* ContextHandoffServiceV2;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const eventSink = yield* EventSinkV2;
     const ids = yield* IdAllocator.IdAllocatorV2;
@@ -150,6 +160,8 @@ export const layer: Layer.Layer<
         "attempts",
         "nodes",
         "providerTurns",
+        // A rewrite replays the retained turn items into the fresh provider thread.
+        "turnItems",
       ]);
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === input.providerThreadId,
@@ -164,7 +176,7 @@ export const layer: Layer.Layer<
         checkpoint === undefined ||
         scope === undefined ||
         checkpoint.scopeId !== scope.id ||
-        checkpoint.status !== "ready"
+        !isRewriteTarget(checkpoint, input.restoreFiles)
       ) {
         return yield* new CheckpointRollbackExecutionError({
           reason: "rollback-target-invalid",
@@ -184,38 +196,6 @@ export const layer: Layer.Layer<
           checkpointId: input.checkpointId,
         });
       }
-
-      const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
-      const rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget =
-        targetOrdinal === 0
-          ? {
-              type: "thread_start",
-              checkpointId: checkpoint.id,
-              appRunOrdinal: 0,
-            }
-          : yield* Effect.gen(function* () {
-              const targetRun = projection.runs.find((run) => run.ordinal === targetOrdinal);
-              const targetAttempt = projection.attempts.find(
-                (attempt) => attempt.id === targetRun?.activeAttemptId,
-              );
-              const targetTurn =
-                latestProviderTurnForAttempt(projection.providerTurns, targetAttempt?.id) ??
-                projection.providerTurns.find((turn) => turn.id === targetAttempt?.providerTurnId);
-              if (targetTurn === undefined || targetTurn.providerThreadId !== providerThread.id) {
-                return yield* new CheckpointRollbackExecutionError({
-                  reason: "provider-turn-unavailable",
-                  threadId: input.threadId,
-                  providerThreadId: input.providerThreadId,
-                  checkpointId: input.checkpointId,
-                });
-              }
-              return {
-                type: "provider_turn" as const,
-                checkpointId: checkpoint.id,
-                appRunOrdinal: targetOrdinal,
-                providerTurn: targetTurn,
-              };
-            });
 
       const { worktreePath, branch } = projection.thread;
       // Recreated only where the server would have made it, as turn start does.
@@ -277,13 +257,28 @@ export const layer: Layer.Layer<
             }),
       });
 
+      const targetOrdinal = checkpointTurnOrdinal(checkpoint, scope);
+      if (
+        projection.runs.some((run) =>
+          ["preparing", "starting", "running", "waiting", "queued"].includes(run.status),
+        )
+      ) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "rollback-target-invalid",
+          ...input,
+          cause: "Finish or cancel active and queued turns before rewriting conversation history.",
+        });
+      }
+      let execution = yield* decideRollbackExecution({
+        commandId: CommandId.make(`rollback:${input.checkpointId}`),
+        threadId: input.threadId,
+        providerInstanceId: providerThread.providerInstanceId,
+        capabilities: session.providerSession.capabilities,
+        canForkFromTarget:
+          targetOrdinal > 0 && providerThread.nativeThreadRef?.strength === "strong",
+      });
       const runsToRollback = projection.runs.filter(
-        (run) =>
-          run.ordinal > targetOrdinal &&
-          (run.status === "completed" ||
-            run.status === "interrupted" ||
-            run.status === "failed" ||
-            run.status === "cancelled"),
+        (run) => run.ordinal > targetOrdinal && run.status !== "rolled_back",
       );
       // Rolled-back turns stay in the audit history, but no longer exist in
       // the provider conversation and must not be counted by a later rewind.
@@ -300,26 +295,90 @@ export const layer: Layer.Layer<
           turn.providerThreadId === providerThread.id &&
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
-
-      const snapshot =
-        runsToRollback.length === 0
-          ? { providerThread }
-          : yield* session.rollbackThread({
-              providerThread,
-              target: rollbackTarget,
-              providerThreadTurns,
+      const rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget =
+        targetOrdinal === 0 || execution === "portable_context"
+          ? {
+              type: "thread_start",
+              checkpointId: checkpoint.id,
+              appRunOrdinal: 0,
+            }
+          : yield* Effect.gen(function* () {
+              const targetRun = projection.runs.find((run) => run.ordinal === targetOrdinal);
+              const targetAttempt = projection.attempts.find(
+                (attempt) => attempt.id === targetRun?.activeAttemptId,
+              );
+              // A goal run can span several native turns; roll back to its last.
+              const targetTurn =
+                latestProviderTurnForAttempt(projection.providerTurns, targetAttempt?.id) ??
+                projection.providerTurns.find((turn) => turn.id === targetAttempt?.providerTurnId);
+              if (targetTurn === undefined || targetTurn.providerThreadId !== providerThread.id) {
+                return yield* new CheckpointRollbackExecutionError({
+                  reason: "provider-turn-unavailable",
+                  threadId: input.threadId,
+                  providerThreadId: input.providerThreadId,
+                  checkpointId: input.checkpointId,
+                });
+              }
+              return {
+                type: "provider_turn" as const,
+                checkpointId: checkpoint.id,
+                appRunOrdinal: targetOrdinal,
+                providerTurn: targetTurn,
+              };
             });
-      if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
+
+      const nativeSnapshot =
+        runsToRollback.length === 0 || execution === "portable_context"
+          ? Effect.succeed({ providerThread })
+          : execution === "native_fork" && rollbackTarget.type === "provider_turn"
+            ? session
+                .forkThread({
+                  sourceProviderThread: providerThread,
+                  sourceProviderTurns: providerThreadTurns,
+                  targetThreadId: input.threadId,
+                  modelSelection,
+                  runtimePolicy: resolvedRuntimePolicy,
+                  providerTurnId: rollbackTarget.providerTurn.id,
+                })
+                .pipe(Effect.map((forked) => ({ providerThread: forked })))
+            : session.rollbackThread({
+                providerThread,
+                target: rollbackTarget,
+                providerThreadTurns,
+              });
+      // Some native threads refuse rollback at runtime (Codex threads with
+      // paginated history). A provider that accepts handoff summaries can
+      // still continue from the retained prefix in a fresh provider thread.
+      const snapshot = yield* nativeSnapshot.pipe(
+        Effect.catch((cause) =>
+          execution !== "portable_context" &&
+          session.providerSession.capabilities.context.canConsumeHandoffSummaries
+            ? Effect.logWarning("orchestrationV2.checkpointRollback.portableFallback", {
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                cause,
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    execution = "portable_context";
+                  }),
+                ),
+                Effect.as({ providerThread }),
+              )
+            : Effect.fail(cause),
+        ),
+      );
+      // Later turn boundaries no longer exist; only ready ones own a git ref to delete.
       const staleCheckpoints = projection.checkpoints.filter(
         (candidate) =>
           candidate.scopeId === scope.id &&
           candidate.appRunOrdinal !== null &&
           candidate.appRunOrdinal > targetOrdinal &&
-          candidate.status === "ready",
+          (candidate.status === "ready" || candidate.status === "missing"),
       );
-      if (staleCheckpoints.length > 0) {
-        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
-      }
+      const staleCheckpointRefs = staleCheckpoints.filter(
+        (candidate) => candidate.status === "ready",
+      );
 
       // Thread commands write full provider thread rows under this lock. Without
       // it, a message sent during the rollback can plan against the old native
@@ -338,20 +397,104 @@ export const layer: Layer.Layer<
                 }) as Event,
             );
           const events: Array<OrchestrationV2DomainEvent> = [];
-          events.push(
-            yield* makeEvent({
-              type: "provider-thread.updated",
+          if (execution === "portable_context") {
+            // Keep the original native binding for history/forks. Only the active
+            // continuation gets a fresh session and the retained conversation prefix.
+            const nextRunId = ids.derive.run({
               threadId: input.threadId,
+              ordinal: projection.runs.length + 1,
+            });
+            const replacement: OrchestrationV2ProviderThread = {
+              id: ids.derive.providerThread({
+                driver: providerThread.driver,
+                nativeThreadId: `rewrite:${nextRunId}:${checkpoint.id}`,
+              }),
               driver: providerThread.driver,
               providerInstanceId: providerThread.providerInstanceId,
-              occurredAt: now,
-              payload: {
-                ...snapshot.providerThread,
-                lastRunOrdinal: targetOrdinal === 0 ? null : targetOrdinal,
-                updatedAt: now,
-              },
-            }),
-          );
+              providerSessionId: yield* ids.allocate.providerSession({
+                providerInstanceId: providerThread.providerInstanceId,
+                threadId: input.threadId,
+              }),
+              appThreadId: input.threadId,
+              ownerNodeId: null,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "not_loaded",
+              firstRunOrdinal: null,
+              lastRunOrdinal: null,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+            };
+            const retainedRuns = projection.runs.filter(
+              (run) => run.ordinal <= targetOrdinal && run.status !== "rolled_back",
+            );
+            const retainedRunIds = new Set(retainedRuns.map((run) => run.id));
+            const handoff = yield* handoffs.prepareProviderHandoff({
+              threadId: input.threadId,
+              targetRunId: nextRunId,
+              transferId: null,
+              fromProviderThreadIds: [providerThread.id],
+              toProviderThreadId: replacement.id,
+              fromProviderInstanceId: providerThread.providerInstanceId,
+              toProviderInstanceId: providerThread.providerInstanceId,
+              coveredRunOrdinals: { from: 1, to: Math.max(1, targetOrdinal) },
+              strategy: "full_thread_summary",
+              runs: retainedRuns,
+              items: projection.turnItems.filter(
+                (item) => item.runId === null || retainedRunIds.has(item.runId),
+              ),
+              createdAt: now,
+            });
+            events.push(
+              yield* makeEvent({
+                type: "context-handoff.updated",
+                threadId: input.threadId,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: now,
+                payload: handoff,
+              }),
+              yield* makeEvent({
+                type: "provider-thread.updated",
+                threadId: input.threadId,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: now,
+                payload: { ...replacement, handoffIds: [handoff.id] },
+              }),
+              yield* makeEvent({
+                type: "thread.metadata-updated",
+                threadId: input.threadId,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: now,
+                payload: {
+                  ...projection.thread,
+                  activeProviderThreadId: replacement.id,
+                  updatedAt: now,
+                },
+              }),
+            );
+          }
+          if (execution !== "portable_context") {
+            events.push(
+              yield* makeEvent({
+                type: "provider-thread.updated",
+                threadId: input.threadId,
+                driver: providerThread.driver,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: now,
+                payload: {
+                  ...snapshot.providerThread,
+                  lastRunOrdinal: targetOrdinal === 0 ? null : targetOrdinal,
+                  updatedAt: now,
+                },
+              }),
+            );
+          }
+          if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
+          if (staleCheckpointRefs.length > 0) {
+            yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpointRefs });
+          }
           for (const staleCheckpoint of staleCheckpoints) {
             events.push(
               yield* makeEvent({
