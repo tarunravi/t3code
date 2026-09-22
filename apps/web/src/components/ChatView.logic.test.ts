@@ -29,6 +29,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useComposerDraftStore } from "../composerDraftStore";
 
 import type { Thread, TurnDiffSummary } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
@@ -83,8 +85,44 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   toolGroupConsumesUpwardNavigation,
   waitForRevertedMessage,
+  loadMessageRewriteDraft,
+  messageRewriteDraftTarget,
   prepareRevertedMessageAttachments,
 } from "./ChatView.logic";
+
+describe("sent-message rewrite draft", () => {
+  it("loads and replaces the selected prompt without changing the thread draft; cancel restores it", () => {
+    const threadRef = scopeThreadRef(
+      EnvironmentId.make("rewrite-env"),
+      ThreadId.make("rewrite-thread"),
+    );
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Unsent next question");
+    const target = messageRewriteDraftTarget(threadRef);
+    loadMessageRewriteDraft({ threadRef, prompt: "Previously sent prompt", images: [], files: [] });
+    expect(store.getComposerDraft(target)?.prompt).toBe("Previously sent prompt");
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Unsent next question");
+    store.setPrompt(target, "Edited prompt");
+    loadMessageRewriteDraft({ threadRef, prompt: "Another sent prompt", images: [], files: [] });
+    expect(store.getComposerDraft(target)?.prompt).toBe("Another sent prompt");
+    store.clearComposerContent(target);
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Unsent next question");
+    store.clearComposerContent(threadRef);
+  });
+
+  it("isolates rewrite drafts across environment routes", () => {
+    const threadId = ThreadId.make("same-rewrite-id");
+    const first = scopeThreadRef(EnvironmentId.make("rewrite-first"), threadId);
+    const second = scopeThreadRef(EnvironmentId.make("rewrite-second"), threadId);
+    loadMessageRewriteDraft({ threadRef: first, prompt: "First", images: [], files: [] });
+    loadMessageRewriteDraft({ threadRef: second, prompt: "Second", images: [], files: [] });
+    const store = useComposerDraftStore.getState();
+    expect(store.getComposerDraft(messageRewriteDraftTarget(first))?.prompt).toBe("First");
+    expect(store.getComposerDraft(messageRewriteDraftTarget(second))?.prompt).toBe("Second");
+    store.clearComposerContent(messageRewriteDraftTarget(first));
+    store.clearComposerContent(messageRewriteDraftTarget(second));
+  });
+});
 
 describe("toolGroupConsumesUpwardNavigation", () => {
   class ScrollElement extends EventTarget {

@@ -26,7 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as DateTime from "effect/DateTime";
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   squashAtomCommandFailure,
@@ -46,7 +46,13 @@ import {
   type Thread,
   type TurnDiffSummary,
 } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import {
+  DraftId,
+  useComposerDraftStore,
+  type ComposerFileAttachment,
+  type ComposerImageAttachment,
+  type DraftThreadState,
+} from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
@@ -1181,6 +1187,24 @@ export async function waitForRevertedMessage(
         inspect();
       }, finish);
   });
+}
+
+export function messageRewriteDraftTarget(threadRef: ScopedThreadRef): DraftId {
+  return DraftId.make(`rewrite:${scopedThreadKey(threadRef)}`);
+}
+
+export function loadMessageRewriteDraft(input: {
+  threadRef: ScopedThreadRef;
+  prompt: string;
+  images: ComposerImageAttachment[];
+  files: ComposerFileAttachment[];
+}): void {
+  const target = messageRewriteDraftTarget(input.threadRef);
+  const store = useComposerDraftStore.getState();
+  store.clearComposerContent(target);
+  store.setPrompt(target, input.prompt);
+  store.addImages(target, input.images, { allowDuplicates: true });
+  store.addFiles(target, input.files, { allowDuplicates: true });
 }
 
 export interface LocalDispatchSnapshot {
