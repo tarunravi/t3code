@@ -1,4 +1,5 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
+import * as ProviderFallbackWorker from "./ProviderFallbackWorker.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -146,11 +147,13 @@ const layerProviderAuthServiceProvided = ProviderAuthService.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
 
-const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
+const layerRunExecutionServiceProvided = RunExecutionService.layerFromServices.pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layer,
       PreviewAgentActivity.layer,
+      ProjectionStore.layer,
+      ThreadCommandExecutor.layer,
       layerCheckpointServiceProvided,
       layerEventSink,
       IdAllocator.layer,
@@ -160,13 +163,14 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
-const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layerFromServices.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerContextHandoffServiceProvided,
       layerEventSink,
       IdAllocator.layer,
       ProjectionStore.layer,
+      ThreadCommandExecutor.layer,
       layerProviderSessionManagerProvided,
       layerProviderAuthServiceProvided,
       layerRunExecutionServiceProvided,
@@ -186,6 +190,7 @@ const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.p
     Layer.mergeAll(
       ProjectStore.layer,
       layerCheckpointServiceProvided,
+      layerContextHandoffServiceProvided,
       layerEventSink,
       IdAllocator.layer,
       ProjectionStore.layer,
@@ -375,6 +380,7 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
+  ProviderFallbackWorker.layer.pipe(Layer.provide(layerThreadManagementProvided)),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),

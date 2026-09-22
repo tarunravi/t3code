@@ -34,7 +34,7 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   Redo2Icon,
-  Undo2Icon,
+  PencilIcon,
 } from "lucide-react";
 import { Link as LinkIconNode } from "lucide";
 import { Button, InlineButton } from "../ui/button";
@@ -740,13 +740,13 @@ function RevertUserMessageButton({
             variant="ghost"
             disabled={activity.isRevertingCheckpoint || activity.isWorking}
             onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
-            aria-label="Edit from here"
+            aria-label="Edit and rewrite from here"
           />
         }
       >
-        <Undo2Icon className="size-3" />
+        <PencilIcon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Edit from here</TooltipPopup>
+      <TooltipPopup side="top">Edit and rewrite from here</TooltipPopup>
     </Tooltip>
   );
 }

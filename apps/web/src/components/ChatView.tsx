@@ -1,6 +1,10 @@
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
+import { PencilIcon } from "lucide-react";
+import { useSideChatActions } from "./chat/SideChatPanel";
+import { messageRewriteDraftTarget } from "./ChatView.logic";
+import { Button } from "./ui/button";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -30,6 +34,7 @@ import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
+import { providerFailureResumeBannerItem } from "./chat/ProviderFailureResumeBanner";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
@@ -42,8 +47,10 @@ import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
+  isResumableProviderFailure,
   latestExecutedRun,
   latestRootProviderFailure,
+  providerFallbackSourceRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
@@ -488,6 +495,7 @@ export default function ChatView(props: ChatViewProps) {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
         });
+  const { discard: discardSideChat } = useSideChatActions(environmentId);
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
@@ -500,7 +508,21 @@ export default function ChatView(props: ChatViewProps) {
     promptRef,
     composerRef,
   });
-  const composerDraftTarget = queuedRunEdit.draftTarget;
+  const [rewriteState, setRewritingMessage] = useState<{
+    messageId: MessageId;
+    turnCount: number;
+    restoreFiles: boolean;
+    routeThreadKey: string;
+    rewound: boolean;
+  } | null>(null);
+  const rewritingMessage = rewriteState?.routeThreadKey === routeThreadKey ? rewriteState : null;
+  const rewriteDraftTarget = messageRewriteDraftTarget(routeThreadRef);
+  // Navigating to another thread ends the rewrite; its draft stays for later.
+  if (rewriteState !== null && rewriteState.routeThreadKey !== routeThreadKey) {
+    setRewritingMessage(null);
+  }
+  const composerDraftTarget =
+    rewritingMessage !== null ? rewriteDraftTarget : queuedRunEdit.draftTarget;
   const reportedModelSelection = serverProjection
     ? deriveReportedModelSelection(serverProjection)
     : null;
@@ -788,11 +810,30 @@ export default function ChatView(props: ChatViewProps) {
     if (!isServerThread || serverProjection === null) return null;
     const run = latestExecutedRun(serverProjection.runs);
     if (run?.status === "interrupted") return run.id;
+    const failure = latestRootProviderFailure(run, serverProjection.turnItems);
     return run?.status === "failed" &&
-      serverRuntime?.lastErrorClass === "usage_limit" &&
-      latestRootProviderFailure(run, serverProjection.turnItems)?.class === "usage_limit"
+      isResumableProviderFailure(failure) &&
+      serverRuntime?.lastErrorClass === failure?.class
       ? run.id
       : null;
+  })();
+  // A usage limit has its own recovery banner. Otherwise offer the resume unless the
+  // server is about to retry this failure on the configured fallback model.
+  const providerFailureResumeRunId = (() => {
+    if (resumableRunId === null || serverProjection === null) return null;
+    const run = latestExecutedRun(serverProjection.runs);
+    if (
+      run?.status !== "failed" ||
+      latestRootProviderFailure(run, serverProjection.turnItems)?.class === "usage_limit"
+    ) {
+      return null;
+    }
+    const fallbackConfigured =
+      settings.fallbackProviderInstanceId !== null && settings.fallbackModel !== null;
+    return fallbackConfigured &&
+      providerFallbackSourceRun(serverProjection.runs, serverProjection.turnItems)?.id === run.id
+      ? null
+      : resumableRunId;
   })();
   const parentSubagentThreadId =
     activeThread?.lineage.relationshipToParent === "subagent"
@@ -1252,13 +1293,6 @@ export default function ChatView(props: ChatViewProps) {
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
   });
-  const conversationProviderStatus =
-    providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
-    activeProviderStatus;
-  const supportsConversationRollback =
-    canOperateThread &&
-    conversationProviderStatus !== null &&
-    conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
   const serverThreadId = serverThread?.id;
   const serverThreadEnvironmentId = serverThread?.environmentId;
@@ -1958,6 +1992,9 @@ export default function ChatView(props: ChatViewProps) {
   } = useRightPanelSurfaceClose({
     threadRef: activeThreadRef,
     terminalLabelsById: activeTerminalLabelsById,
+    onReleaseSurface: (surface) => {
+      if (surface.kind === "side-chat") void discardSideChat(surface.threadId);
+    },
   });
   const closeRightPanelSurfaceStable = closeRightPanelSurface;
   const persistThreadSettingsForNextTurn = async (input: {
@@ -2618,6 +2655,9 @@ export default function ChatView(props: ChatViewProps) {
   usePasteToFocusComposer(activeThreadId, composerRef);
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
+      turnDiffSummaries,
+      cancelQueuedEdit: queuedRunEdit.cancelEdit,
+      setRewritingMessage,
       environmentId,
       routeThreadRef,
       routeThreadKey,
@@ -2628,7 +2668,7 @@ export default function ChatView(props: ChatViewProps) {
       phase,
       isSendBusy,
       isRevertingCheckpoint,
-      supportsConversationRollback,
+      supportsConversationRollback: canOperateThread,
       activeEnvironmentUnavailable,
       activeEnvironmentUnavailableLabel,
       promptRef,
@@ -2692,6 +2732,18 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
+  const onProviderFailureResume = useStableCallback(() => void onResume());
+  const composerBannerItemsWithResume =
+    providerFailureResumeRunId === null
+      ? composerBannerItems
+      : [
+          providerFailureResumeBannerItem({
+            runId: providerFailureResumeRunId,
+            disabled: isSendBusy || isResuming,
+            onResume: onProviderFailureResume,
+          }),
+          ...composerBannerItems,
+        ];
   const onImplementPlanInNewThread = useImplementPlanInNewThread({
     environmentId,
     routeThreadKey,
@@ -2708,6 +2760,9 @@ export default function ChatView(props: ChatViewProps) {
     defaultRuntimeMode,
   });
   const { onSend } = useComposerSend({
+    routeThreadRef,
+    rewritingMessage,
+    setRewritingMessage,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -2849,7 +2904,10 @@ export default function ChatView(props: ChatViewProps) {
           editBlockedReason={queuedRunEditBlockedReason({
             openQuestionCount: pendingUserInputs.length,
           })}
-          onEditQueuedRun={queuedRunEdit.beginEdit}
+          onEditQueuedRun={(request) => {
+            setRewritingMessage(null);
+            queuedRunEdit.beginEdit(request);
+          }}
           onCancelEdit={queuedRunEdit.cancelEdit}
           timestampFormat={timestampFormat}
           onOpenThread={onOpenRelatedThreadStable}
@@ -3057,6 +3115,11 @@ export default function ChatView(props: ChatViewProps) {
         pendingSurfaceIds: pendingFileSurfaceIds,
         onOpenFile: openFileSurfaceStable,
         onPendingChange: handleFilePendingChangeStable,
+      }}
+      sideChat={{
+        parent: activeThread,
+        markdownCwd: gitCwd ?? undefined,
+        workspaceRoot: activeWorkspaceRoot,
       }}
     />
   ) : null;
@@ -3266,7 +3329,7 @@ export default function ChatView(props: ChatViewProps) {
                 parentThreadLink={parentThreadLink}
                 workflowOpening={workflowOpening}
                 onForkFromRun={onForkFromRunStable}
-                supportsConversationRollback={supportsConversationRollback}
+                supportsConversationRollback={canOperateThread}
                 threadStartCheckpointReady={threadStartCheckpointReady}
                 availableRevertTurnCounts={availableRevertTurnCounts}
                 onRevertToTurnCount={onRevertTimelineTurnStable}
@@ -3432,7 +3495,38 @@ export default function ChatView(props: ChatViewProps) {
                                             : projectCloneSendBlockReason
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
-                              bannerItems={composerBannerItems}
+                              bannerItems={
+                                rewritingMessage === null
+                                  ? composerBannerItemsWithResume
+                                  : [
+                                      {
+                                        id: "rewrite-message",
+                                        variant: "info",
+                                        icon: <PencilIcon />,
+                                        title: "Rewrite from here",
+                                        description: rewritingMessage.rewound
+                                          ? "Conversation rewound. Send to continue with your edited prompt."
+                                          : "Sending replaces this message and the conversation after it.",
+                                        actions: (
+                                          <Button
+                                            size="xs"
+                                            variant="ghost"
+                                            disabled={isSendBusy || isRevertingCheckpoint}
+                                            onClick={() => {
+                                              useComposerDraftStore
+                                                .getState()
+                                                .clearComposerContent(rewriteDraftTarget);
+                                              setRewritingMessage(null);
+                                              scheduleComposerFocus();
+                                            }}
+                                          >
+                                            Cancel rewrite
+                                          </Button>
+                                        ),
+                                      },
+                                      ...composerBannerItemsWithResume,
+                                    ]
+                              }
                               resumeCompactionTokens={resumeCompactionTokens}
                               keepFullHistory={keepFullHistory}
                               onToggleKeepFullHistory={toggleKeepFullHistoryStable}
