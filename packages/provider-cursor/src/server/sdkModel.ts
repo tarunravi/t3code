@@ -36,12 +36,23 @@ export function cursorSdkParameterPriority(parameterId: string): number {
 }
 
 export function cursorSdkModelSelection(modelSelection: ModelSelection): CursorSdkModelSelection {
+  // Cursor's live catalog currently advertises an explicit 500k context variant for Grok 4.7,
+  // but the run endpoint rejects that parameter. Omitting it lets Cursor apply the model's
+  // server-side default (which is the same long-context variant) while keeping the other options.
+  const options = modelSelection.options?.filter(
+    (option) =>
+      !(
+        modelSelection.model === "grok-4.7" &&
+        option.id === "contextWindow" &&
+        String(option.value).toLowerCase() === "500k"
+      ),
+  );
   return {
     id: modelSelection.model === "auto" ? "default" : modelSelection.model,
-    ...(modelSelection.options === undefined || modelSelection.options.length === 0
+    ...(options === undefined || options.length === 0
       ? {}
       : {
-          params: modelSelection.options.map((option): ModelParameterValue => ({
+          params: options.map((option): ModelParameterValue => ({
             id: cursorSdkParameterId(option.id),
             value: String(option.value),
           })),
