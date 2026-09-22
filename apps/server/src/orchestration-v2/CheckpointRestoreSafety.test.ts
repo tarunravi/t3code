@@ -20,7 +20,9 @@ import {
   CheckpointRollbackServiceV2,
   layer as rollbackLayer,
 } from "./CheckpointRollbackService.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
+import { layer as contextHandoffLayer } from "./ContextHandoffService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
@@ -102,6 +104,7 @@ it.effect.each([
       runs: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as OrchestrationV2ThreadProjection;
     const testLayer = rollbackLayer.pipe(
+      Layer.provide(contextHandoffLayer.pipe(Layer.provide(idAllocatorLayer))),
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
@@ -166,6 +169,7 @@ it.effect.each([
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
+                providerSession: { capabilities: CodexProviderCapabilitiesV2 },
                 rollbackThread: () =>
                   Effect.sync(() => {
                     calls.push("provider");
