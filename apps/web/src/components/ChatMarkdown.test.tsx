@@ -475,6 +475,30 @@ describe("ChatMarkdown skill chips", () => {
   });
 });
 
+describe("ChatMarkdown math and Mermaid", () => {
+  it("renders inline LaTeX instead of exposing the source delimiters", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown cwd="/tmp/project" text={String.raw`The volume is $154.5\text{ cm}^3$.`} />,
+    );
+
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain(String.raw`$154.5\text{ cm}^3$`);
+  });
+
+  it("renders Mermaid fences with a diagram/code toggle", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={"```mermaid\ngraph TD\n  A[Start] --> B[Done]\n```"}
+      />,
+    );
+
+    expect(html).toContain('data-language="mermaid"');
+    expect(html).toContain('aria-label="Show Mermaid code"');
+    expect(html).toContain("Rendering diagram");
+  });
+});
+
 describe("ChatMarkdown file option chips", () => {
   it("keeps the fallback button text selectable", () => {
     const html = renderToStaticMarkup(
