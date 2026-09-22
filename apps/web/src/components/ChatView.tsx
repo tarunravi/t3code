@@ -1,3 +1,5 @@
+import { Fragment } from "react";
+import { InlineButton } from "./ui/button";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -103,7 +105,6 @@ import {
   deriveThreadActivityRun,
   deriveLatestThreadRun,
   deriveThreadRuntime,
-  presentPendingBackgroundWork,
   presentProviderGoal,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
@@ -135,7 +136,10 @@ import {
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  derivePendingBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -149,7 +153,6 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import {
-  Fragment,
   lazy,
   memo,
   type SetStateAction,
@@ -184,6 +187,7 @@ import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import {
   type ComposerSubmissionIntent,
   collapseExpandedComposerCursor,
+  parseSideChatCommand,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
@@ -199,6 +203,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestRunSettled,
+  canRestoreFilesForRun,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -303,6 +308,7 @@ import {
   CheckCircle2Icon,
   MessageCircleIcon,
   PaperclipIcon,
+  PencilIcon,
   ChevronDownIcon,
   DownloadIcon,
   GitBranchIcon,
@@ -436,6 +442,9 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
+import { BackgroundTaskPanel, BackgroundTasksBannerPopover } from "./chat/BackgroundTasks";
+import { backgroundTaskEntries, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -461,6 +470,10 @@ import {
   RightPanelMaximizeControl,
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import {
+  draftRosterWithDefaultPreset,
+  draftSubagentRosterPatch,
+} from "./settings/subagentPresets.logic";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
@@ -540,6 +553,8 @@ import {
   resolveFileAttachmentUrl,
   prepareRevertedMessageAttachments,
   waitForRevertedMessage,
+  loadMessageRewriteDraft,
+  messageRewriteDraftTarget,
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
@@ -574,7 +589,7 @@ import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
-import { Button, InlineButton } from "./ui/button";
+import { Button } from "./ui/button";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -1658,6 +1673,7 @@ export default function ChatView(props: ChatViewProps) {
   const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
+  const { open: openSideChat, discard: discardSideChat } = useSideChatActions(environmentId);
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, {
     reportFailure: false,
   });
@@ -1691,10 +1707,24 @@ export default function ChatView(props: ChatViewProps) {
   );
   const baseComposerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
+  const [rewriteState, setRewritingMessage] = useState<{
+    messageId: MessageId;
+    turnCount: number;
+    restoreFiles: boolean;
+    routeThreadKey: string;
+    rewound: boolean;
+  } | null>(null);
+  const rewritingMessage = rewriteState?.routeThreadKey === routeThreadKey ? rewriteState : null;
+  const rewriteDraftTarget = messageRewriteDraftTarget(routeThreadRef);
+  useEffect(() => {
+    setRewritingMessage((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
+  }, [routeThreadKey]);
   const composerDraftTarget: ScopedThreadRef | DraftId =
-    editingQueuedRun === null
-      ? baseComposerDraftTarget
-      : queuedEditDraftTargetFor(editingQueuedRun.runId);
+    rewritingMessage !== null
+      ? rewriteDraftTarget
+      : editingQueuedRun === null
+        ? baseComposerDraftTarget
+        : queuedEditDraftTargetFor(editingQueuedRun.runId);
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
       ? store.getDraftSessionByRef(routeThreadRef)
@@ -3281,13 +3311,6 @@ export default function ChatView(props: ChatViewProps) {
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
   });
-  const conversationProviderStatus =
-    providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
-    activeProviderStatus;
-  const supportsConversationRollback =
-    canOperateThread &&
-    conversationProviderStatus !== null &&
-    conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
   const pendingRequests = useMemo(
     () =>
@@ -4670,6 +4693,7 @@ export default function ChatView(props: ChatViewProps) {
   const beginEditingQueuedRun = useCallback(
     (request: EditQueuedRunRequest) => {
       if (!activeThread) return;
+      setRewritingMessage(null);
       if (editingQueuedRun !== null && editingQueuedRun.runId !== request.runId) {
         clearComposerDraftContent(queuedEditDraftTargetFor(editingQueuedRun.runId));
       }
@@ -6079,6 +6103,7 @@ export default function ChatView(props: ChatViewProps) {
             threadRef: activeThreadRef,
           });
         }
+        if (surface.kind === "side-chat") void discardSideChat(surface.threadId);
         if (
           surface.kind === "terminal" &&
           readEnvironmentScope(activeThreadRef.environmentId, AuthTerminalOperateScope)
@@ -6099,6 +6124,7 @@ export default function ChatView(props: ChatViewProps) {
       canOperatePreview,
       closePreview,
       closeTerminalMutation,
+      discardSideChat,
       storeCloseTerminal,
     ],
   );
@@ -7384,6 +7410,10 @@ export default function ChatView(props: ChatViewProps) {
   // banner is the only visible stop affordance. The interrupt path also
   // accepts a completed run while its provider still has background work.
   const activeBackgroundTasks = !isWorking && activeThread ? pendingBackgroundTasks : [];
+  const rosterBackgroundTasks = useMemo(
+    () => selectThreadBackgroundTasks(serverProjection),
+    [serverProjection],
+  );
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork =
     stoppingBackgroundWorkKey === `${environmentId}:${activeThreadId}`;
@@ -7580,8 +7610,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeGoal, activeThread, isWorking, sendStandaloneCommand]);
 
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
-    if (presentation === null || !activeThread) {
+    if (activeBackgroundTasks.length === 0 || !activeThread) {
       return null;
     }
     return {
@@ -7594,40 +7623,25 @@ export default function ChatView(props: ChatViewProps) {
         <span
           className={cn(
             "size-1.5 rounded-full bg-foreground",
-            presentation.waiting && "animate-status-pulse",
+            backgroundWorkHoldsCompletion(activeBackgroundTasks) && "animate-status-pulse",
           )}
           aria-hidden="true"
         />
       ),
-      title: presentation.title,
-      // A single named item is already in the title.
-      description:
-        presentation.items.length === 1 && presentation.items[0]?.childThreadId === undefined
-          ? undefined
-          : presentation.items.map((item, index) => {
-              const childThreadId = item.childThreadId;
-              return (
-                <Fragment key={item.taskId}>
-                  {index > 0 ? ", " : null}
-                  {childThreadId === undefined ? (
-                    item.label
-                  ) : (
-                    <InlineButton
-                      tone="muted"
-                      aria-label={`Open subagent ${item.label}`}
-                      onClick={() => onOpenRelatedThread(childThreadId)}
-                    >
-                      {item.label}
-                    </InlineButton>
-                  )}
-                </Fragment>
-              );
-            }),
+      // The whole summary opens the task list; the Stop action stays thread-wide.
+      title: (
+        <BackgroundTasksBannerPopover
+          environmentId={environmentId}
+          threadId={activeThread.id}
+          entries={backgroundTaskEntries(activeBackgroundTasks, rosterBackgroundTasks)}
+        />
+      ),
       actions: (
         <Button
           size="xs"
           variant="ghost"
           disabled={!canOperateThread || isStoppingBackgroundWork}
+          aria-label="Stop all background work"
           onClick={() => void handleStopBackgroundWork()}
         >
           {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
@@ -7638,9 +7652,10 @@ export default function ChatView(props: ChatViewProps) {
     activeBackgroundTasks,
     activeThread,
     canOperateThread,
+    environmentId,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
-    onOpenRelatedThread,
+    rosterBackgroundTasks,
   ]);
   // Settled, snoozed, and woke are thread state, not composer actions: each
   // gets one quiet line after the last message instead of a banner. A woken
@@ -8422,9 +8437,9 @@ export default function ChatView(props: ChatViewProps) {
     routeThreadKey: string;
   } | null>(null);
 
-  if (pendingRevert && pendingRevert.routeThreadKey !== routeThreadKey) {
-    setPendingRevert(null);
-  }
+  useEffect(() => {
+    setPendingRevert((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
+  }, [routeThreadKey]);
 
   const onRevertToTurnCount = useCallback(
     async (turnCount: number, messageId: MessageId, restoreFiles?: boolean) => {
@@ -8452,13 +8467,6 @@ export default function ChatView(props: ChatViewProps) {
         : undefined;
       if (!message || message.role !== "user") return;
 
-      if (!supportsConversationRollback) {
-        setThreadError(
-          activeThread.id,
-          "This provider does not support reverting conversation history. Start a new thread instead.",
-        );
-        return;
-      }
       if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
         setThreadError(
           activeThread.id,
@@ -8469,6 +8477,11 @@ export default function ChatView(props: ChatViewProps) {
       if (phase === "running" || isSendBusy || isConnecting) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
+      }
+      if (restoreFiles === undefined && !canRestoreFilesForRun(turnDiffSummaries, message.runId)) {
+        // No file snapshot for this turn (for example, outside git): edit the
+        // conversation only, without asking about files.
+        restoreFiles = false;
       }
       if (restoreFiles === undefined) {
         setPendingRevert({ turnCount, messageId, routeThreadKey });
@@ -8491,33 +8504,13 @@ export default function ChatView(props: ChatViewProps) {
           httpBaseUrl: connection.httpBaseUrl,
           createAssetUrl: createAttachmentAssetUrl,
         });
-        const store = useComposerDraftStore.getState();
-        const draft = store.getComposerDraft(composerDraftTarget);
-        if (
-          (draft?.images.length ?? 0) + (draft?.files.length ?? 0) + files.length >
-          PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-        ) {
+        if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
           throw new Error(
             "Make room for this message's attachments in the composer before rewinding.",
           );
         }
-        const commandId = CommandId.make(randomUUID());
-        await waitForRevertedMessage(routeThreadRef, messageId, turnCount, commandId, async () => {
-          const result = await revertThreadCheckpoint({
-            environmentId,
-            input: { commandId, threadId: activeThread.id, turnCount, restoreFiles },
-          });
-          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        });
-        const currentPrompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
-        const restoredPrompt = recallableComposerPrompt(message.text);
-        const nextPrompt =
-          restoredPrompt.length === 0
-            ? currentPrompt
-            : currentPrompt.length > 0
-              ? `${currentPrompt}\n\n${restoredPrompt}`
-              : restoredPrompt;
-        store.setPrompt(composerDraftTarget, nextPrompt);
+        if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+        const nextPrompt = recallableComposerPrompt(message.text);
         const images: ComposerImageAttachment[] = [];
         const restoredFiles: ComposerFileAttachment[] = [];
         files.forEach((file, index) => {
@@ -8534,8 +8527,14 @@ export default function ChatView(props: ChatViewProps) {
             restoredFiles.push({ ...attachment, type: "file" });
           }
         });
-        store.addImages(composerDraftTarget, images, { allowDuplicates: true });
-        store.addFiles(composerDraftTarget, restoredFiles, { allowDuplicates: true });
+        loadMessageRewriteDraft({
+          threadRef: routeThreadRef,
+          prompt: nextPrompt,
+          images,
+          files: restoredFiles,
+        });
+        setEditingQueuedRun(null);
+        setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
         if (currentRouteThreadKeyRef.current === routeThreadKey) {
           promptRef.current = nextPrompt;
           composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
@@ -8561,7 +8560,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread,
       activeEnvironmentUnavailable,
       activeEnvironmentUnavailableLabel,
-      composerDraftTarget,
+      routeThreadRef,
       composerRef,
       createAttachmentAssetUrl,
       environmentId,
@@ -8569,12 +8568,10 @@ export default function ChatView(props: ChatViewProps) {
       isRevertingCheckpoint,
       isSendBusy,
       phase,
-      revertThreadCheckpoint,
       routeThreadKey,
-      routeThreadRef,
       setThreadError,
-      supportsConversationRollback,
       serverProjection,
+      turnDiffSummaries,
     ],
   );
 
@@ -8846,6 +8843,27 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
+    const sideChatCommand =
+      isServerThread && !directAnnotation && !composerHasNonPromptContent
+        ? parseSideChatCommand(promptRef.current)
+        : null;
+    if (sideChatCommand !== null && rewritingMessage === null) {
+      if (activeMessageCount === 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Nothing to ask about yet",
+            description: "Send a message first, then try /side again.",
+          }),
+        );
+        return;
+      }
+      promptRef.current = "";
+      setComposerDraftPrompt(composerDraftTarget, "");
+      composerRef.current?.resetCursorState();
+      void openSideChat(activeThread, sideChatCommand.question);
+      return;
+    }
     const sendCtx = composerRef.current?.getSendContext();
     if (activePendingProgress && sendCtx?.answeringPendingUserInput !== false) {
       if (directAnnotation) {
@@ -8899,6 +8917,18 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
+    if (
+      rewritingMessage !== null &&
+      (phase === "running" ||
+        multipleModelSelections !== null ||
+        ctxSelectedModelSelection.instanceId !== activeThread.modelSelection.instanceId)
+    ) {
+      setThreadError(
+        activeThread.id,
+        "Finish active turns and keep the current provider selected before sending a rewrite.",
+      );
+      return;
+    }
     const annotationImageAlreadyAttached =
       directAnnotation?.image !== undefined &&
       sendContextImages.some((image) => image.id === directAnnotation.image?.id);
@@ -9079,6 +9109,7 @@ export default function ChatView(props: ChatViewProps) {
         composerThreadContexts.length,
     });
     const feedbackCommand =
+      rewritingMessage === null &&
       ctxSelectedProvider === "codex" &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
@@ -9136,6 +9167,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       !directAnnotation &&
+      rewritingMessage === null &&
       sendInteractionModeEnabled &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
@@ -9218,7 +9250,7 @@ export default function ChatView(props: ChatViewProps) {
       composerThreadContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
-    if (standaloneSlashCommand && multipleModelSelections === null) {
+    if (standaloneSlashCommand && multipleModelSelections === null && rewritingMessage === null) {
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -9252,6 +9284,13 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
+    const draftSubagentRoster = isLocalDraftThread
+      ? draftRosterWithDefaultPreset(
+          useComposerDraftStore.getState().getDraftThread(composerDraftTarget)?.subagentRoster,
+          settings.subagentPresets,
+          settings.defaultSubagentPresetId,
+        )
+      : undefined;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
@@ -9418,6 +9457,49 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
 
+    if (rewritingMessage !== null && !rewritingMessage.rewound) {
+      useComposerDraftStore.setState((store) => ({
+        rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+      }));
+      try {
+        const commandId = CommandId.make(randomUUID());
+        await waitForRevertedMessage(
+          routeThreadRef,
+          rewritingMessage.messageId,
+          rewritingMessage.turnCount,
+          commandId,
+          async () => {
+            const result = await revertThreadCheckpoint({
+              environmentId,
+              input: {
+                commandId,
+                threadId: threadIdForSend,
+                turnCount: rewritingMessage.turnCount,
+                restoreFiles: rewritingMessage.restoreFiles,
+              },
+            });
+            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          },
+        );
+        setRewritingMessage((current) =>
+          current === rewritingMessage ? { ...current, rewound: true } : current,
+        );
+      } catch (error) {
+        sendInFlightRef.current = false;
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Could not rewrite this message.",
+        );
+        return;
+      } finally {
+        useComposerDraftStore.setState((store) => {
+          const remaining = new Set(store.rewindingThreadKeys);
+          remaining.delete(routeThreadKey);
+          return { rewindingThreadKeys: remaining };
+        });
+      }
+    }
+
     if (
       multipleModelSelections === null &&
       shouldDockDraftHeroForSubmission({ isDraftHeroState, activeThreadKey, submissionIntent }) &&
@@ -9555,6 +9637,14 @@ export default function ChatView(props: ChatViewProps) {
               const supportsInlineMessageContext =
                 appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
                   .capabilities.inlineMessageContext === true;
+              const rosterPatch = draftSubagentRosterPatch(draftSubagentRoster, [targetThreadId]);
+              if (rosterPatch) {
+                const saved = await updateProjectScriptSettings({
+                  environmentId,
+                  input: { patch: rosterPatch },
+                });
+                if (saved._tag === "Failure") throw squashAtomCommandFailure(saved);
+              }
               requestMayHaveStarted = true;
               const result = await startThreadTurn({
                 environmentId,
@@ -9866,6 +9956,14 @@ export default function ChatView(props: ChatViewProps) {
     );
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
+    const rosterPatch = draftSubagentRosterPatch(draftSubagentRoster, [threadIdForSend]);
+    if (rosterPatch) {
+      const saved = await updateProjectScriptSettings({
+        environmentId,
+        input: { patch: rosterPatch },
+      });
+      if (saved._tag === "Failure") failure = saved;
+    }
 
     if (failure === null && isServerThread) {
       const settingsResult = await persistThreadSettingsForNextTurn({
@@ -10021,6 +10119,11 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (rewritingMessage !== null) {
+          setRewritingMessage((current) =>
+            current?.messageId === rewritingMessage.messageId ? null : current,
+          );
+        }
         setKeepFullHistory(routeThreadKey, false);
         // The turn is under way and will spend quota, so that thread's limits
         // snapshot is stale. Uploads may have outlasted a navigation, so only
@@ -11095,6 +11198,22 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "side-chat" ? (
+      <SideChatPanel
+        key={renderedRightPanelSurface.threadId}
+        environmentId={activeThread.environmentId}
+        parent={activeThread}
+        sideThreadId={renderedRightPanelSurface.threadId}
+        markdownCwd={gitCwd ?? undefined}
+        workspaceRoot={activeWorkspaceRoot}
+      />
+    ) : renderedRightPanelSurface?.kind === "background-task" ? (
+      <BackgroundTaskPanel
+        key={renderedRightPanelSurface.taskId}
+        environmentId={activeThread.environmentId}
+        threadId={activeThread.id}
+        taskId={renderedRightPanelSurface.taskId}
+      />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
@@ -11349,6 +11468,7 @@ export default function ChatView(props: ChatViewProps) {
             onOpenThread={onOpenRelatedThread}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProject}
+            threadProjection={serverProjection}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
               : {})}
@@ -11473,9 +11593,7 @@ export default function ChatView(props: ChatViewProps) {
                 onRollbackCheckpoint={(input) => {
                   if (!paintOnlyDisplayedTimeline) void onRollbackCheckpoint(input);
                 }}
-                supportsConversationRollback={
-                  !paintOnlyDisplayedTimeline && supportsConversationRollback
-                }
+                supportsConversationRollback={!paintOnlyDisplayedTimeline && canOperateThread}
                 onRevertToTurnCount={
                   paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
                 }
@@ -11694,7 +11812,36 @@ export default function ChatView(props: ChatViewProps) {
                                   />
                                 ) : null
                               }
-                              bannerItems={composerBannerItems}
+                              bannerItems={
+                                rewritingMessage === null
+                                  ? composerBannerItems
+                                  : [
+                                      {
+                                        id: "rewrite-message",
+                                        variant: "info",
+                                        icon: <PencilIcon />,
+                                        title: "Rewrite from here",
+                                        description: rewritingMessage.rewound
+                                          ? "Conversation rewound. Send to continue with your edited prompt."
+                                          : "Sending replaces this message and the conversation after it.",
+                                        actions: (
+                                          <Button
+                                            size="xs"
+                                            variant="ghost"
+                                            disabled={isSendBusy || isRevertingCheckpoint}
+                                            onClick={() => {
+                                              clearComposerDraftContent(rewriteDraftTarget);
+                                              setRewritingMessage(null);
+                                              scheduleComposerFocus();
+                                            }}
+                                          >
+                                            Cancel rewrite
+                                          </Button>
+                                        ),
+                                      },
+                                      ...composerBannerItems,
+                                    ]
+                              }
                               resumeCompactionTokens={resumeCompactionTokens}
                               keepFullHistory={keepFullHistory}
                               onToggleKeepFullHistory={toggleKeepFullHistory}
@@ -12080,8 +12227,8 @@ export default function ChatView(props: ChatViewProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Edit from here?</AlertDialogTitle>
             <AlertDialogDescription>
-              Rewind chat to before this message. Your prompt and attachments return to the
-              composer.
+              Edit this prompt in the composer. The conversation rewinds only when you send. Choose
+              whether sending should also restore workspace files.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -12094,7 +12241,7 @@ export default function ChatView(props: ChatViewProps) {
                 void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, true);
               }}
             >
-              Revert files too
+              Edit and restore files on send
             </Button>
             <Button
               onClick={() => {
@@ -12103,7 +12250,7 @@ export default function ChatView(props: ChatViewProps) {
                 void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, false);
               }}
             >
-              Revert and keep changes
+              Edit and keep files
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

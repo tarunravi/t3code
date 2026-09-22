@@ -178,6 +178,7 @@ const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.p
     Layer.mergeAll(
       ProjectStore.layer,
       layerCheckpointServiceProvided,
+      layerContextHandoffServiceProvided,
       layerEventSinkProvided,
       IdAllocator.layer,
       ProjectionStore.layer,
