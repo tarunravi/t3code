@@ -29,6 +29,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useComposerDraftStore } from "../composerDraftStore";
 
 import type { Thread, TurnDiffSummary } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
@@ -82,8 +84,172 @@ import {
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForRevertedMessage,
+  loadMessageRewriteDraft,
+  messageRewriteDraftTarget,
   prepareRevertedMessageAttachments,
 } from "./ChatView.logic";
+
+describe("sent-message rewrite draft", () => {
+  it("loads and replaces the selected prompt without changing the thread draft; cancel restores it", () => {
+    const threadRef = scopeThreadRef(
+      EnvironmentId.make("rewrite-env"),
+      ThreadId.make("rewrite-thread"),
+    );
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Unsent next question");
+    const target = messageRewriteDraftTarget(threadRef);
+    loadMessageRewriteDraft({ threadRef, prompt: "Previously sent prompt", images: [], files: [] });
+    expect(store.getComposerDraft(target)?.prompt).toBe("Previously sent prompt");
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Unsent next question");
+    store.setPrompt(target, "Edited prompt");
+    loadMessageRewriteDraft({ threadRef, prompt: "Another sent prompt", images: [], files: [] });
+    expect(store.getComposerDraft(target)?.prompt).toBe("Another sent prompt");
+    store.clearComposerContent(target);
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Unsent next question");
+    store.clearComposerContent(threadRef);
+  });
+
+  it("isolates rewrite drafts across environment routes", () => {
+    const threadId = ThreadId.make("same-rewrite-id");
+    const first = scopeThreadRef(EnvironmentId.make("rewrite-first"), threadId);
+    const second = scopeThreadRef(EnvironmentId.make("rewrite-second"), threadId);
+    loadMessageRewriteDraft({ threadRef: first, prompt: "First", images: [], files: [] });
+    loadMessageRewriteDraft({ threadRef: second, prompt: "Second", images: [], files: [] });
+    const store = useComposerDraftStore.getState();
+    expect(store.getComposerDraft(messageRewriteDraftTarget(first))?.prompt).toBe("First");
+    expect(store.getComposerDraft(messageRewriteDraftTarget(second))?.prompt).toBe("Second");
+    store.clearComposerContent(messageRewriteDraftTarget(first));
+    store.clearComposerContent(messageRewriteDraftTarget(second));
+  });
+});
+
+describe("toolGroupConsumesUpwardNavigation", () => {
+  class ScrollElement extends EventTarget {
+    scrollTop = 0;
+    scrollHeight = 100;
+    clientHeight = 100;
+    overflowY = "visible";
+
+    constructor(
+      readonly parentElement: ScrollElement | null = null,
+      readonly isToolGroup = false,
+    ) {
+      super();
+    }
+
+    closest(selector: string): ScrollElement | null {
+      if (selector !== "[data-tool-group-scroll]") return null;
+      return this.isToolGroup ? this : (this.parentElement?.closest(selector) ?? null);
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("Element", ScrollElement);
+    vi.stubGlobal("getComputedStyle", (element: ScrollElement) => ({
+      overflowY: element.overflowY,
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("releases upward navigation when an overflowing group is at the top", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "auto",
+      scrollHeight: 300,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(group))).toBe(false);
+  });
+
+  it.each([
+    { overflowY: "auto", scrollTop: 1 },
+    { overflowY: "auto", scrollTop: 0.25 },
+    { overflowY: "scroll", scrollTop: 80 },
+  ])("consumes upward navigation within a scrolled group: %j", (scroll) => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      scrollHeight: 300,
+      ...scroll,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(group)).toBe(true);
+  });
+
+  it.each([100, 300])(
+    "consumes scrolling in a nested result with a group content height of %i",
+    (scrollHeight) => {
+      const group = Object.assign(new ScrollElement(null, true), {
+        overflowY: "auto",
+        scrollHeight,
+      });
+      const result = Object.assign(new ScrollElement(group), {
+        overflowY: "auto",
+        scrollHeight: 300,
+        scrollTop: 0.25,
+      });
+
+      expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(true);
+    },
+  );
+
+  it("releases upward navigation when the group and nested result are both at the top", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "auto",
+      scrollHeight: 300,
+    });
+    const result = Object.assign(new ScrollElement(group), {
+      overflowY: "scroll",
+      scrollHeight: 300,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(false);
+  });
+
+  it("ignores targets outside a tool group and non-element targets", () => {
+    const outside = Object.assign(new ScrollElement(), {
+      overflowY: "auto",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(outside)).toBe(false);
+    expect(toolGroupConsumesUpwardNavigation(new EventTarget())).toBe(false);
+    expect(toolGroupConsumesUpwardNavigation(null)).toBe(false);
+  });
+
+  it("does not consume scrolling from an ancestor beyond the tool group", () => {
+    const timeline = Object.assign(new ScrollElement(), {
+      overflowY: "auto",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+    const group = new ScrollElement(timeline, true);
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(group))).toBe(false);
+  });
+
+  it.each(["hidden", "clip", "visible"])(
+    "ignores a non-scrollable child with overflow-y %s",
+    (overflowY) => {
+      const group = new ScrollElement(null, true);
+      const result = Object.assign(new ScrollElement(group), {
+        overflowY,
+        scrollHeight: 300,
+        scrollTop: 40,
+      });
+
+      expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(false);
+    },
+  );
+
+  it("does not consume programmatic scrolling on an overflow-hidden group", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "hidden",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(group)).toBe(false);
+  });
+});
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");

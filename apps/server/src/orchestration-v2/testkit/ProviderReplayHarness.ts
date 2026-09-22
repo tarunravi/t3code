@@ -371,6 +371,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     Layer.provide(
       Layer.mergeAll(
         checkpointServiceProvided,
+        contextHandoffServiceProvided,
         eventSinkProvided,
         idAllocatorLayer,
         storesLayer,
