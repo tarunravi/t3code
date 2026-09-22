@@ -479,6 +479,29 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         });
 
         if (status === "ready") {
+          const busy = yield* orchestrator
+            .dispatch({
+              type: "checkpoint.rollback",
+              commandId: CommandId.make("runtime-rollback-busy"),
+              threadId,
+              checkpointId,
+              scopeId: scope.id,
+            })
+            .pipe(Effect.flip);
+          assert.match(String(busy.cause), /active and queued turns/);
+          assert.equal(yield* orchestrator.getThreadEventSequence(threadId), previousSequence);
+          assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          yield* eventSink.write({
+            events: [
+              {
+                id: EventId.make("runtime-rollback-run-completed"),
+                type: "run.updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...projection.runs[0]!, status: "completed", completedAt: now },
+              },
+            ],
+          });
           const accepted = yield* rollback;
           assert.deepEqual(
             accepted.storedEvents.map((stored) => stored.event.type),
