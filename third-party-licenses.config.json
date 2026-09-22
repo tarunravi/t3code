@@ -511,6 +511,28 @@
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2025 opencode"]
       }
+    },
+    {
+      "license": "MIT",
+      "name": "khroma",
+      "sourceUrl": "https://github.com/mermaid-js/khroma",
+      "generatedNotice": {
+        "licenseId": "MIT"
+      }
+    },
+    {
+      "name": "rehype-katex",
+      "sourceUrl": "https://github.com/remarkjs/remark-rehype/tree/main/packages/rehype-katex",
+      "generatedNotice": {
+        "licenseId": "MIT"
+      }
+    },
+    {
+      "name": "remark-math",
+      "sourceUrl": "https://github.com/remarkjs/remark-math",
+      "generatedNotice": {
+        "licenseId": "MIT"
+      }
     }
   ]
 }
