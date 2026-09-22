@@ -15,9 +15,9 @@ import { isAbsolutePath } from "@t3tools/shared/path";
 import { usePullRequestLinking } from "~/hooks/usePullRequestLinking";
 import { AuthFilesystemReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import {
-  CHAT_MARKDOWN_REMARK_PLUGINS,
-  CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
-  CHAT_MARKDOWN_REHYPE_PLUGINS,
+  CHAT_MARKDOWN_REMARK_PLUGINS as BASE_CHAT_MARKDOWN_REMARK_PLUGINS,
+  CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS as BASE_CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
+  CHAT_MARKDOWN_REHYPE_PLUGINS as BASE_CHAT_MARKDOWN_REHYPE_PLUGINS,
 } from "@t3tools/shared/markdownPipeline";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -104,6 +104,8 @@ import ReactMarkdown from "react-markdown";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
 import { defaultUrlTransform } from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
@@ -483,6 +485,49 @@ function isClosedCodeFence(node: ReactMarkdownExtraProps["node"], text: string):
     opening[0] === closing[0] &&
     closing.length >= opening.length
   );
+}
+
+type MarkdownAstNode = {
+  type?: string;
+  value?: string;
+  meta?: unknown;
+  url?: string;
+  data?: {
+    hProperties?: Record<string, unknown>;
+  };
+  children?: MarkdownAstNode[];
+};
+
+/**
+ * Skill references use the same `$name` delimiters as inline math. If a known
+ * skill is parsed as the start of a math span, restore the source text so the
+ * skill renderer can turn it into a chip without disabling ordinary `$...$` math.
+ */
+function remarkRestoreSkillMathCollisions(
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name">>,
+) {
+  const skillNames = new Set(skills.map((skill) => skill.name));
+  return () => {
+    return (tree: MarkdownAstNode) => {
+      const visit = (node: MarkdownAstNode | undefined) => {
+        if (!node) return;
+        if (
+          (node.type === "inlineMath" || node.type === "math") &&
+          typeof node.value === "string"
+        ) {
+          const skillName = node.value.match(/^[a-zA-Z0-9][a-zA-Z0-9:_-]*(?=\s|$)/)?.[0];
+          if (skillName && skillNames.has(skillName)) {
+            node.type = "text";
+            node.value = `$${node.value}$`;
+            delete node.data;
+          }
+        }
+        node.children?.forEach((child) => visit(child));
+      };
+
+      visit(tree);
+    };
+  };
 }
 
 function nodeToPlainText(node: ReactNode): string {
@@ -1876,14 +1921,22 @@ function rehypeHeadingIds() {
 }
 
 // Heading ids are added after sanitizing, which would prefix them a second time.
+const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkMath, ...BASE_CHAT_MARKDOWN_REMARK_PLUGINS];
+const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS = [
+  remarkMath,
+  ...BASE_CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
+];
+const CHAT_MARKDOWN_REHYPE_PLUGINS = [...BASE_CHAT_MARKDOWN_REHYPE_PLUGINS, rehypeKatex];
+
 const CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS = [
   ...CHAT_MARKDOWN_REHYPE_PLUGINS,
   rehypeHeadingIds,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
-const CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS = [rehypeHeadingIds] satisfies NonNullable<
-  ReactMarkdownOptions["rehypePlugins"]
->;
+const CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS = [
+  rehypeKatex,
+  rehypeHeadingIds,
+] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 function MarkdownExternalLinkContent({
   host,
@@ -3388,6 +3441,7 @@ function ChatMarkdown({
     /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text);
   const remarkPlugins = [
     ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
+    remarkRestoreSkillMathCollisions(componentState.skills),
     ...extraRemarkPlugins,
     ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
   ];
