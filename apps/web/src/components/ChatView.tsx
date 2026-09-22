@@ -264,6 +264,7 @@ import {
   AlarmClockIcon,
   CheckCircle2Icon,
   PaperclipIcon,
+  PencilIcon,
   ChevronDownIcon,
   DownloadIcon,
   GitBranchIcon,
@@ -483,6 +484,8 @@ import {
   resolveFileAttachmentUrl,
   prepareRevertedMessageAttachments,
   waitForRevertedMessage,
+  loadMessageRewriteDraft,
+  messageRewriteDraftTarget,
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
@@ -1578,10 +1581,24 @@ export default function ChatView(props: ChatViewProps) {
   );
   const baseComposerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
+  const [rewriteState, setRewritingMessage] = useState<{
+    messageId: MessageId;
+    turnCount: number;
+    restoreFiles: boolean;
+    routeThreadKey: string;
+    rewound: boolean;
+  } | null>(null);
+  const rewritingMessage = rewriteState?.routeThreadKey === routeThreadKey ? rewriteState : null;
+  const rewriteDraftTarget = messageRewriteDraftTarget(routeThreadRef);
+  useEffect(() => {
+    setRewritingMessage((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
+  }, [routeThreadKey]);
   const composerDraftTarget: ScopedThreadRef | DraftId =
-    editingQueuedRun === null
-      ? baseComposerDraftTarget
-      : queuedEditDraftTargetFor(editingQueuedRun.runId);
+    rewritingMessage !== null
+      ? rewriteDraftTarget
+      : editingQueuedRun === null
+        ? baseComposerDraftTarget
+        : queuedEditDraftTargetFor(editingQueuedRun.runId);
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
       ? store.getDraftSessionByRef(routeThreadRef)
@@ -3092,12 +3109,6 @@ export default function ChatView(props: ChatViewProps) {
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
   });
-  const conversationProviderStatus =
-    providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
-    activeProviderStatus;
-  const supportsConversationRollback =
-    conversationProviderStatus !== null &&
-    conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
   const pendingRequests = useMemo(
     () =>
@@ -4300,6 +4311,7 @@ export default function ChatView(props: ChatViewProps) {
   const beginEditingQueuedRun = useCallback(
     (request: EditQueuedRunRequest) => {
       if (!activeThread) return;
+      setRewritingMessage(null);
       if (editingQueuedRun !== null && editingQueuedRun.runId !== request.runId) {
         clearComposerDraftContent(queuedEditDraftTargetFor(editingQueuedRun.runId));
       }
@@ -7512,9 +7524,9 @@ export default function ChatView(props: ChatViewProps) {
     routeThreadKey: string;
   } | null>(null);
 
-  if (pendingRevert && pendingRevert.routeThreadKey !== routeThreadKey) {
-    setPendingRevert(null);
-  }
+  useEffect(() => {
+    setPendingRevert((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
+  }, [routeThreadKey]);
 
   const onRevertToTurnCount = useCallback(
     async (turnCount: number, messageId: MessageId, restoreFiles?: boolean) => {
@@ -7536,13 +7548,6 @@ export default function ChatView(props: ChatViewProps) {
         : undefined;
       if (!message || message.role !== "user") return;
 
-      if (!supportsConversationRollback) {
-        setThreadError(
-          activeThread.id,
-          "This provider does not support reverting conversation history. Start a new thread instead.",
-        );
-        return;
-      }
       if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
         setThreadError(
           activeThread.id,
@@ -7575,32 +7580,13 @@ export default function ChatView(props: ChatViewProps) {
           httpBaseUrl: connection.httpBaseUrl,
           createAssetUrl: createAttachmentAssetUrl,
         });
-        const store = useComposerDraftStore.getState();
-        const draft = store.getComposerDraft(composerDraftTarget);
-        if (
-          (draft?.images.length ?? 0) + (draft?.files.length ?? 0) + files.length >
-          PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-        ) {
+        if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
           throw new Error(
             "Make room for this message's attachments in the composer before rewinding.",
           );
         }
-        await waitForRevertedMessage(routeThreadRef, messageId, turnCount, async () => {
-          const result = await revertThreadCheckpoint({
-            environmentId,
-            input: { threadId: activeThread.id, turnCount, restoreFiles },
-          });
-          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        });
-        const currentPrompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
-        const restoredPrompt = recallableComposerPrompt(message.text);
-        const nextPrompt =
-          restoredPrompt.length === 0
-            ? currentPrompt
-            : currentPrompt.length > 0
-              ? `${currentPrompt}\n\n${restoredPrompt}`
-              : restoredPrompt;
-        store.setPrompt(composerDraftTarget, nextPrompt);
+        if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+        const nextPrompt = recallableComposerPrompt(message.text);
         const images: ComposerImageAttachment[] = [];
         const restoredFiles: ComposerFileAttachment[] = [];
         files.forEach((file, index) => {
@@ -7617,8 +7603,14 @@ export default function ChatView(props: ChatViewProps) {
             restoredFiles.push({ ...attachment, type: "file" });
           }
         });
-        store.addImages(composerDraftTarget, images, { allowDuplicates: true });
-        store.addFiles(composerDraftTarget, restoredFiles, { allowDuplicates: true });
+        loadMessageRewriteDraft({
+          threadRef: routeThreadRef,
+          prompt: nextPrompt,
+          images,
+          files: restoredFiles,
+        });
+        setEditingQueuedRun(null);
+        setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
         if (currentRouteThreadKeyRef.current === routeThreadKey) {
           promptRef.current = nextPrompt;
           composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
@@ -7644,7 +7636,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread,
       activeEnvironmentUnavailable,
       activeEnvironmentUnavailableLabel,
-      composerDraftTarget,
+      routeThreadRef,
       composerRef,
       createAttachmentAssetUrl,
       environmentId,
@@ -7652,11 +7644,8 @@ export default function ChatView(props: ChatViewProps) {
       isRevertingCheckpoint,
       isSendBusy,
       phase,
-      revertThreadCheckpoint,
       routeThreadKey,
-      routeThreadRef,
       setThreadError,
-      supportsConversationRollback,
       serverProjection,
     ],
   );
@@ -7979,6 +7968,18 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
+    if (
+      rewritingMessage !== null &&
+      (phase === "running" ||
+        multipleModelSelections !== null ||
+        ctxSelectedModelSelection.instanceId !== activeThread.modelSelection.instanceId)
+    ) {
+      setThreadError(
+        activeThread.id,
+        "Finish active turns and keep the current provider selected before sending a rewrite.",
+      );
+      return;
+    }
     const annotationImageAlreadyAttached =
       directAnnotation?.image !== undefined &&
       sendContextImages.some((image) => image.id === directAnnotation.image?.id);
@@ -8159,6 +8160,7 @@ export default function ChatView(props: ChatViewProps) {
         composerThreadContexts.length,
     });
     const feedbackCommand =
+      rewritingMessage === null &&
       ctxSelectedProvider === "codex" &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
@@ -8216,6 +8218,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       !directAnnotation &&
+      rewritingMessage === null &&
       sendInteractionModeEnabled &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
@@ -8293,7 +8296,7 @@ export default function ChatView(props: ChatViewProps) {
       composerThreadContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
-    if (standaloneSlashCommand && multipleModelSelections === null) {
+    if (standaloneSlashCommand && multipleModelSelections === null && rewritingMessage === null) {
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -8481,6 +8484,46 @@ export default function ChatView(props: ChatViewProps) {
         sendInFlightRef.current = false;
         setThreadError(threadIdForSend, "Retry or remove failed uploads before sending.");
         return;
+      }
+    }
+
+    if (rewritingMessage !== null && !rewritingMessage.rewound) {
+      useComposerDraftStore.setState((store) => ({
+        rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+      }));
+      try {
+        await waitForRevertedMessage(
+          routeThreadRef,
+          rewritingMessage.messageId,
+          rewritingMessage.turnCount,
+          async () => {
+            const result = await revertThreadCheckpoint({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                turnCount: rewritingMessage.turnCount,
+                restoreFiles: rewritingMessage.restoreFiles,
+              },
+            });
+            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          },
+        );
+        setRewritingMessage((current) =>
+          current === rewritingMessage ? { ...current, rewound: true } : current,
+        );
+      } catch (error) {
+        sendInFlightRef.current = false;
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Could not rewrite this message.",
+        );
+        return;
+      } finally {
+        useComposerDraftStore.setState((store) => {
+          const remaining = new Set(store.rewindingThreadKeys);
+          remaining.delete(routeThreadKey);
+          return { rewindingThreadKeys: remaining };
+        });
       }
     }
 
@@ -9052,6 +9095,11 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (rewritingMessage !== null) {
+          setRewritingMessage((current) =>
+            current?.messageId === rewritingMessage.messageId ? null : current,
+          );
+        }
         // The turn is under way and will spend quota, so that thread's limits
         // snapshot is stale. Uploads may have outlasted a navigation, so only
         // the sending thread's panel clears.
@@ -10456,9 +10504,7 @@ export default function ChatView(props: ChatViewProps) {
                 onRollbackCheckpoint={(input) => {
                   if (!paintOnlyDisplayedTimeline) void onRollbackCheckpoint(input);
                 }}
-                supportsConversationRollback={
-                  !paintOnlyDisplayedTimeline && supportsConversationRollback
-                }
+                supportsConversationRollback={!paintOnlyDisplayedTimeline}
                 onRevertToTurnCount={
                   paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
                 }
@@ -10648,7 +10694,36 @@ export default function ChatView(props: ChatViewProps) {
                                 />
                               ) : null
                             }
-                            bannerItems={composerBannerItems}
+                            bannerItems={
+                              rewritingMessage === null
+                                ? composerBannerItems
+                                : [
+                                    {
+                                      id: "rewrite-message",
+                                      variant: "info",
+                                      icon: <PencilIcon />,
+                                      title: "Rewrite from here",
+                                      description: rewritingMessage.rewound
+                                        ? "Conversation rewound. Send to continue with your edited prompt."
+                                        : "Sending replaces this message and the conversation after it.",
+                                      actions: (
+                                        <Button
+                                          size="xs"
+                                          variant="ghost"
+                                          disabled={isSendBusy || isRevertingCheckpoint}
+                                          onClick={() => {
+                                            clearComposerDraftContent(rewriteDraftTarget);
+                                            setRewritingMessage(null);
+                                            scheduleComposerFocus();
+                                          }}
+                                        >
+                                          Cancel rewrite
+                                        </Button>
+                                      ),
+                                    },
+                                    ...composerBannerItems,
+                                  ]
+                            }
                             // With attachments or contexts aboard the pick just inserts the
                             // text, so it sends as a prompt like the typed path would.
                             onUsageLimitsCommand={
@@ -11011,8 +11086,8 @@ export default function ChatView(props: ChatViewProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Edit from here?</AlertDialogTitle>
             <AlertDialogDescription>
-              Rewind chat to before this message. Your prompt and attachments return to the
-              composer.
+              Edit this prompt in the composer. The conversation rewinds only when you send. Choose
+              whether sending should also restore workspace files.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -11025,7 +11100,7 @@ export default function ChatView(props: ChatViewProps) {
                 void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, true);
               }}
             >
-              Revert files too
+              Edit and restore files on send
             </Button>
             <Button
               onClick={() => {
@@ -11034,7 +11109,7 @@ export default function ChatView(props: ChatViewProps) {
                 void onRevertToTurnCount(pendingRevert.turnCount, pendingRevert.messageId, false);
               }}
             >
-              Revert and keep changes
+              Edit and keep files
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
