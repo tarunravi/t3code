@@ -7,6 +7,7 @@ import {
 import {
   CheckIcon,
   ChevronRightIcon,
+  CodeIcon,
   CopyIcon,
   FileSpreadsheetIcon,
   FileTextIcon,
@@ -24,6 +25,7 @@ import {
   SparklesIcon,
   TriangleAlertIcon,
   WrapTextIcon,
+  WorkflowIcon,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -65,6 +67,7 @@ import React, {
   isValidElement,
   use,
   useCallback,
+  useId,
   memo,
   useEffect,
   useMemo,
@@ -83,7 +86,9 @@ import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
 import { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
+import remarkMath from "remark-math";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
@@ -485,6 +490,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
 } satisfies Parameters<typeof rehypeSanitize>[0];
 
 const CHAT_MARKDOWN_REMARK_PLUGINS = [
+  remarkMath,
   remarkGfm,
   remarkGithubAlerts,
   remarkNormalizeListItemIndentation,
@@ -494,6 +500,7 @@ const CHAT_MARKDOWN_REMARK_PLUGINS = [
 ] satisfies NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
 
 const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS = [
+  remarkMath,
   remarkGfm,
   remarkGithubAlerts,
   remarkNormalizeListItemIndentation,
@@ -507,7 +514,12 @@ const CHAT_MARKDOWN_REHYPE_PLUGINS = [
   rehypeRaw,
   rehypePreserveImageSourceMeta,
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
+  rehypeKatex,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
+
+const CHAT_MARKDOWN_REHYPE_PLUGINS_WITHOUT_RAW = [rehypeKatex] satisfies NonNullable<
+  ReactMarkdownOptions["rehypePlugins"]
+>;
 
 /** GitHub's own five alert kinds, in its colors: the glyph names the urgency, the title says it. */
 const GITHUB_ALERT_PRESENTATIONS: Record<
@@ -585,6 +597,7 @@ function extractPreCodeMeta(node: unknown): string | undefined {
 
 type MarkdownAstNode = {
   type?: string;
+  value?: string;
   meta?: unknown;
   url?: string;
   data?: {
@@ -609,6 +622,38 @@ function remarkPreserveCodeMeta() {
     };
 
     visit(tree);
+  };
+}
+
+/**
+ * Skill references use the same `$name` delimiters as inline math. If a known
+ * skill is parsed as the start of a math span, restore the source text so the
+ * skill renderer can turn it into a chip without disabling ordinary `$...$` math.
+ */
+function remarkRestoreSkillMathCollisions(
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name">>,
+) {
+  const skillNames = new Set(skills.map((skill) => skill.name));
+  return () => {
+    return (tree: MarkdownAstNode) => {
+      const visit = (node: MarkdownAstNode | undefined) => {
+        if (!node) return;
+        if (
+          (node.type === "inlineMath" || node.type === "math") &&
+          typeof node.value === "string"
+        ) {
+          const skillName = node.value.match(/^[a-zA-Z0-9][a-zA-Z0-9:_-]*(?=\s|$)/)?.[0];
+          if (skillName && skillNames.has(skillName)) {
+            node.type = "text";
+            node.value = `$${node.value}$`;
+            delete node.data;
+          }
+        }
+        node.children?.forEach((child) => visit(child));
+      };
+
+      visit(tree);
+    };
   };
 }
 
@@ -911,6 +956,200 @@ function MarkdownCodeBlockTitleContent({
       </TooltipTrigger>
       <TooltipPopup side="top">{language}</TooltipPopup>
     </Tooltip>
+  );
+}
+
+type MermaidRenderState =
+  | { readonly status: "loading" }
+  | { readonly status: "streaming" }
+  | { readonly status: "ready"; readonly svg: string }
+  | { readonly status: "error"; readonly message: string };
+
+function MermaidDiagram({
+  code,
+  theme,
+  isStreaming,
+}: {
+  readonly code: string;
+  readonly theme: "light" | "dark";
+  readonly isStreaming: boolean;
+}) {
+  const instanceId = useId().replaceAll(":", "");
+  const renderId = useMemo(
+    () => `t3-mermaid-${instanceId}-${fnv1a32(code).toString(36)}`,
+    [code, instanceId],
+  );
+  const [state, setState] = useState<MermaidRenderState>({
+    status: isStreaming ? "streaming" : "loading",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (isStreaming) {
+      setState({ status: "streaming" });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setState({ status: "loading" });
+    void import("mermaid")
+      .then(async ({ default: mermaid }) => {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: theme === "dark" ? "dark" : "default",
+        });
+        return mermaid.render(renderId, code);
+      })
+      .then(
+        ({ svg }) => {
+          if (!cancelled) setState({ status: "ready", svg });
+        },
+        (error: unknown) => {
+          if (!cancelled) {
+            setState({
+              status: "error",
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        },
+      );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code, isStreaming, renderId, theme]);
+
+  if (state.status === "ready") {
+    return (
+      <div
+        className="chat-markdown-mermaid-diagram flex min-h-32 justify-center overflow-x-auto p-4 [&_svg]:h-auto [&_svg]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: state.svg }}
+      />
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div className="p-3 text-xs text-destructive" role="alert">
+        Mermaid could not render this diagram: {state.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 text-xs text-muted-foreground" role="status">
+      {state.status === "streaming" ? "Waiting for the diagram to finish…" : "Rendering diagram…"}
+    </div>
+  );
+}
+
+function MarkdownMermaidBlock({
+  code,
+  fenceTitle,
+  theme,
+  isStreaming,
+}: {
+  readonly code: string;
+  readonly fenceTitle: string | null;
+  readonly theme: "light" | "dark";
+  readonly isStreaming: boolean;
+}) {
+  const [view, setView] = useState<"diagram" | "code">("diagram");
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toggleLabel = view === "diagram" ? "Show Mermaid code" : "Show Mermaid diagram";
+  const copyLabel = copied ? "Copied" : "Copy Mermaid code";
+
+  const handleCopy = useCallback(() => {
+    void writeTextToClipboard(code, "Mermaid code").then(
+      (didCopy) => {
+        if (!didCopy) return;
+        if (copiedTimerRef.current != null) clearTimeout(copiedTimerRef.current);
+        setCopied(true);
+        copiedTimerRef.current = setTimeout(() => {
+          setCopied(false);
+          copiedTimerRef.current = null;
+        }, 1200);
+      },
+      (cause) => {
+        reportMarkdownActionFailure({ operation: "copy-mermaid-code" }, cause);
+      },
+    );
+  }, [code]);
+
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current != null) clearTimeout(copiedTimerRef.current);
+    },
+    [],
+  );
+
+  return (
+    <div
+      className="chat-markdown-codeblock my-[0.65rem] overflow-hidden rounded-[var(--radius)] border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
+      data-language="mermaid"
+      data-view={view}
+    >
+      <div className="chat-markdown-codeblock-header flex items-center justify-between gap-2 pt-1.5 pr-1.5 pb-0 pl-3 select-none">
+        <span className="inline-flex min-w-0 items-center gap-[0.4rem] [font-family:var(--font-mono,ui-monospace,SFMono-Regular,monospace)] [font-size:0.6875rem]">
+          <MarkdownCodeBlockTitleContent fenceTitle={fenceTitle} language="mermaid" theme={theme} />
+        </span>
+        <span
+          className="flex items-center gap-0.5"
+          role="toolbar"
+          aria-label="Mermaid diagram actions"
+        >
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="chat-markdown-chrome-action"
+                  aria-pressed={view === "code"}
+                  aria-label={toggleLabel}
+                  onClick={() => setView((current) => (current === "diagram" ? "code" : "diagram"))}
+                />
+              }
+            >
+              {view === "diagram" ? (
+                <CodeIcon className="size-3" />
+              ) : (
+                <WorkflowIcon className="size-3" />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{toggleLabel}</TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="chat-markdown-chrome-action"
+                  onClick={handleCopy}
+                  aria-label={copyLabel}
+                />
+              }
+            >
+              {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{copyLabel}</TooltipPopup>
+          </Tooltip>
+        </span>
+      </div>
+      {view === "diagram" ? (
+        <MermaidDiagram code={code} theme={theme} isStreaming={isStreaming} />
+      ) : (
+        <pre className="chat-markdown-mermaid-code">
+          <code>{code}</code>
+        </pre>
+      )}
+    </div>
   );
 }
 
@@ -3247,6 +3486,16 @@ const CHAT_MARKDOWN_COMPONENTS = {
 
     const language = extractFenceLanguage(codeBlock.className);
     const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+    if (language === "mermaid") {
+      return (
+        <MarkdownMermaidBlock
+          code={codeBlock.code}
+          fenceTitle={fenceTitle}
+          theme={resolvedTheme}
+          isStreaming={isStreaming}
+        />
+      );
+    }
     return (
       <MarkdownCodeBlock
         code={codeBlock.code}
@@ -3303,10 +3552,11 @@ function ChatMarkdown({
   const remarkPlugins = useMemo(
     () => [
       ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
+      remarkRestoreSkillMathCollisions(componentState.skills),
       ...extraRemarkPlugins,
       ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
     ],
-    [extraRemarkPlugins, incrementalParsing, lineBreaks],
+    [componentState.skills, extraRemarkPlugins, incrementalParsing, lineBreaks],
   );
 
   // react-markdown converts unparsed HTML nodes to text when skipHtml is false.
@@ -3326,7 +3576,9 @@ function ChatMarkdown({
       <ChatMarkdownRendererContext value={componentState}>
         <ReactMarkdown
           remarkPlugins={remarkPlugins}
-          rehypePlugins={parseRawHtml ? CHAT_MARKDOWN_REHYPE_PLUGINS : undefined}
+          rehypePlugins={
+            parseRawHtml ? CHAT_MARKDOWN_REHYPE_PLUGINS : CHAT_MARKDOWN_REHYPE_PLUGINS_WITHOUT_RAW
+          }
           skipHtml={false}
           components={CHAT_MARKDOWN_COMPONENTS}
           urlTransform={markdownUrlTransform}
