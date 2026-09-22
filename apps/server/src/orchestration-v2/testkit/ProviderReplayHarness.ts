@@ -389,6 +389,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(
       Layer.mergeAll(
         layerCheckpointServiceProvided,
+        layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
         layerStores,

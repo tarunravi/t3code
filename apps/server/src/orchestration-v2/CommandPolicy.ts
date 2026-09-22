@@ -362,6 +362,25 @@ const ensureContextHandoff: CommandPolicyV2Shape["ensureContextHandoff"] = (inpu
   return Effect.void;
 };
 
+export const decideRollbackExecution = (
+  input: Parameters<CommandPolicyV2Shape["ensureRollback"]>[0] & {
+    readonly canForkFromTarget?: boolean;
+  },
+) =>
+  ensureRollback(input).pipe(
+    Effect.as("native_rollback" as const),
+    Effect.catch(() =>
+      input.canForkFromTarget &&
+      input.capabilities.threads.canForkThread &&
+      input.capabilities.threads.canForkFromTurn &&
+      input.capabilities.identity.nativeThreadIds === "strong"
+        ? Effect.succeed("native_fork" as const)
+        : ensureContextHandoff({ ...input, strategy: "full_thread_summary" }).pipe(
+            Effect.as("portable_context" as const),
+          ),
+    ),
+  );
+
 const decideForkExecution: CommandPolicyV2Shape["decideForkExecution"] = (input) => {
   // Unsuccessful runs may have no native turn or assistant cursor. Forking
   // those at native head can include later turns, so use the bounded transcript.
