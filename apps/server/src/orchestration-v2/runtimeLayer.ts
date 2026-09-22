@@ -172,6 +172,7 @@ const checkpointRollbackServiceProvided = checkpointRollbackServiceLayer.pipe(
     Layer.mergeAll(
       ProjectStore.layer,
       checkpointServiceProvided,
+      contextHandoffServiceProvided,
       eventSinkProvided,
       idAllocatorLayer,
       projectionStoreLayer,
