@@ -1116,6 +1116,49 @@ describe("CursorAdapterV2", () => {
     ),
   );
 
+  it("maps Cursor auto and model parameters to SDK selections", () => {
+    assert.deepEqual(
+      cursorSdkModelSelection({
+        instanceId: ProviderInstanceId.make("cursor"),
+        model: "auto",
+        options: [
+          { id: "thinking", value: "high" },
+          { id: "contextWindow", value: "1m" },
+          { id: "fastMode", value: true },
+        ],
+      }),
+      {
+        id: "default",
+        params: [
+          { id: "thinking", value: "high" },
+          { id: "context", value: "1m" },
+          { id: "fast", value: "true" },
+        ],
+      },
+    );
+  });
+
+  it("omits Cursor's rejected explicit Grok 4.7 500k context parameter", () => {
+    assert.deepEqual(
+      cursorSdkModelSelection({
+        instanceId: ProviderInstanceId.make("cursor"),
+        model: "grok-4.7",
+        options: [
+          { id: "contextWindow", value: "500k" },
+          { id: "fastMode", value: true },
+          { id: "reasoning_effort", value: "high" },
+        ],
+      }),
+      {
+        id: "grok-4.7",
+        params: [
+          { id: "fast", value: "true" },
+          { id: "reasoning_effort", value: "high" },
+        ],
+      },
+    );
+  });
+
   it("maps runtime modes to the SDK sandbox and auto-review controls", () => {
     const base = {
       interactionMode: "default" as const,
