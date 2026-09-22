@@ -46,6 +46,7 @@ import {
 } from "@t3tools/contracts";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as DateTime from "effect/DateTime";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   squashAtomCommandFailure,
@@ -66,6 +67,7 @@ import {
   type TurnDiffSummary,
 } from "../types";
 import {
+  DraftId, useComposerDraftStore, type ComposerFileAttachment,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftId,
@@ -1057,6 +1059,24 @@ export async function waitForRevertedMessage(
         inspect();
       }, finish);
   });
+}
+
+export function messageRewriteDraftTarget(threadRef: ScopedThreadRef): DraftId {
+  return DraftId.make(`rewrite:${scopedThreadKey(threadRef)}`);
+}
+
+export function loadMessageRewriteDraft(input: {
+  threadRef: ScopedThreadRef;
+  prompt: string;
+  images: ComposerImageAttachment[];
+  files: ComposerFileAttachment[];
+}): void {
+  const target = messageRewriteDraftTarget(input.threadRef);
+  const store = useComposerDraftStore.getState();
+  store.clearComposerContent(target);
+  store.setPrompt(target, input.prompt);
+  store.addImages(target, input.images, { allowDuplicates: true });
+  store.addFiles(target, input.files, { allowDuplicates: true });
 }
 
 export interface LocalDispatchSnapshot {

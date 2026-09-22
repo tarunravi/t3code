@@ -1,3 +1,15 @@
+import { type Dispatch, type SetStateAction } from "react";
+import { randomUUID } from "~/lib/utils";
+import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import { type ComposerImageAttachment, type ComposerFileAttachment } from "../../composerDraftStore";
+import { readPreparedConnection } from "../../state/session";
+import { recallableComposerPrompt } from "./composerPromptHistory";
+import { canRestoreFilesForRun } from "../../session-logic";
+import { prepareRevertedMessageAttachments, loadMessageRewriteDraft } from "../ChatView.logic";
+export interface MessageRewriteState {
+ readonly messageId: MessageId; readonly turnCount: number; readonly restoreFiles: boolean;
+ readonly routeThreadKey: string; readonly rewound: boolean;
+}
 import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
@@ -31,9 +43,11 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
-import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 interface TimelineRewindInput {
+ readonly turnDiffSummaries: Parameters<typeof canRestoreFilesForRun>[0];
+ readonly cancelQueuedEdit: () => void;
+ readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
   readonly routeThreadKey: string;
@@ -59,7 +73,7 @@ interface TimelineRewindInput {
  * the composer), rolling back a provider checkpoint, and forking a new thread from a run.
  */
 export function useTimelineRewind(input: TimelineRewindInput) {
-  const {
+  const { turnDiffSummaries, cancelQueuedEdit, setRewritingMessage,
     environmentId,
     routeThreadRef,
     routeThreadKey,
@@ -108,13 +122,6 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     const message = timelineMessages.find((message) => message.id === messageId);
     if (!message || message.role !== "user") return;
 
-    if (!supportsConversationRollback) {
-      setThreadError(
-        activeThread.id,
-        "This provider does not support reverting conversation history. Start a new thread instead.",
-      );
-      return;
-    }
     if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
       setThreadError(
         activeThread.id,
@@ -126,6 +133,11 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
       return;
     }
+    if (restoreFiles === undefined && !canRestoreFilesForRun(turnDiffSummaries, message.runId)) {
+      // No file snapshot for this turn (for example, outside git): edit the
+      // conversation only, without asking about files.
+      restoreFiles = false;
+    }
     if (restoreFiles === undefined) {
       openRevertConfirm(routeThreadKey, { turnCount, messageId });
       return;
@@ -135,35 +147,66 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
     }));
     setThreadError(activeThread.id, null);
-    const rewind = await rewindToMessage({
-      message,
-      environmentId,
-      routeThreadRef,
-      threadId: activeThread.id,
-      turnCount,
-      restoreFiles,
-      // Keep the live checkpoint identity when command context refetches a bounded window.
-      checkpoint: findRevertCheckpoint(serverProjection?.checkpoints ?? [], turnCount),
-      draftTarget: composerDraftTarget,
-      composerHasPendingAttachments: composerRef.current?.hasPendingAttachments() === true,
-      createAssetUrl: createAttachmentAssetUrl,
-      revertThreadCheckpoint,
-    });
-    useComposerDraftStore.setState((store) => {
-      const remaining = new Set(store.rewindingThreadKeys);
-      remaining.delete(routeThreadKey);
-      return { rewindingThreadKeys: remaining };
-    });
-    if (rewind.error !== null) {
-      setThreadError(activeThread.id, rewind.error);
-      return;
-    }
-    if (currentRouteThreadKeyRef.current === routeThreadKey) {
-      const nextPrompt = rewind.prompt;
-      promptRef.current = nextPrompt;
-      composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
-      requestAnimationFrame(() => {
-        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
+    try {
+      // Rewriting loads the message into its own draft; the rewind runs when it is sent.
+      if (composerRef.current?.hasPendingAttachments()) {
+        throw new Error("Wait for attachments to finish preparing before rewinding.");
+      }
+      const connection = readPreparedConnection(environmentId);
+      if (!connection) throw new Error("The environment is not connected.");
+      const files = await prepareRevertedMessageAttachments({
+        message,
+        environmentId,
+        httpBaseUrl: connection.httpBaseUrl,
+        createAssetUrl: createAttachmentAssetUrl,
+      });
+      if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+        throw new Error("Make room for this message's attachments in the composer before rewinding.");
+      }
+      if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+      const nextPrompt = recallableComposerPrompt(message.text);
+      const images: ComposerImageAttachment[] = [];
+      const restoredFiles: ComposerFileAttachment[] = [];
+      files.forEach((file, index) => {
+        const attachment = {
+          id: randomUUID(),
+          name: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+          file,
+        };
+        if (message.attachments?.[index]?.type === "image") {
+          images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
+        } else {
+          restoredFiles.push({ ...attachment, type: "file" });
+        }
+      });
+      loadMessageRewriteDraft({
+        threadRef: routeThreadRef,
+        prompt: nextPrompt,
+        images,
+        files: restoredFiles,
+      });
+      cancelQueuedEdit();
+      setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
+      if (currentRouteThreadKeyRef.current === routeThreadKey) {
+        promptRef.current = nextPrompt;
+        composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
+        requestAnimationFrame(() => {
+          if (currentRouteThreadKeyRef.current === routeThreadKey)
+            composerRef.current?.focusAtEnd();
+        });
+      }
+    } catch (error) {
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Failed to revert thread state.",
+      );
+    } finally {
+      useComposerDraftStore.setState((store) => {
+        const remaining = new Set(store.rewindingThreadKeys);
+        remaining.delete(routeThreadKey);
+        return { rewindingThreadKeys: remaining };
       });
     }
   };

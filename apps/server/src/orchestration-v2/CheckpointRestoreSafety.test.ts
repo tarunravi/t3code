@@ -17,9 +17,11 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
+import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2, type ProjectionCheckpointRollbackContext } from "./ProjectionStore.ts";
@@ -91,6 +93,7 @@ it.effect.each([
       runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
     const layerTest = CheckpointRollbackService.layer.pipe(
+      Layer.provide(ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer))),
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
@@ -150,6 +153,7 @@ it.effect.each([
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
+                providerSession: { capabilities: CodexProviderCapabilitiesV2 },
                 rollbackThread: () =>
                   Effect.sync(() => {
                     calls.push("provider");

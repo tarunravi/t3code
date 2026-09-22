@@ -1,3 +1,9 @@
+import { CommandId, type ScopedThreadRef } from "@t3tools/contracts";
+import { randomUUID } from "~/lib/utils";
+import { waitForRevertedMessage } from "../ChatView.logic";
+import type { MessageRewriteState } from "./useTimelineRewind";
+import { useSideChatActions } from "./SideChatPanel";
+import { parseSideChatCommand } from "../../composer-logic";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -159,6 +165,9 @@ type UsageLimitsPanel = ReturnType<typeof useUsageLimitsPanel>;
 type TimelineFollow = ReturnType<typeof useTimelineFollow>;
 
 interface ComposerSendInput {
+ readonly routeThreadRef: ScopedThreadRef;
+ readonly rewritingMessage: MessageRewriteState | null;
+ readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
@@ -253,7 +262,7 @@ interface ComposerSendInput {
  * when it fails.
  */
 export function useComposerSend(input: ComposerSendInput) {
-  const {
+  const { routeThreadRef, rewritingMessage, setRewritingMessage,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -335,6 +344,8 @@ export function useComposerSend(input: ComposerSendInput) {
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
+  const { open: openSideChat } = useSideChatActions(environmentId);
+  const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {reportFailure: false});
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
@@ -469,6 +480,27 @@ export function useComposerSend(input: ComposerSendInput) {
       });
       return;
     }
+    const sideChatCommand =
+      isServerThread && !directAnnotation && !composerHasNonPromptContent
+        ? parseSideChatCommand(promptRef.current)
+        : null;
+    if (sideChatCommand !== null && rewritingMessage === null) {
+      if (activeMessageCount === 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Nothing to ask about yet",
+            description: "Send a message first, then try /side again.",
+          }),
+        );
+        return;
+      }
+      promptRef.current = "";
+      setComposerDraftPrompt(composerDraftTarget, "");
+      composerRef.current?.resetCursorState();
+      void openSideChat(activeThread, sideChatCommand.question);
+      return;
+    }
     const sendCtx = composerRef.current?.getSendContext();
     if (activePendingProgress && sendCtx?.answeringPendingUserInput !== false) {
       if (directAnnotation) {
@@ -529,6 +561,18 @@ export function useComposerSend(input: ComposerSendInput) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
+    if (
+      rewritingMessage !== null &&
+      (phase === "running" ||
+        multipleModelSelections !== null ||
+        ctxSelectedModelSelection.instanceId !== activeThread.modelSelection.instanceId)
+    ) {
+      setThreadError(
+        activeThread.id,
+        "Finish active turns and keep the current provider selected before sending a rewrite.",
+      );
+      return;
+    }
     const { images: composerImages, previewAnnotations: composerPreviewAnnotations } =
       mergeDirectPreviewAnnotation({
         images: sendContextImages,
@@ -593,6 +637,7 @@ export function useComposerSend(input: ComposerSendInput) {
         composerThreadContexts.length,
     });
     const feedbackCommand =
+      rewritingMessage === null &&
       ctxSelectedProvider === "codex" &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
@@ -650,6 +695,7 @@ export function useComposerSend(input: ComposerSendInput) {
     }
     if (
       !directAnnotation &&
+      rewritingMessage === null &&
       sendInteractionModeEnabled &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
@@ -728,7 +774,7 @@ export function useComposerSend(input: ComposerSendInput) {
       composerThreadContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
-    if (standaloneSlashCommand && multipleModelSelections === null) {
+    if (standaloneSlashCommand && multipleModelSelections === null && rewritingMessage === null) {
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -902,6 +948,49 @@ export function useComposerSend(input: ComposerSendInput) {
         sendInFlightRef.current = false;
         setThreadError(threadIdForSend, "Retry or remove failed uploads before sending.");
         return;
+      }
+    }
+
+    if (rewritingMessage !== null && !rewritingMessage.rewound) {
+      useComposerDraftStore.setState((store) => ({
+        rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+      }));
+      try {
+        const commandId = CommandId.make(randomUUID());
+        await waitForRevertedMessage(
+          routeThreadRef,
+          rewritingMessage.messageId,
+          rewritingMessage.turnCount,
+          commandId,
+          async () => {
+            const result = await revertThreadCheckpoint({
+              environmentId,
+              input: {
+                commandId,
+                threadId: threadIdForSend,
+                turnCount: rewritingMessage.turnCount,
+                restoreFiles: rewritingMessage.restoreFiles,
+              },
+            });
+            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          },
+        );
+        setRewritingMessage((current) =>
+          current === rewritingMessage ? { ...current, rewound: true } : current,
+        );
+      } catch (error) {
+        sendInFlightRef.current = false;
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Could not rewrite this message.",
+        );
+        return;
+      } finally {
+        useComposerDraftStore.setState((store) => {
+          const remaining = new Set(store.rewindingThreadKeys);
+          remaining.delete(routeThreadKey);
+          return { rewindingThreadKeys: remaining };
+        });
       }
     }
 
@@ -1175,7 +1264,8 @@ export function useComposerSend(input: ComposerSendInput) {
       ctxSelectedModelSelection.options,
     );
 
-    let failure: AtomCommandResult<unknown, unknown> | null = null;
+    let failure: Extract<AtomCommandResult<unknown, unknown>, { readonly _tag: "Failure" }> | null =
+      null;
 
     if (failure === null && isServerThread) {
       const settingsResult = await persistThreadSettingsForNextTurn({
@@ -1320,6 +1410,11 @@ export function useComposerSend(input: ComposerSendInput) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (rewritingMessage !== null) {
+          setRewritingMessage((current) =>
+            current?.messageId === rewritingMessage.messageId ? null : current,
+          );
+        }
         setKeepFullHistory(routeThreadKey, false);
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {
