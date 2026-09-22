@@ -1,4 +1,4 @@
-import { PlayIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, PlayIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type {
   DesktopBridge,
@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -73,6 +74,10 @@ function VoiceRecordingRow({
   const [retrying, setRetrying] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: "transcription",
+    onError: (error) => setActionError(error.message),
+  });
 
   useEffect(
     () => () => {
@@ -128,16 +133,32 @@ function VoiceRecordingRow({
     <div className="border-b border-border/60 px-3 py-3 last:border-b-0 sm:px-4">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <Badge variant={failed ? "error" : "success"}>{failed ? "Failed" : "Transcribed"}</Badge>
-        <span className="text-xs text-muted-foreground">{formatTimestamp(recording.createdAt)}</span>
+        <span className="text-xs text-muted-foreground">
+          {formatTimestamp(recording.createdAt)}
+        </span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
           {formatBytes(recording.sizeBytes)}
         </span>
         {recording.attempts > 1 ? (
-          <span className="text-xs text-muted-foreground">
-            {recording.attempts} attempts
-          </span>
+          <span className="text-xs text-muted-foreground">{recording.attempts} attempts</span>
         ) : null}
         <span className="ms-auto flex shrink-0 items-center gap-1.5">
+          {recording.transcript ? (
+            <Button
+              size="icon-xs"
+              variant="ghost-muted"
+              disabled={isCopied}
+              onClick={() => copyToClipboard(recording.transcript ?? "", undefined)}
+              aria-label={isCopied ? "Copied transcription" : "Copy transcription"}
+              title={isCopied ? "Copied" : "Copy transcription"}
+            >
+              {isCopied ? (
+                <CheckIcon className="size-3 text-success" />
+              ) : (
+                <CopyIcon className="size-3" />
+              )}
+            </Button>
+          ) : null}
           {audioUrl ? null : (
             <Button
               size="icon-xs"
@@ -150,10 +171,20 @@ function VoiceRecordingRow({
               <PlayIcon className="size-3" />
             </Button>
           )}
-          <Button size="xs" variant="outline" disabled={retrying || deleting} onClick={() => void retry()}>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={retrying || deleting}
+            onClick={() => void retry()}
+          >
             {retrying ? "Retrying…" : "Retry"}
           </Button>
-          <Button size="xs" variant="ghost" disabled={retrying || deleting} onClick={() => void remove()}>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={retrying || deleting}
+            onClick={() => void remove()}
+          >
             {deleting ? "Deleting…" : "Delete"}
           </Button>
         </span>
@@ -168,12 +199,8 @@ function VoiceRecordingRow({
           {recording.error}
         </p>
       ) : null}
-      {audioError ? (
-        <p className="mt-1.5 text-xs text-destructive">{audioError}</p>
-      ) : null}
-      {actionError ? (
-        <p className="mt-1.5 text-xs text-destructive">{actionError}</p>
-      ) : null}
+      {audioError ? <p className="mt-1.5 text-xs text-destructive">{audioError}</p> : null}
+      {actionError ? <p className="mt-1.5 text-xs text-destructive">{actionError}</p> : null}
       {audioUrl ? (
         <audio controls src={audioUrl} className="mt-2 h-8 w-full" preload="metadata" />
       ) : null}
@@ -282,8 +309,8 @@ export function VoiceRecordingsSettingsPanel() {
           </p>
         ) : state.recordings.length === 0 || !bridge ? (
           <p className="px-3 py-5 text-sm/6 text-muted-foreground sm:px-4">
-            No voice recordings yet. Dictations are saved here automatically, whether
-            transcription succeeds or fails.
+            No voice recordings yet. Dictations are saved here automatically, whether transcription
+            succeeds or fails.
           </p>
         ) : (
           <div className="text-base sm:text-sm">
