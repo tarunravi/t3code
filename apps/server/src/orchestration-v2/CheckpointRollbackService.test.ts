@@ -3,6 +3,8 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointScopeId,
+  CommandId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjection,
   ProviderInstanceId,
   ProviderSessionId,
@@ -10,13 +12,13 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Layer from "effect/Layer";
 
-import { resolveCodexRollbackTurnCount } from "./Adapters/CodexAdapterV2.ts";
 import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
@@ -29,6 +31,16 @@ import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import {
+  CodexProviderCapabilitiesV2,
+  resolveCodexRollbackTurnCount,
+} from "./Adapters/CodexAdapterV2.ts";
+import * as ContextHandoffService from "./ContextHandoffService.ts";
+import {
+  checkpointTurnOrdinal,
+  decideRollbackExecution,
+  isRewriteTarget,
+} from "./CommandPolicy.ts";
 
 // A root that does not exist never overlaps, so other owners decide isolation.
 const unrelatedProject = Option.some({
@@ -41,7 +53,223 @@ const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
       Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
     ),
   ),
+  Layer.provide(ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer))),
 );
+
+it.effect("chooses rollback, native fork, or portable context by capability", () =>
+  Effect.gen(function* () {
+    const input = {
+      commandId: CommandId.make("rewrite-policy"),
+      threadId: ThreadId.make("rewrite-policy"),
+      providerInstanceId: ProviderInstanceId.make("rewrite-provider"),
+    };
+    const capabilities = CodexProviderCapabilitiesV2;
+    assert.equal(yield* decideRollbackExecution({ ...input, capabilities }), "native_rollback");
+    const forkOnly = {
+      ...capabilities,
+      threads: { ...capabilities.threads, canRollbackThread: false },
+    };
+    assert.equal(
+      yield* decideRollbackExecution({ ...input, capabilities: forkOnly, canForkFromTarget: true }),
+      "native_fork",
+    );
+    assert.equal(
+      yield* decideRollbackExecution({ ...input, capabilities: forkOnly }),
+      "portable_context",
+    );
+    const unsupported = {
+      ...forkOnly,
+      context: { ...forkOnly.context, canConsumeHandoffSummaries: false },
+    };
+    const error = yield* decideRollbackExecution({ ...input, capabilities: unsupported }).pipe(
+      Effect.flip,
+    );
+    assert.ok(error._tag === "CommandPolicyCapabilityUnsupportedError");
+    assert.equal(error.capability, "context_handoff");
+  }),
+);
+
+it.effect.each([
+  { targetOrdinal: 0, supported: true, busy: false, checkpointStatus: "ready" },
+  { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "ready" },
+  // Outside git a turn's checkpoint has no file snapshot, but keep-files rewrites still work.
+  { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "missing" },
+  { targetOrdinal: 1, supported: false, busy: false, checkpointStatus: "ready" },
+  { targetOrdinal: 1, supported: true, busy: true, checkpointStatus: "ready" },
+  // Codex threads with paginated history advertise rollback but refuse it at runtime.
+  {
+    targetOrdinal: 0,
+    supported: true,
+    busy: false,
+    checkpointStatus: "ready",
+    nativeRefuses: true,
+  },
+] as const)(
+  "portable rewrite retains only the prefix and rejects unsafe requests: %s",
+  (testCase) => {
+    const { targetOrdinal, supported, busy, checkpointStatus } = testCase;
+    const nativeRefuses = "nativeRefuses" in testCase && testCase.nativeRefuses;
+    const threadId = ThreadId.make("portable-rewrite");
+    const providerThreadId = ProviderThreadId.make("portable-original");
+    const providerSessionId = ProviderSessionId.make("portable-original-session");
+    const providerInstanceId = ProviderInstanceId.make("portable-provider");
+    const checkpointId = CheckpointId.make("portable-checkpoint");
+    const scopeId = CheckpointScopeId.make("portable-scope");
+    const now = DateTime.makeUnsafe("2026-09-22T00:00:00Z");
+    const original = {
+      id: providerThreadId,
+      providerSessionId,
+      providerInstanceId,
+      driver: "cursor",
+      appThreadId: threadId,
+      nativeThreadRef: { nativeId: "original-native-id", strength: "strong" },
+    };
+    const runs = [
+      { id: "retained-run", ordinal: 1, status: "completed", rootNodeId: null },
+      { id: "replaced-run", ordinal: 2, status: "completed", rootNodeId: null },
+      { id: "failed-suffix", ordinal: 3, status: busy ? "queued" : "failed", rootNodeId: null },
+      { id: "old-rolled-back", ordinal: 4, status: "rolled_back", rootNodeId: null },
+    ];
+    const projection = {
+      thread: {
+        id: threadId,
+        worktreePath: null,
+        activeProviderThreadId: providerThreadId,
+        modelSelection: { instanceId: providerInstanceId, model: "test" },
+      },
+      providerThreads: [original],
+      providerSessions: [],
+      providerTurns: [],
+      nodes: [],
+      attempts: [],
+      checkpoints: [
+        {
+          id: checkpointId,
+          scopeId,
+          status: checkpointStatus,
+          appRunOrdinal: targetOrdinal || null,
+        },
+      ],
+      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+      runs,
+      turnItems: runs.map((run, ordinal) => ({
+        id: `item-${run.id}`,
+        type: "user_message",
+        messageId: `message-${run.id}`,
+        runId: run.id,
+        text: run.id,
+        attachments: [],
+        startedAt: now,
+        ordinal,
+      })),
+    } as unknown as OrchestrationV2ThreadProjection;
+    const events: OrchestrationV2DomainEvent[] = [];
+    const restore = vi.fn(() => Effect.die("keep-files rewrite must not restore files"));
+    const rollbackThread = vi.fn(() =>
+      nativeRefuses
+        ? // @effect-diagnostics-next-line globalErrorInEffectFailure:off
+          Effect.fail(new Error("thread uses paginated history, which rejects thread/rollback"))
+        : Effect.die("portable rewrite must not mutate native history"),
+    );
+    const testLayer = layerCheckpointRollbackService.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ThreadCommandExecutor.layer,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
+          Layer.mock(EventSink.EventSinkV2)({
+            write: (input) =>
+              Effect.sync(() => {
+                events.push(...input.events);
+                return [];
+              }),
+          }),
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadRecords: () => Effect.succeed(projection),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            open: () =>
+              Effect.succeed({
+                providerSession: {
+                  capabilities: {
+                    ...CodexProviderCapabilitiesV2,
+                    threads: {
+                      ...CodexProviderCapabilitiesV2.threads,
+                      canRollbackThread: nativeRefuses,
+                      canForkThread: false,
+                    },
+                    context: {
+                      ...CodexProviderCapabilitiesV2.context,
+                      canConsumeHandoffSummaries: supported,
+                    },
+                  },
+                },
+                rollbackThread,
+              } as never),
+          }),
+          Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+      const result = yield* service
+        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
+        .pipe(Effect.result);
+      assert.equal(restore.mock.calls.length, 0);
+      assert.equal(rollbackThread.mock.calls.length, nativeRefuses ? 1 : 0);
+      assert.equal(original.nativeThreadRef.nativeId, "original-native-id");
+      if (!supported || busy) {
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual(events, []);
+        return;
+      }
+      assert.equal(result._tag, "Success");
+      const handoff = events.find((event) => event.type === "context-handoff.updated");
+      assert.ok(handoff?.type === "context-handoff.updated");
+      assert.equal(handoff.payload.history?.messages.length, targetOrdinal);
+      if (targetOrdinal > 0) assert.include(handoff.payload.summaryText, "retained-run");
+      assert.notInclude(handoff.payload.summaryText, "replaced-run");
+      assert.notInclude(handoff.payload.summaryText, "failed-suffix");
+      assert.notInclude(handoff.payload.summaryText, "old-rolled-back");
+      const replacement = events.find((event) => event.type === "provider-thread.updated");
+      assert.ok(replacement?.type === "provider-thread.updated");
+      assert.notEqual(replacement.payload.id, providerThreadId);
+      assert.notEqual(replacement.payload.providerSessionId, providerSessionId);
+      assert.equal(replacement.payload.nativeThreadRef, null);
+      assert.equal(replacement.payload.appThreadId, threadId);
+      assert.equal(handoff.payload.toProviderThreadId, replacement.payload.id);
+      assert.deepEqual(
+        events.filter((event) => event.type === "run.updated").map((event) => event.payload.id),
+        runs
+          .filter((run) => run.ordinal > targetOrdinal && run.status !== "rolled_back")
+          .map((run) => run.id),
+      );
+    }).pipe(Effect.provide(testLayer));
+  },
+);
+
+it("rewinds to a checkpoint without a file snapshot only when files are kept", () => {
+  const ready = { status: "ready" } as const;
+  const missing = { status: "missing" } as const;
+  assert.equal(isRewriteTarget(ready, undefined), true);
+  assert.equal(isRewriteTarget(ready, true), true);
+  assert.equal(isRewriteTarget(missing, false), true);
+  assert.equal(isRewriteTarget(missing, undefined), false);
+  assert.equal(isRewriteTarget(missing, true), false);
+  assert.equal(isRewriteTarget({ status: "stale" }, false), false);
+  assert.equal(isRewriteTarget({ status: "error" }, false), false);
+});
+
+it("resolves the turn a checkpoint marks, even after the turn link was lost", () => {
+  const root = { kind: "root_run" };
+  assert.equal(checkpointTurnOrdinal({ appRunOrdinal: 3, ordinalWithinScope: 3 }, root), 3);
+  assert.equal(checkpointTurnOrdinal({ appRunOrdinal: null, ordinalWithinScope: 2 }, root), 2);
+  assert.equal(
+    checkpointTurnOrdinal({ appRunOrdinal: null, ordinalWithinScope: 2 }, { kind: "subagent" }),
+    0,
+  );
+});
 
 it.effect("rejects a non-ready checkpoint before opening a session or restoring files", () => {
   const threadId = ThreadId.make("thread:rollback-non-ready");
@@ -312,7 +540,10 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-          open: () => Effect.succeed({} as never),
+          open: () =>
+            Effect.succeed({
+              providerSession: { capabilities: CodexProviderCapabilitiesV2 },
+            } as never),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: () => Effect.succeed({} as never),
@@ -457,6 +688,7 @@ it.effect.each([
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open: () =>
             Effect.succeed({
+              providerSession: { capabilities: CodexProviderCapabilitiesV2 },
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   const count = yield* resolveCodexRollbackTurnCount(input);

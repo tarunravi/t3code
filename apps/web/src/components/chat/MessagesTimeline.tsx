@@ -137,6 +137,7 @@ import {
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  PencilIcon,
   MinusIcon,
   Redo2Icon,
   Minimize2Icon,
@@ -144,7 +145,6 @@ import {
   SmartphoneIcon,
   SquarePenIcon,
   TerminalIcon,
-  Undo2Icon,
   HammerIcon,
   WrenchIcon,
   Code2Icon,
@@ -2733,13 +2733,13 @@ function RevertUserMessageButton({
             variant="ghost"
             disabled={activity.isRevertingCheckpoint || activity.isWorking}
             onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
-            aria-label="Edit from here"
+            aria-label="Edit and rewrite from here"
           />
         }
       >
-        <Undo2Icon className="size-3" />
+        <PencilIcon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Edit from here</TooltipPopup>
+      <TooltipPopup side="top">Edit and rewrite from here</TooltipPopup>
     </Tooltip>
   );
 }
