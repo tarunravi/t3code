@@ -104,36 +104,29 @@ describe("parseManagedInstance", () => {
 });
 
 describe("parseDevboxHealth", () => {
-  it("reads each tool's status from the health line", () => {
+  it("keeps each sign-in's status and expiry", () => {
     const line = JSON.stringify({
-      aws: "arn:aws-us-gov:sts::1:assumed-role/Admin/tarun@example.com",
-      teleport:
-        "> Profile URL: https://teleport  Logged in as: tarun@example.com  Valid until: 2026-09-24 [valid for 11h0m0s]",
-      github: "tarunravi",
-      claude: '{ "loggedIn": true, "email": "tarun@example.com" }',
-      codex: "Logged in using ChatGPT",
-      brain: "4b2f5ff brain: sync",
+      aws: { ok: true, detail: "tarun@example.com", expiresAt: "2026-09-24T01:02:00Z" },
+      teleport: { ok: true, detail: "tarun@example.com", expiresAt: "2026-09-24T01:31:13-04:00" },
+      github: { ok: true, detail: "tarunravi", expiresAt: null },
+      claude: { ok: false, detail: "Not logged in", expiresAt: null },
+      codex: { ok: true, detail: "Logged in using ChatGPT", expiresAt: "2026-09-28T17:37:00Z" },
+      brain: { ok: true, detail: "4b2f5ff brain: sync", expiresAt: null },
     });
     const health = parseDevboxHealth(`motd noise\n${line}\n`);
-    expect(health.aws).toEqual({ ok: true, detail: "tarun@example.com" });
-    expect(health.teleport).toEqual({ ok: true, detail: "tarun@example.com" });
-    expect(health.github).toEqual({ ok: true, detail: "tarunravi" });
-    expect(health.claude).toEqual({ ok: true, detail: "tarun@example.com" });
-    expect(health.codex.ok).toBe(true);
-    expect(health.brain.ok).toBe(true);
+    expect(health.aws).toEqual({
+      ok: true,
+      detail: "tarun@example.com",
+      expiresAt: "2026-09-24T01:02:00Z",
+    });
+    expect(health.claude.ok).toBe(false);
+    expect(health.github.expiresAt).toBeNull();
   });
 
-  it("reports logged-out tools", () => {
-    const line = JSON.stringify({
-      aws: "Error when retrieving token from sso: Token has expired and refresh failed",
-      teleport: "Not logged in.",
-      github: "error connecting to api.github.com",
-      claude: '{ "loggedIn": false }',
-      codex: "Not logged in",
-      brain: "fatal: not a git repository",
-    });
-    const health = parseDevboxHealth(line);
-    expect(Object.values(health).every((check) => !check.ok)).toBe(true);
+  it("treats a missing or malformed entry as signed out", () => {
+    const health = parseDevboxHealth(JSON.stringify({ aws: { ok: "yes" } }));
+    expect(health.aws.ok).toBe(false);
+    expect(health.teleport).toEqual({ ok: false, detail: "Unknown", expiresAt: null });
   });
 });
 
@@ -213,7 +206,7 @@ describe("sign-ins", () => {
       ...base,
       target: "devbox",
       provider: "github",
-      githubToken: "gho_secret",
+      credential: "gho_secret",
     });
     expect(command.stdin).toBe("gho_secret\n");
     expect(command.args.join(" ")).not.toContain("gho_secret");
@@ -221,8 +214,30 @@ describe("sign-ins", () => {
 
   it("runs Mac sign-ins in a pseudo-terminal", () => {
     const command = loginCommand({ ...base, target: "mac", provider: "aws" });
-    expect(command.command).toBe("script");
-    expect(command.args.at(-1)).toBe("aws sso login --profile 'shift' --no-browser");
+    expect(command.command).toBe("python3");
+    expect(command.args.at(-1)).toBe(
+      "aws sso logout --profile 'shift' >/dev/null 2>&1 || true; aws sso login --profile 'shift' --no-browser",
+    );
+    expect(command.opensBrowser).toBe(false);
+  });
+
+  it("logs out before every sign-in so the new session is fresh", () => {
+    for (const provider of ["aws", "teleport", "codex", "claude"] as const) {
+      const command = loginCommand({ ...base, target: "mac", provider });
+      expect(command.args.at(-1)).toMatch(/logout.*; .*login/u);
+    }
+  });
+
+  it("copies this Mac's Claude session to the devbox instead of a paste-back login", () => {
+    const command = loginCommand({
+      ...base,
+      target: "devbox",
+      provider: "claude",
+      credential: '{"claudeAiOauth":{}}',
+    });
+    expect(command.stdin).toBe('{"claudeAiOauth":{}}\n');
+    expect(command.args.join(" ")).toContain(".credentials.json");
+    expect(command.args.join(" ")).not.toContain("claudeAiOauth");
   });
 
   it("finds approval links and device codes in terminal output", () => {
