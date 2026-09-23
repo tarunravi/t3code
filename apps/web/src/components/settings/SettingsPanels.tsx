@@ -130,6 +130,7 @@ import {
   NumberFieldInput,
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { DevboxPanelSetting } from "./DevboxPanelSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -3080,6 +3081,7 @@ export function GeneralSettingsPanel() {
             }
           />
         ) : null}
+        {isElectron ? <DevboxPanelSetting /> : null}
       </SettingsSection>
 
       <SettingsSection id="text-generation" title="Text generation">
