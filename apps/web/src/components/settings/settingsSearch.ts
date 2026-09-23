@@ -23,6 +23,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/machines"
   | "/settings/devbox"
   | "/settings/archived";
 
@@ -96,6 +97,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/machines": "Machines",
   "/settings/devbox": "Devbox",
   "/settings/archived": "Archive",
 };
@@ -480,6 +482,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Delete confirmation",
     to: "/settings/general",
     searchTerms: ["ask before thread chat history"],
+  },
+  {
+    id: "machine-sign-ins",
+    title: "Machine sign-ins",
+    to: "/settings/machines",
+    searchTerms: ["aws sso teleport tsh github codex claude login logout session expiry devbox"],
+    desktopOnly: true,
   },
   {
     id: "devbox-panel",
@@ -907,6 +916,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
+  "/settings/machines": null,
   "/settings/devbox": null,
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",
