@@ -1,3 +1,5 @@
+import { FallbackModelSetting } from "./FallbackModelSetting";
+import { SideChatModelSetting } from "./SideChatModelSetting";
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -77,6 +79,10 @@ import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { AwsLoginGuardSetting } from "./AwsLoginGuardSetting";
+import { DevboxPanelSetting } from "./DevboxPanelSetting";
+import { KeepAwakeSetting } from "./KeepAwakeSetting";
+import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -113,11 +119,13 @@ import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
   paragraph: "Show finished paragraphs",
+  token: "Stream as received",
 };
 
 const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string> = {
   turn: "Text appears once the agent finishes its turn.",
   paragraph: "Each paragraph or code block appears as soon as it is complete.",
+  token: "Show each provider update immediately; update size depends on the provider.",
 };
 
 const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string> = {
@@ -534,6 +542,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
       ? ["Response streaming"]
       : []),
+    ...(settings.liveThinking !== DEFAULT_UNIFIED_SETTINGS.liveThinking ? ["Live thinking"] : []),
     ...(settings.enableProviderUpdateChecks !== DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
       ? ["Provider update checks"]
       : []),
@@ -656,6 +665,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
+      liveThinking: DEFAULT_UNIFIED_SETTINGS.liveThinking,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -787,6 +797,11 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      {isElectron ? (
+        <SettingsSection id="voice" title="Voice">
+          <VoiceMicrophoneSetting />
+        </SettingsSection>
+      ) : null}
       <SettingsSection id="notifications" title="Notifications">
         <NotificationSettings />
         <SettingsRow
@@ -1323,8 +1338,35 @@ export function DiffsSettingsPanel() {
                 <SelectItem hideIndicator value="split">
                   {DIFF_LAYOUT_LABELS.split}
                 </SelectItem>
+                <SelectItem hideIndicator value="token">
+                  {RESPONSE_STREAMING_MODE_LABELS.token}
+                </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+        <SettingsRow
+          serverScoped
+          settingKeys={["liveThinking"]}
+          {...searchableSetting("live-thinking")}
+          description="Show the model's reasoning in the live activity row as it arrives, instead of a one-sentence preview. How finely it streams follows Response streaming."
+          resetAction={
+            settings.liveThinking !== DEFAULT_UNIFIED_SETTINGS.liveThinking ? (
+              <SettingResetButton
+                label="live thinking"
+                onClick={() =>
+                  updateSettings({ liveThinking: DEFAULT_UNIFIED_SETTINGS.liveThinking })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["liveThinking"]}
+              checked={settings.liveThinking}
+              onCheckedChange={(checked) => updateSettings({ liveThinking: Boolean(checked) })}
+              aria-label="Live thinking"
+            />
           }
         />
         <SettingsRow
@@ -1585,6 +1627,8 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        <FallbackModelSetting />
+        <SideChatModelSetting />
       </SettingsSection>
 
       <ProjectDefaultsSettings category="general" />
@@ -1629,6 +1673,14 @@ export function ThreadsSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      {isElectron ? (
+        <SettingsSection title="Devbox">
+          {isMacPlatform(navigator.platform) ? <KeepAwakeSetting /> : null}
+          <DevboxPanelSetting />
+          <AwsLoginGuardSetting />
+        </SettingsSection>
+      ) : null}
 
       {hasServerTargets ? (
         <SettingsSection id="auto-settle" title="Auto-settle">
@@ -2078,11 +2130,7 @@ export function AboutSettingsPanel() {
             {...searchableSetting("voice-recordings")}
             description="Replay or retry recent voice dictations saved on this device."
             control={
-              <Button
-                render={<Link to="/settings/voice-recordings" />}
-                size="sm"
-                variant="outline"
-              >
+              <Button render={<Link to="/settings/voice-recordings" />} size="sm" variant="outline">
                 View recordings
               </Button>
             }
