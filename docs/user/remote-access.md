@@ -148,7 +148,7 @@ For Antigravity's Google callback on a remote host, see
 This fork's devbox panel is off by default. Turn it on per machine in
 **Settings → General → Devbox panel** and pick the AWS profile for the devbox
 account; the network settings are copied from an existing instance tagged
-`Purpose=devbox`. **Settings → Devbox** then appears.
+`Purpose=devbox`. **Settings → Devbox** then appears for launching and managing the instance.
 
 **Spin up devbox** launches one instance tagged `t3-managed=true`, adds a
 `t3-devbox` alias to `~/.ssh/config` that tunnels through SSM, installs
@@ -157,11 +157,14 @@ this Mac's `gh` credential, sets up the work-only brain vault, and connects it
 here as a desktop-managed SSH environment. **Terminate** deletes the instance
 and its disk and removes the alias.
 
-**Sign-ins** shows AWS SSO, Teleport, GitHub, Codex, and Claude Code on this Mac
-and on the devbox. Signing in on the devbox opens the approval page on this
-Mac and tunnels the browser callback back to the devbox. If the browser shows a
-code to paste, paste it into the sign-in session. Codex uses port 1455 on this
-Mac while a devbox sign-in runs.
+**Settings → Machines** has a tab for this Mac and one for the running devbox.
+Each lists AWS SSO, Teleport, GitHub, Codex, and Claude Code with who is signed in
+and when the session expires. **Sign in again** signs out first so the new session
+gets its full lifetime, opens the approval page on this Mac with the device code
+filled in where the provider allows it, tunnels the callback back to the devbox,
+and re-checks the session when it finishes. On the devbox, GitHub and Claude Code
+reuse this Mac's session. Codex uses port 1455 on this Mac while a devbox sign-in
+runs. Without a devbox, choose the AWS profile for this Mac on the same page.
 
 The Mac needs the AWS CLI with the Session Manager plugin, `gh` signed in, and
 `~/.ssh/id_ed25519.pub`.
