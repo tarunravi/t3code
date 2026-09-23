@@ -22,6 +22,7 @@ import {
   MessagesSquareIcon,
   PanelsTopLeftIcon,
   KeyboardIcon,
+  LaptopIcon,
   PaletteIcon,
   SearchIcon,
   ServerIcon,
@@ -31,6 +32,7 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
+import { isElectron } from "~/env";
 import { useDevboxPanelEnabled } from "~/lib/devboxPanel";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -104,6 +106,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
   "/settings/about": InfoIcon,
+  "/settings/machines": LaptopIcon,
   "/settings/devbox": ServerIcon,
   "/settings/archived": ArchiveIcon,
 };
