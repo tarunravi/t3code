@@ -26,6 +26,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/devbox"
   | "/settings/archived";
 
 /**
@@ -105,6 +106,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/devbox": "Devbox",
   "/settings/archived": "Archive",
 };
 
@@ -535,6 +537,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Delete confirmation",
     to: "/settings/general",
     searchTerms: ["ask before thread chat history"],
+  },
+  {
+    id: "devbox",
+    title: "Devbox",
+    to: "/settings/devbox",
+    searchTerms: ["ec2 aws spin up launch remote machine ssh cloud box"],
+    desktopOnly: true,
   },
   {
     id: "quit-confirmation",
@@ -1035,6 +1044,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
+  "/settings/devbox": null,
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",
 };
