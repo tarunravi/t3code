@@ -2,10 +2,10 @@ import {
   DesktopAwsProfileSchema,
   DesktopDevboxActionSchema,
   DesktopDevboxEnableInputSchema,
-  DesktopDevboxLoginInputSchema,
   DesktopDevboxLoginStartSchema,
   DesktopDevboxStateOptionsSchema,
   DesktopDevboxStateSchema,
+  DesktopSignInAwsProfileInputSchema,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -64,12 +64,12 @@ export const startDevboxLogin = makeIpcMethod({
   }),
 });
 
-export const sendDevboxLoginInput = makeIpcMethod({
-  channel: IpcChannels.SEND_DEVBOX_LOGIN_INPUT_CHANNEL,
-  payload: DesktopDevboxLoginInputSchema,
+export const setSignInAwsProfile = makeIpcMethod({
+  channel: IpcChannels.SET_SIGN_IN_AWS_PROFILE_CHANNEL,
+  payload: DesktopSignInAwsProfileInputSchema,
   result: DesktopDevboxStateSchema,
-  handler: Effect.fn("desktop.ipc.devbox.sendLoginInput")(function* (input) {
+  handler: Effect.fn("desktop.ipc.devbox.setSignInAwsProfile")(function* (input) {
     const devbox = yield* DesktopDevbox.DesktopDevbox;
-    return yield* devbox.sendLoginInput(input);
+    return yield* devbox.setSignInAwsProfile(input);
   }),
 });
