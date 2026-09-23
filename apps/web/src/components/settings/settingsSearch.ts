@@ -36,6 +36,7 @@ export type SettingsPath =
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
+  | "/settings/devbox"
   | "/settings/archived";
 
 export type SettingsSearchScope =
@@ -102,6 +103,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
+  "/settings/devbox": "Devbox",
   "/settings/archived": "Archive",
 };
 
@@ -606,6 +608,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Delete confirmation",
     to: "/settings/general",
     searchTerms: ["ask before thread chat history"],
+  },
+  {
+    id: "devbox",
+    title: "Devbox",
+    to: "/settings/devbox",
+    searchTerms: ["ec2 aws spin up launch remote machine ssh cloud box"],
+    desktopOnly: true,
   },
   {
     id: "quit-confirmation",
@@ -1130,6 +1139,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
   "/settings/access": "connections",
+  "/settings/devbox": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
