@@ -80,6 +80,7 @@ import {
   retryVoiceRecording,
   transcribeVoice,
 } from "./methods/voiceTranscription.ts";
+import { getDevboxState, runDevboxAction } from "./methods/devbox.ts";
 import {
   getCliCommandState,
   installCliCommand,
@@ -141,6 +142,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setWslBackendEnabled);
   yield* ipc.handle(setWslDistro);
   yield* ipc.handle(setWslOnly);
+
+  yield* ipc.handle(getDevboxState);
+  yield* ipc.handle(runDevboxAction);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickProjectFavicon);
