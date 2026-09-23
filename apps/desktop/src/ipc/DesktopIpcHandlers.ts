@@ -87,8 +87,8 @@ import {
   getDevboxState,
   listAwsProfiles,
   runDevboxAction,
-  sendDevboxLoginInput,
   setDevboxEnabled,
+  setSignInAwsProfile,
   startDevboxLogin,
 } from "./methods/devbox.ts";
 import {
@@ -159,7 +159,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(listAwsProfiles);
   yield* ipc.handle(setDevboxEnabled);
   yield* ipc.handle(startDevboxLogin);
-  yield* ipc.handle(sendDevboxLoginInput);
+  yield* ipc.handle(setSignInAwsProfile);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickProjectFavicon);
