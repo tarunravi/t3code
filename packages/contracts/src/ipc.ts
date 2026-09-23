@@ -583,6 +583,60 @@ export const DesktopWslStateSchema = Schema.Struct({
   preflightError: Schema.NullOr(Schema.String),
 });
 
+/** Long-running devbox operations. One runs at a time; its log is kept in memory. */
+export const DesktopDevboxActionSchema = Schema.Literals([
+  "aws-login",
+  "launch",
+  "setup",
+  "start",
+  "stop",
+  "terminate",
+]);
+export type DesktopDevboxAction = typeof DesktopDevboxActionSchema.Type;
+
+const DesktopDevboxCheckSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  detail: Schema.String,
+});
+
+export const DesktopDevboxStateSchema = Schema.Struct({
+  aws: DesktopDevboxCheckSchema,
+  /** The instance tagged `t3-managed=true`, or null when none exists. */
+  instance: Schema.NullOr(
+    Schema.Struct({
+      instanceId: Schema.String,
+      state: Schema.String,
+      instanceType: Schema.String,
+      launchedAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  sshAlias: Schema.String,
+  job: Schema.NullOr(
+    Schema.Struct({
+      action: DesktopDevboxActionSchema,
+      running: Schema.Boolean,
+      log: Schema.Array(Schema.String),
+      error: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** Health read over SSH; null until checked or while the box is not running. */
+  checks: Schema.NullOr(
+    Schema.Struct({
+      github: DesktopDevboxCheckSchema,
+      claude: DesktopDevboxCheckSchema,
+      codex: DesktopDevboxCheckSchema,
+      brain: DesktopDevboxCheckSchema,
+    }),
+  ),
+});
+export type DesktopDevboxState = typeof DesktopDevboxStateSchema.Type;
+
+export const DesktopDevboxStateOptionsSchema = Schema.Struct({
+  refresh: Schema.optional(Schema.Boolean),
+  checkHealth: Schema.optional(Schema.Boolean),
+});
+export type DesktopDevboxStateOptions = typeof DesktopDevboxStateOptionsSchema.Type;
+
 /**
  * Renderer-facing snapshot of a desktop preview tab. Mirrors the main-process
  * PreviewTabState shape but uses serialisable primitives only.
@@ -1200,6 +1254,11 @@ export interface DesktopBridge {
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
   setWslOnly: (enabled: boolean) => Promise<DesktopWslState>;
+  /** Optional while older desktop shells can host a newer web client. */
+  /** Returns the cached AWS read unless `refresh`; `checkHealth` also probes the box over SSH. */
+  getDevboxState?: (options?: DesktopDevboxStateOptions) => Promise<DesktopDevboxState>;
+  /** Starts the action in the background and returns immediately. */
+  runDevboxAction?: (action: DesktopDevboxAction) => Promise<DesktopDevboxState>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Optional while older desktop shells can host a newer web client. */
   pickProjectFavicon?: (initialPath?: string) => Promise<string | null>;
