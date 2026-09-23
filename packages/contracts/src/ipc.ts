@@ -589,7 +589,6 @@ export const DesktopWslStateSchema = Schema.Struct({
 
 /** Long-running devbox operations. One runs at a time; its log is kept in memory. */
 export const DesktopDevboxActionSchema = Schema.Literals([
-  "aws-login",
   "launch",
   "setup",
   "start",
@@ -598,12 +597,63 @@ export const DesktopDevboxActionSchema = Schema.Literals([
 ]);
 export type DesktopDevboxAction = typeof DesktopDevboxActionSchema.Type;
 
+/** Where the devbox lives. Null config means the devbox panel is turned off on this machine. */
+export const DesktopDevboxConfigSchema = Schema.Struct({
+  awsProfile: Schema.String,
+  awsRegion: Schema.String,
+  instanceType: Schema.String,
+  subnetId: Schema.String,
+  securityGroupId: Schema.String,
+  instanceProfile: Schema.String,
+});
+export type DesktopDevboxConfig = typeof DesktopDevboxConfigSchema.Type;
+
+export const DesktopAwsProfileSchema = Schema.Struct({
+  name: Schema.String,
+  region: Schema.NullOr(Schema.String),
+});
+export type DesktopAwsProfile = typeof DesktopAwsProfileSchema.Type;
+
+export const DesktopDevboxLoginTargetSchema = Schema.Literals(["mac", "devbox"]);
+export type DesktopDevboxLoginTarget = typeof DesktopDevboxLoginTargetSchema.Type;
+
+export const DesktopDevboxLoginProviderSchema = Schema.Literals([
+  "aws",
+  "teleport",
+  "github",
+  "codex",
+  "claude",
+]);
+export type DesktopDevboxLoginProvider = typeof DesktopDevboxLoginProviderSchema.Type;
+
 const DesktopDevboxCheckSchema = Schema.Struct({
   ok: Schema.Boolean,
   detail: Schema.String,
 });
 
+const DesktopDevboxChecksSchema = Schema.Struct({
+  aws: DesktopDevboxCheckSchema,
+  teleport: DesktopDevboxCheckSchema,
+  github: DesktopDevboxCheckSchema,
+  codex: DesktopDevboxCheckSchema,
+  claude: DesktopDevboxCheckSchema,
+  brain: DesktopDevboxCheckSchema,
+});
+
+/** A sign-in running on the Mac or the devbox; approval links always open on the Mac. */
+export const DesktopDevboxLoginSchema = Schema.Struct({
+  id: Schema.String,
+  target: DesktopDevboxLoginTargetSchema,
+  provider: DesktopDevboxLoginProviderSchema,
+  status: Schema.Literals(["running", "succeeded", "failed"]),
+  links: Schema.Array(Schema.String),
+  codes: Schema.Array(Schema.String),
+  output: Schema.String,
+});
+export type DesktopDevboxLogin = typeof DesktopDevboxLoginSchema.Type;
+
 export const DesktopDevboxStateSchema = Schema.Struct({
+  config: Schema.NullOr(DesktopDevboxConfigSchema),
   aws: DesktopDevboxCheckSchema,
   /** The instance tagged `t3-managed=true`, or null when none exists. */
   instance: Schema.NullOr(
@@ -623,15 +673,12 @@ export const DesktopDevboxStateSchema = Schema.Struct({
       error: Schema.NullOr(Schema.String),
     }),
   ),
-  /** Health read over SSH; null until checked or while the box is not running. */
-  checks: Schema.NullOr(
-    Schema.Struct({
-      github: DesktopDevboxCheckSchema,
-      claude: DesktopDevboxCheckSchema,
-      codex: DesktopDevboxCheckSchema,
-      brain: DesktopDevboxCheckSchema,
-    }),
-  ),
+  /** Sign-in health per machine; null until checked (devbox: or while it is not running). */
+  checks: Schema.Struct({
+    mac: Schema.NullOr(DesktopDevboxChecksSchema),
+    devbox: Schema.NullOr(DesktopDevboxChecksSchema),
+  }),
+  logins: Schema.Array(DesktopDevboxLoginSchema),
 });
 export type DesktopDevboxState = typeof DesktopDevboxStateSchema.Type;
 
@@ -640,6 +687,25 @@ export const DesktopDevboxStateOptionsSchema = Schema.Struct({
   checkHealth: Schema.optional(Schema.Boolean),
 });
 export type DesktopDevboxStateOptions = typeof DesktopDevboxStateOptionsSchema.Type;
+
+export const DesktopDevboxEnableInputSchema = Schema.NullOr(
+  Schema.Struct({ awsProfile: Schema.String }),
+);
+export type DesktopDevboxEnableInput = typeof DesktopDevboxEnableInputSchema.Type;
+
+export const DesktopDevboxLoginStartSchema = Schema.Struct({
+  target: DesktopDevboxLoginTargetSchema,
+  provider: DesktopDevboxLoginProviderSchema,
+  /** Mac AWS sign-in before the panel is turned on; otherwise the configured profile is used. */
+  awsProfile: Schema.optional(Schema.String),
+});
+export type DesktopDevboxLoginStart = typeof DesktopDevboxLoginStartSchema.Type;
+
+export const DesktopDevboxLoginInputSchema = Schema.Struct({
+  id: Schema.String,
+  text: Schema.String,
+});
+export type DesktopDevboxLoginInput = typeof DesktopDevboxLoginInputSchema.Type;
 
 /**
  * Renderer-facing snapshot of a desktop preview tab. Mirrors the main-process
@@ -1264,6 +1330,12 @@ export interface DesktopBridge {
   getDevboxState?: (options?: DesktopDevboxStateOptions) => Promise<DesktopDevboxState>;
   /** Starts the action in the background and returns immediately. */
   runDevboxAction?: (action: DesktopDevboxAction) => Promise<DesktopDevboxState>;
+  listAwsProfiles?: () => Promise<readonly DesktopAwsProfile[]>;
+  /** Turns the panel on for an AWS profile (detecting the network from an existing devbox), or off with null. */
+  setDevboxEnabled?: (input: DesktopDevboxEnableInput) => Promise<DesktopDevboxState>;
+  startDevboxLogin?: (input: DesktopDevboxLoginStart) => Promise<DesktopDevboxState>;
+  /** Sends a line to a running sign-in, such as a pasted authorization code. */
+  sendDevboxLoginInput?: (input: DesktopDevboxLoginInput) => Promise<DesktopDevboxState>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Optional while older desktop shells can host a newer web client. */
   pickProjectFavicon?: (initialPath?: string) => Promise<string | null>;

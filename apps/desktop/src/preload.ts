@@ -175,6 +175,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getDevboxState: (options) =>
     ipcRenderer.invoke(IpcChannels.GET_DEVBOX_STATE_CHANNEL, options ?? {}),
   runDevboxAction: (action) => ipcRenderer.invoke(IpcChannels.RUN_DEVBOX_ACTION_CHANNEL, action),
+  listAwsProfiles: () => ipcRenderer.invoke(IpcChannels.LIST_AWS_PROFILES_CHANNEL),
+  setDevboxEnabled: (input) => ipcRenderer.invoke(IpcChannels.SET_DEVBOX_ENABLED_CHANNEL, input),
+  startDevboxLogin: (input) => ipcRenderer.invoke(IpcChannels.START_DEVBOX_LOGIN_CHANNEL, input),
+  sendDevboxLoginInput: (input) =>
+    ipcRenderer.invoke(IpcChannels.SEND_DEVBOX_LOGIN_INPUT_CHANNEL, input),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   pickProjectFavicon: (initialPath) =>
     ipcRenderer.invoke(IpcChannels.PICK_PROJECT_FAVICON_CHANNEL, initialPath),
