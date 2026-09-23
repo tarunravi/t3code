@@ -143,6 +143,20 @@ running is left alone.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
+### Devbox
+
+This fork's **Settings → Devbox** manages one EC2 devbox in the `shift`
+GovCloud account. **Spin up devbox** launches it, adds a `t3-devbox` alias to
+`~/.ssh/config` that tunnels through SSM, installs Claude Code and Codex, signs
+GitHub in with this Mac's `gh` credential, sets up the work-only brain vault, and
+then connects it here as a desktop-managed SSH environment.
+
+The Mac needs the AWS CLI with the Session Manager plugin, `gh` signed in, and
+`~/.ssh/id_ed25519.pub`. When AWS SSO expires, use **Log in to AWS**. Claude and
+Codex sign in through a browser, so **Devbox health** copies the login command
+to run in a terminal instead of signing in for you. **Terminate** deletes the
+instance and its disk and removes the SSH alias.
+
 ## Manage or revoke access
 
 On the host, **Settings → Connections** lets authorized administrators create
