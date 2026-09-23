@@ -37,6 +37,9 @@ export type SettingsPath =
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
+  | "/settings/machines"
+  | "/settings/voice-recordings"
+  | "/settings/devbox"
   | "/settings/archived";
 
 export type SettingsSearchScope =
@@ -107,6 +110,9 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
+  "/settings/machines": "Machines",
+  "/settings/devbox": "Devbox",
+  "/settings/voice-recordings": "Voice recordings",
   "/settings/archived": "Archive",
 };
 
@@ -119,6 +125,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: null,
     paths: [
       "/settings/general",
+      "/settings/voice-recordings",
       "/settings/appearance",
       "/settings/chat",
       "/settings/diffs",
@@ -145,6 +152,8 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: [
       "/settings/connections",
       "/settings/access",
+      "/settings/machines",
+      "/settings/devbox",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
     ],
   },
@@ -529,9 +538,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "thread-notifications",
-    title: "Thread notifications",
+    title: "System notifications",
     to: "/settings/general",
-    searchTerms: ["notification sound alert completion input approval desktop"],
+    searchTerms: ["thread subagent notification sound alert completion input approval desktop"],
   },
   {
     id: "in-app-notifications",
@@ -550,7 +559,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Response streaming",
     to: "/settings/threads",
     scope: "project-defaults",
-    searchTerms: ["output token paragraph buffered wait turn legacy"],
+    searchTerms: ["output token chunk immediate provider paragraph buffered wait turn"],
+  },
+  {
+    id: "live-thinking",
+    title: "Live thinking",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["reasoning stream streaming thoughts thought expand activity row"],
   },
   {
     id: "hide-whitespace-changes",
@@ -649,6 +665,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees start remote origin latest fetched branch local"],
   },
   {
+    id: "fallback-model",
+    title: "Fallback model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["provider fallback retry alternate model when turn start fails automatic"],
+  },
+  {
+    id: "side-chat-model",
+    title: "Side chat model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["/side side question fork provider default parent"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/threads",
@@ -672,6 +702,35 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Delete confirmation",
     to: "/settings/general",
     searchTerms: ["ask before thread chat history"],
+  },
+  {
+    id: "machine-sign-ins",
+    title: "Machine sign-ins",
+    to: "/settings/machines",
+    searchTerms: ["aws sso teleport tsh github codex claude login logout session expiry devbox"],
+    desktopOnly: true,
+  },
+  {
+    id: "keep-awake",
+    title: "Keep Mac and display awake while T3 Code is running",
+    to: "/settings/general",
+    searchTerms: ["sleep caffeinate prevent idle power agents stall display screen dim lock"],
+    desktopOnly: true,
+    macOnly: true,
+  },
+  {
+    id: "devbox-panel",
+    title: "Devbox panel",
+    to: "/settings/general",
+    searchTerms: ["ec2 aws spin up launch remote machine ssh cloud box teleport login"],
+    desktopOnly: true,
+  },
+  {
+    id: "aws-login-guard",
+    title: "Require AWS login",
+    to: "/settings/general",
+    searchTerms: ["aws sso session expiry expired bifrost devbox0 llm gateway warning"],
+    desktopOnly: true,
   },
   {
     id: "quit-confirmation",
@@ -739,6 +798,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Diagnostics",
     to: "/settings/maintenance",
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
+  },
+  {
+    id: "voice-microphone",
+    title: "Microphone",
+    to: "/settings/general",
+    searchTerms: ["voice input dictation audio device mic headset usb default"],
+    desktopOnly: true,
   },
   {
     id: "voice-recordings",
@@ -817,6 +883,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
     ],
+  },
+  {
+    id: "usage-model-prices",
+    title: "Custom model prices",
+    to: "/settings/providers",
+    searchTerms: ["usage custom pricing cost USD million tokens input output cache ZCode"],
+    providerSettingsOnly: true,
   },
   {
     id: "usage-providers",
@@ -1215,6 +1288,9 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
   "/settings/access": "connections",
+  "/settings/machines": null,
+  "/settings/devbox": null,
+  "/settings/voice-recordings": null,
   "/settings/secrets": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
