@@ -145,17 +145,26 @@ For Antigravity's Google callback on a remote host, see
 
 ### Devbox
 
-This fork's **Settings → Devbox** manages one EC2 devbox in the `shift`
-GovCloud account. **Spin up devbox** launches it, adds a `t3-devbox` alias to
-`~/.ssh/config` that tunnels through SSM, installs Claude Code and Codex, signs
-GitHub in with this Mac's `gh` credential, sets up the work-only brain vault, and
-then connects it here as a desktop-managed SSH environment.
+This fork's devbox panel is off by default. Turn it on per machine in
+**Settings → General → Devbox panel** and pick the AWS profile for the devbox
+account; the network settings are copied from an existing instance tagged
+`Purpose=devbox`. **Settings → Devbox** then appears.
+
+**Spin up devbox** launches one instance tagged `t3-managed=true`, adds a
+`t3-devbox` alias to `~/.ssh/config` that tunnels through SSM, installs
+Teleport, Claude Code, and Codex, copies the AWS profile, signs GitHub in with
+this Mac's `gh` credential, sets up the work-only brain vault, and connects it
+here as a desktop-managed SSH environment. **Terminate** deletes the instance
+and its disk and removes the alias.
+
+**Sign-ins** shows AWS SSO, Teleport, GitHub, Codex, and Claude Code on this Mac
+and on the devbox. Signing in on the devbox opens the approval page on this
+Mac and tunnels the browser callback back to the devbox. If the browser shows a
+code to paste, paste it into the sign-in session. Codex uses port 1455 on this
+Mac while a devbox sign-in runs.
 
 The Mac needs the AWS CLI with the Session Manager plugin, `gh` signed in, and
-`~/.ssh/id_ed25519.pub`. When AWS SSO expires, use **Log in to AWS**. Claude and
-Codex sign in through a browser, so **Devbox health** copies the login command
-to run in a terminal instead of signing in for you. **Terminate** deletes the
-instance and its disk and removes the SSH alias.
+`~/.ssh/id_ed25519.pub`.
 
 ## Manage or revoke access
 
