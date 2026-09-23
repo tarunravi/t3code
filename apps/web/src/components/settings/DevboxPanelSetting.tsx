@@ -80,7 +80,7 @@ export function DevboxPanelSetting() {
     <>
       <SettingsRow
         {...searchableSetting("devbox-panel")}
-        description="Show Settings → Devbox on this Mac to launch a devbox and sign in to AWS, Teleport, GitHub, Codex, and Claude on it."
+        description="Show Settings → Devbox on this Mac to launch and manage a devbox. Its sign-ins then appear in Settings → Machines."
         control={
           <Switch
             checked={enabled}
