@@ -77,7 +77,14 @@ import {
   retryVoiceRecording,
   transcribeVoice,
 } from "./methods/voiceTranscription.ts";
-import { getDevboxState, runDevboxAction } from "./methods/devbox.ts";
+import {
+  getDevboxState,
+  listAwsProfiles,
+  runDevboxAction,
+  sendDevboxLoginInput,
+  setDevboxEnabled,
+  startDevboxLogin,
+} from "./methods/devbox.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -135,6 +142,10 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
 
   yield* ipc.handle(getDevboxState);
   yield* ipc.handle(runDevboxAction);
+  yield* ipc.handle(listAwsProfiles);
+  yield* ipc.handle(setDevboxEnabled);
+  yield* ipc.handle(startDevboxLogin);
+  yield* ipc.handle(sendDevboxLoginInput);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickProjectFavicon);
