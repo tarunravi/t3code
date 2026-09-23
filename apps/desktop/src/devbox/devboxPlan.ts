@@ -342,31 +342,126 @@ test ! -e "$HOME/brain/personal"
 git -C "$HOME/brain" log --oneline -1
 `;
 
-/** Prints one JSON object describing sign-ins; runs unchanged on the Mac and the devbox. */
-export function buildHealthScript(awsProfile: string): string {
-  if (!/^[A-Za-z0-9_.-]+$/u.test(awsProfile)) {
+/**
+ * Prints one JSON object with each sign-in's status and expiry; runs unchanged
+ * on the Mac and the devbox. Secrets are read only to find expiry times and
+ * are never printed.
+ */
+export function buildHealthScript(awsProfile: string | null): string {
+  if (awsProfile !== null && !/^[A-Za-z0-9_.-]+$/u.test(awsProfile)) {
     throw new Error(`Unexpected AWS profile name: ${awsProfile}`);
   }
   return String.raw`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-json() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'; }
-brain_dir="$HOME/brain"; [ -d "$brain_dir/.git" ] || brain_dir="$HOME/Documents/brain"
-aws_arn="$(aws sts get-caller-identity --profile ${awsProfile} --query Arn --output text 2>&1 | tail -1)"
-tsh_status="$(tsh status 2>&1 | grep -E 'Logged in as|Valid until|EXPIRED|Not logged in|not found' | tr '\n' ' ')"
-gh_login="$(gh api user --jq .login 2>&1 | head -1)"
-claude_status="$(claude auth status 2>&1)"
-codex_status="$(codex login status 2>&1 | head -1)"
-brain_head="$(git -C "$brain_dir" log --oneline -1 2>&1 | head -1)"
-printf '{"aws":%s,"teleport":%s,"github":%s,"claude":%s,"codex":%s,"brain":%s}\n' \
-  "$(printf '%s' "$aws_arn" | json)" \
-  "$(printf '%s' "$tsh_status" | json)" \
-  "$(printf '%s' "$gh_login" | json)" \
-  "$(printf '%s' "$claude_status" | json)" \
-  "$(printf '%s' "$codex_status" | json)" \
-  "$(printf '%s' "$brain_head" | json)"
+T3_AWS_PROFILE='${awsProfile ?? ""}' python3 - <<'PY'
+import base64, configparser, datetime, glob, json, os, pathlib, re, subprocess, sys
+home = pathlib.Path.home()
+
+def run(cmd, timeout=20):
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return done.returncode, (done.stdout + done.stderr).strip()
+    except FileNotFoundError:
+        return 127, cmd[0] + " is not installed"
+    except subprocess.TimeoutExpired:
+        return 124, cmd[0] + " timed out"
+
+def check(ok, detail, expires=None):
+    return {"ok": bool(ok), "detail": (detail or "")[-200:], "expiresAt": expires if ok else None}
+
+def jwt_exp(token):
+    try:
+        payload = token.split(".")[1]
+        exp = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"]
+        return datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).isoformat()
+    except Exception:
+        return None
+
+def ms_iso(value):
+    try:
+        return datetime.datetime.fromtimestamp(int(value) / 1000, datetime.timezone.utc).isoformat()
+    except Exception:
+        return None
+
+out = {}
+profile = os.environ.get("T3_AWS_PROFILE", "")
+if profile:
+    code, text = run(["aws", "sts", "get-caller-identity", "--profile", profile, "--query", "Arn", "--output", "text"])
+    ok = code == 0 and text.startswith("arn:")
+    config = configparser.RawConfigParser()
+    config.read(home / ".aws" / "config")
+    section = "default" if profile == "default" else "profile " + profile
+    start = config.get(section, "sso_start_url", fallback=None) if config.has_section(section) else None
+    session = config.get(section, "sso_session", fallback=None) if config.has_section(section) else None
+    if session and config.has_section("sso-session " + session):
+        start = config.get("sso-session " + session, "sso_start_url", fallback=start)
+    expires = None
+    for path in glob.glob(str(home / ".aws" / "sso" / "cache" / "*.json")):
+        try:
+            cached = json.load(open(path))
+        except Exception:
+            continue
+        if cached.get("startUrl") == start and cached.get("accessToken") and cached.get("expiresAt"):
+            expires = max(expires or "", cached["expiresAt"])
+    if ok:
+        detail = text.split("/")[-1]
+    elif re.search("expired|sso|token", text, re.I):
+        detail = "SSO session expired"
+    else:
+        detail = text
+    out["aws"] = check(ok, detail, expires or None)
+else:
+    out["aws"] = check(False, "Choose an AWS profile")
+
+code, text = run(["tsh", "status"])
+valid = re.search(r"Valid until:\s*(.+?)\s*\[valid for", text)
+user = re.search(r"Logged in as:\s*(\S+)", text)
+expires = None
+if valid:
+    try:
+        expires = datetime.datetime.strptime(valid.group(1).rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S %z").isoformat()
+    except Exception:
+        pass
+ok = bool(valid) and "EXPIRED" not in text
+out["teleport"] = check(ok, (user.group(1) if user else "Logged in") if ok else ("tsh is not installed" if code == 127 else "Not logged in"), expires)
+
+code, text = run(["gh", "api", "user", "--jq", ".login"])
+login = text.splitlines()[0] if text else ""
+out["github"] = check(code == 0 and re.fullmatch(r"[A-Za-z0-9-]+", login), login or "Not logged in")
+
+code, text = run(["codex", "login", "status"])
+first = text.splitlines()[0] if text else "codex is not installed"
+expires = None
+try:
+    expires = jwt_exp(json.load(open(home / ".codex" / "auth.json"))["tokens"]["access_token"])
+except Exception:
+    pass
+out["codex"] = check(first.startswith("Logged in"), first, expires)
+
+code, text = run(["claude", "auth", "status"])
+try:
+    status = json.loads(text)
+except Exception:
+    status = {}
+expires = None
+try:
+    if sys.platform == "darwin":
+        _, secret = run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-a", os.environ.get("USER", ""), "-w"])
+        expires = ms_iso(json.loads(secret)["claudeAiOauth"]["expiresAt"])
+    else:
+        expires = ms_iso(json.load(open(home / ".claude" / ".credentials.json"))["claudeAiOauth"]["expiresAt"])
+except Exception:
+    pass
+out["claude"] = check(status.get("loggedIn"), status.get("email") or "Logged in" if status.get("loggedIn") else "Not logged in", expires)
+
+brain = home / "brain" if (home / "brain" / ".git").exists() else home / "Documents" / "brain"
+code, text = run(["git", "-C", str(brain), "log", "--oneline", "-1"])
+out["brain"] = check(code == 0 and re.match(r"^[0-9a-f]{7,} ", text), text or "Not cloned")
+print(json.dumps(out))
+PY
 `;
 }
 
-type Check = { readonly ok: boolean; readonly detail: string };
+type Check = { readonly ok: boolean; readonly detail: string; readonly expiresAt: string | null };
 
 export interface DevboxHealth {
   readonly aws: Check;
@@ -377,52 +472,29 @@ export interface DevboxHealth {
   readonly brain: Check;
 }
 
+const HEALTH_KEYS = ["aws", "teleport", "github", "claude", "codex", "brain"] as const;
+
 export function parseDevboxHealth(stdout: string): DevboxHealth {
   const line = stdout
     .trim()
     .split("\n")
     .findLast((entry) => entry.startsWith("{"));
   if (!line) {
-    throw new Error("The devbox health check printed no result.");
+    throw new Error("The health check printed no result.");
   }
-  const raw = JSON.parse(line) as Record<keyof DevboxHealth, string>;
-  const claudeLoggedIn = /"loggedIn"\s*:\s*true/u.test(raw.claude);
-  const claudeEmail = /"email"\s*:\s*"([^"]+)"/u.exec(raw.claude)?.[1];
-  const teleportValid = /valid for/u.test(raw.teleport) && !/EXPIRED/u.test(raw.teleport);
-  const teleportUser = /Logged in as:\s*(\S+)/u.exec(raw.teleport)?.[1];
+  const raw = JSON.parse(line) as Record<string, Partial<Check> | undefined>;
+  const read = (key: (typeof HEALTH_KEYS)[number]): Check => ({
+    ok: raw[key]?.ok === true,
+    detail: typeof raw[key]?.detail === "string" ? raw[key].detail : "Unknown",
+    expiresAt: typeof raw[key]?.expiresAt === "string" ? raw[key].expiresAt : null,
+  });
   return {
-    aws: {
-      ok: raw.aws.startsWith("arn:"),
-      detail: raw.aws.startsWith("arn:")
-        ? (raw.aws.split("/").at(-1) ?? raw.aws)
-        : /expired|sso|token/iu.test(raw.aws)
-          ? "SSO session expired"
-          : raw.aws || "aws CLI unavailable",
-    },
-    teleport: {
-      ok: teleportValid,
-      detail: teleportValid
-        ? (teleportUser ?? "Logged in")
-        : /not found/u.test(raw.teleport)
-          ? "tsh is not installed"
-          : "Not logged in",
-    },
-    github: {
-      ok: /^[A-Za-z0-9-]+$/u.test(raw.github),
-      detail: raw.github || "gh is not installed",
-    },
-    claude: {
-      ok: claudeLoggedIn,
-      detail: claudeLoggedIn ? (claudeEmail ?? "Logged in") : "Not logged in",
-    },
-    codex: {
-      ok: raw.codex.startsWith("Logged in"),
-      detail: raw.codex || "codex is not installed",
-    },
-    brain: {
-      ok: /^[0-9a-f]{7,} /u.test(raw.brain),
-      detail: raw.brain || "Not cloned",
-    },
+    aws: read("aws"),
+    teleport: read("teleport"),
+    github: read("github"),
+    claude: read("claude"),
+    codex: read("codex"),
+    brain: read("brain"),
   };
 }
 
@@ -432,16 +504,22 @@ export interface LoginCommand {
   readonly args: readonly string[];
   /** Written to stdin first, e.g. a streamed credential. */
   readonly stdin?: string;
+  /** The CLI opens the browser itself, so the panel must not open a second tab. */
+  readonly opensBrowser: boolean;
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-/** Runs `script` in a pseudo-terminal on the Mac so CLIs print their interactive prompts. */
-function macPty(shellCommand: string): LoginCommand {
-  return { command: "script", args: ["-q", "/dev/null", "sh", "-lc", shellCommand] };
+// BSD `script` needs a terminal on stdin; Python's pty module relays a pipe instead.
+const PTY_RUNNER =
+  "import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(['sh', '-lc', sys.argv[1]])))";
+
+/** Runs the command in a pseudo-terminal on the Mac so CLIs print their interactive prompts. */
+function macPty(shellCommand: string): Omit<LoginCommand, "opensBrowser"> {
+  return { command: "python3", args: ["-c", PTY_RUNNER, shellCommand] };
 }
 
-function devboxPty(shellCommand: string, forwardPort?: number): LoginCommand {
+function devboxPty(shellCommand: string, forwardPort?: number): Omit<LoginCommand, "opensBrowser"> {
   return {
     command: "ssh",
     args: [
@@ -457,51 +535,87 @@ function devboxPty(shellCommand: string, forwardPort?: number): LoginCommand {
   };
 }
 
+/**
+ * A fresh sign-in: each command logs out first so the new session gets its
+ * full lifetime. Devbox sign-ins forward their browser callback to the Mac;
+ * GitHub and Claude on the devbox reuse this Mac's credential over stdin.
+ */
 export function loginCommand(input: {
   readonly target: DesktopDevboxLoginTarget;
   readonly provider: DesktopDevboxLoginProvider;
   readonly awsProfile: string;
   /** A free local port, used when a devbox callback must be tunneled. */
   readonly callbackPort: number;
-  readonly githubToken?: string;
+  /** This Mac's credential for providers the devbox copies instead of signing in. */
+  readonly credential?: string;
 }): LoginCommand {
   const onMac = input.target === "mac";
-  const run = (shellCommand: string, forwardPort?: number) =>
-    onMac ? macPty(shellCommand) : devboxPty(shellCommand, forwardPort);
+  const run = (
+    shellCommand: string,
+    options: { forwardPort?: number; opensBrowser?: boolean } = {},
+  ) => ({
+    ...(onMac ? macPty(shellCommand) : devboxPty(shellCommand, options.forwardPort)),
+    opensBrowser: onMac && options.opensBrowser === true,
+  });
+  const profile = shellQuote(input.awsProfile);
+  const quietly = (command: string) => `${command} >/dev/null 2>&1 || true`;
+  const fromMac = (remote: string): LoginCommand => {
+    if (!input.credential) {
+      throw new Error(
+        `Sign ${input.provider} in on this Mac first; the devbox reuses that session.`,
+      );
+    }
+    return {
+      command: "ssh",
+      args: [
+        "-o",
+        "ConnectTimeout=60",
+        DEVBOX.sshAlias,
+        `bash -lc ${shellQuote(`export PATH="$HOME/.local/bin:$PATH"; ${remote}`)}`,
+      ],
+      stdin: `${input.credential.trim()}\n`,
+      opensBrowser: false,
+    };
+  };
   switch (input.provider) {
     case "aws":
-      return run(`aws sso login --profile ${shellQuote(input.awsProfile)} --no-browser`);
+      return run(
+        `${quietly(`aws sso logout --profile ${profile}`)}; aws sso login --profile ${profile} --no-browser`,
+      );
     case "teleport":
       return onMac
-        ? run(`tsh login --proxy=${DEVBOX.teleportProxy} --browser=none`)
+        ? run(`${quietly("tsh logout")}; tsh login --proxy=${DEVBOX.teleportProxy} --browser=none`)
         : run(
-            `tsh login --proxy=${DEVBOX.teleportProxy} --browser=none --bind-addr=127.0.0.1:${input.callbackPort}`,
-            input.callbackPort,
+            `${quietly("tsh logout")}; tsh login --proxy=${DEVBOX.teleportProxy} --browser=none --bind-addr=127.0.0.1:${input.callbackPort}`,
+            { forwardPort: input.callbackPort },
           );
     case "github":
-      if (onMac) {
-        return run(
-          "GH_NO_UPDATE_NOTIFIER=1 gh auth login --hostname github.com --web --git-protocol https",
-        );
-      }
-      if (!input.githubToken) {
-        throw new Error("Sign GitHub in on this Mac first; the devbox reuses that credential.");
-      }
-      return {
-        command: "ssh",
-        args: [
-          "-o",
-          "ConnectTimeout=60",
-          DEVBOX.sshAlias,
-          "gh auth login -h github.com --with-token && gh auth setup-git && gh api user --jq .login",
-        ],
-        stdin: `${input.githubToken.trim()}\n`,
-      };
+      return onMac
+        ? run(
+            `${quietly('gh auth logout --hostname github.com --user "$(gh api user --jq .login)"')}; gh auth login --hostname github.com --web --git-protocol https`,
+            { opensBrowser: true },
+          )
+        : fromMac(
+            `${quietly("gh auth logout --hostname github.com")}; gh auth login --hostname github.com --with-token && gh auth setup-git && gh api user --jq .login`,
+          );
     case "codex":
       // Codex's browser callback is fixed to localhost:1455.
-      return run("codex login", onMac ? undefined : 1455);
+      return run(`${quietly("codex logout")}; codex login`, {
+        opensBrowser: true,
+        ...(onMac ? {} : { forwardPort: 1455 }),
+      });
     case "claude":
-      return run("claude auth login");
+      return onMac
+        ? run(`${quietly("claude auth logout")}; claude auth login`, { opensBrowser: true })
+        : // Claude's remote login only offers a paste-back code, so the devbox gets this Mac's session.
+          fromMac(String.raw`umask 077; mkdir -p ~/.claude; cat > ~/.claude/.credentials.json; python3 -c '
+import json, pathlib
+path = pathlib.Path.home() / ".claude.json"
+data = json.loads(path.read_text()) if path.exists() else {}
+data.pop("primaryApiKey", None)
+data["hasCompletedOnboarding"] = True
+path.write_text(json.dumps(data, indent=2))
+'; claude auth status`);
   }
 }
 
