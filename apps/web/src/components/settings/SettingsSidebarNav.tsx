@@ -31,6 +31,7 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
+import { useDevboxPanelEnabled } from "~/lib/devboxPanel";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { cn } from "../../lib/utils";
@@ -129,6 +130,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const currentSearch = useLocation({ select: (location) => location.search });
   const scopeSearch = validateSettingsScopeSearch(currentSearch);
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
+  const devboxPanelEnabled = useDevboxPanelEnabled();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.

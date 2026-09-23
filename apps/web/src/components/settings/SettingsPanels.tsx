@@ -73,6 +73,7 @@ import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { DevboxPanelSetting } from "./DevboxPanelSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -1620,6 +1621,8 @@ export function ThreadsSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      {isElectron ? <SettingsSection title="Devbox"><DevboxPanelSetting /></SettingsSection> : null}
 
       {supportsAutoSettlement ? (
         <SettingsSection id="auto-settle" title="Auto-settle">
