@@ -17,6 +17,7 @@ import {
   HardDriveIcon,
   PanelsTopLeftIcon,
   KeyboardIcon,
+  LaptopIcon,
   Link2Icon,
   PaletteIcon,
   SearchIcon,
@@ -24,6 +25,7 @@ import {
   Settings2Icon,
   XIcon,
 } from "lucide-react";
+import { isElectron } from "~/env";
 import { useDevboxPanelEnabled } from "~/lib/devboxPanel";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -89,6 +91,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/source-control": GitBranchIcon,
   "/settings/storage": HardDriveIcon,
   "/settings/connections": Link2Icon,
+  "/settings/machines": LaptopIcon,
   "/settings/devbox": ServerIcon,
   "/settings/archived": ArchiveIcon,
 };
@@ -119,7 +122,8 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navItems = SETTINGS_NAV_ITEMS.filter(
     (item) =>
       (item.to !== "/settings/projects" || isSettingsOverviewVisible(scopeSearch)) &&
-      (item.to !== "/settings/devbox" || devboxPanelEnabled),
+      (item.to !== "/settings/devbox" || devboxPanelEnabled) &&
+      (item.to !== "/settings/machines" || isElectron),
   );
   const { isMobile, setOpenMobile, open, setOpen } = useSidebar();
   const searchInputRef = useRef<HTMLInputElement>(null);
