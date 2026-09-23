@@ -72,7 +72,7 @@ export const RUN_DEVBOX_ACTION_CHANNEL = "desktop:run-devbox-action";
 export const LIST_AWS_PROFILES_CHANNEL = "desktop:list-aws-profiles";
 export const SET_DEVBOX_ENABLED_CHANNEL = "desktop:set-devbox-enabled";
 export const START_DEVBOX_LOGIN_CHANNEL = "desktop:start-devbox-login";
-export const SEND_DEVBOX_LOGIN_INPUT_CHANNEL = "desktop:send-devbox-login-input";
+export const SET_SIGN_IN_AWS_PROFILE_CHANNEL = "desktop:set-sign-in-aws-profile";
 export const SSH_PASSWORD_PROMPT_CANCELLED_RESULT = "ssh-password-prompt-cancelled";
 export const PREVIEW_CREATE_TAB_CHANNEL = "desktop:preview-create-tab";
 export const PREVIEW_CLOSE_TAB_CHANNEL = "desktop:preview-close-tab";
@@ -115,13 +115,13 @@ export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission";
 
 export const PREVIEW_RECORDING_INPUT_CHANNEL = "desktop:preview-recording-input";
-
-export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
-export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
-export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-storage";
-export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
 export const TRANSCRIBE_VOICE_CHANNEL = "desktop:transcribe-voice";
 export const LIST_VOICE_RECORDINGS_CHANNEL = "desktop:list-voice-recordings";
 export const READ_VOICE_RECORDING_CHANNEL = "desktop:read-voice-recording";
 export const RETRY_VOICE_RECORDING_CHANNEL = "desktop:retry-voice-recording";
 export const DELETE_VOICE_RECORDING_CHANNEL = "desktop:delete-voice-recording";
+
+export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
+export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
+export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-storage";
+export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
