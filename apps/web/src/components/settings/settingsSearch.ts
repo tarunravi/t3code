@@ -462,10 +462,10 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["ask before thread chat history"],
   },
   {
-    id: "devbox",
-    title: "Devbox",
-    to: "/settings/devbox",
-    searchTerms: ["ec2 aws spin up launch remote machine ssh cloud box"],
+    id: "devbox-panel",
+    title: "Devbox panel",
+    to: "/settings/general",
+    searchTerms: ["ec2 aws spin up launch remote machine ssh cloud box teleport login"],
     desktopOnly: true,
   },
   {
