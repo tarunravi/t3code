@@ -32,7 +32,10 @@ function depsWith(
   };
 }
 
-const INPUT = { audioBase64: Buffer.from("audio-bytes").toString("base64"), mimeType: "audio/webm" };
+const INPUT = {
+  audioBase64: Buffer.from("audio-bytes").toString("base64"),
+  mimeType: "audio/webm",
+};
 
 describe("transcribeWithRetry", () => {
   it("returns the transcript on the first attempt", async () => {
@@ -129,10 +132,7 @@ describe("transcribeWithRetry", () => {
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(200, { text: "x" })));
     const deps = depsWith(fetchImpl);
 
-    const outcome = await transcribeWithRetry(
-      { audioBase64: "", mimeType: "audio/webm" },
-      deps,
-    );
+    const outcome = await transcribeWithRetry({ audioBase64: "", mimeType: "audio/webm" }, deps);
 
     expect(outcome.ok).toBe(false);
     expect(outcome.attempts).toBe(0);
