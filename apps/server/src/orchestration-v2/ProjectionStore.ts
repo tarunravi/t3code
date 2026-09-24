@@ -166,7 +166,9 @@ export type ProjectionRecoveryKind =
   | "queued-runs"
   | "runtime"
   | "subagent-results"
-  | "delegated-completions";
+  | "delegated-completions"
+  // Side chats are ephemeral; any that are still live are discarded.
+  | "side-chats";
 
 export type ProjectionLimitRecoveryCandidate = Pick<
   OrchestrationV2ThreadShell,
@@ -256,6 +258,12 @@ export interface ProjectionCheckpointCaptureContext {
   readonly scope: OrchestrationV2CheckpointScope | undefined;
   readonly providerThread: OrchestrationV2ProviderThread | undefined;
   readonly readyCheckpointOrdinals: ReadonlyArray<number>;
+  /** Scope ordinals already owned by a completed turn, with that turn's identity. */
+  readonly turnCheckpoints: ReadonlyArray<{
+    readonly ordinalWithinScope: number;
+    readonly runId: RunId;
+    readonly appRunOrdinal: number;
+  }>;
 }
 
 const RollbackTargetAttempts = Schema.Array(
@@ -661,8 +669,17 @@ function upsertProviderTurn(
   next: OrchestrationV2ProviderTurn,
 ): Array<OrchestrationV2ProviderTurn> {
   const current = turns.find((turn) => turn.id === next.id);
+  const previous = current?.servedModel;
+  const reported = next.servedModel;
+  const servedModel =
+    previous === null ||
+    reported === null ||
+    (previous !== undefined && reported !== undefined && previous !== reported)
+      ? null
+      : (reported ?? previous);
   return upsertById(turns, {
     ...next,
+    ...(servedModel === undefined ? {} : { servedModel }),
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
@@ -769,7 +786,10 @@ export function applyToProjection(
     case "thread.guest-share-updated":
       return {
         ...base,
-        thread: event.payload,
+        thread: {
+          ...event.payload,
+          preservationOnly: event.payload.preservationOnly ?? projection.thread.preservationOnly,
+        },
       };
     // Reordering and PR refreshes preserve the orchestrator's activity timestamp.
     case "thread.active-reordered":
@@ -1864,7 +1884,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.model-selection-updated":
             case "thread.provider-switched":
             case "thread.guest-share-updated": {
-              const payloadJson = yield* encodeThreadPayload(event.payload);
+              const threadPayload =
+                event.type !== "thread.created" && event.payload.preservationOnly === undefined
+                  ? {
+                      ...event.payload,
+                      preservationOnly: (yield* getThread(event.threadId)).preservationOnly,
+                    }
+                  : event.payload;
+              const payloadJson = yield* encodeThreadPayload(threadPayload);
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`
               INSERT INTO orchestration_v2_projection_threads (
@@ -2270,15 +2297,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               break;
             }
             case "provider-turn.updated": {
-              const existingRows =
-                event.payload.tokenUsage === undefined
-                  ? yield* sql<PayloadRow>`
-                    SELECT payload_json
-                    FROM orchestration_v2_projection_provider_turns
-                    WHERE provider_turn_id = ${event.payload.id}
-                    LIMIT 1
-                  `
-                  : [];
+              const existingRows = yield* sql<PayloadRow>`
+                SELECT payload_json
+                FROM orchestration_v2_projection_provider_turns
+                WHERE provider_turn_id = ${event.payload.id}
+                LIMIT 1
+              `;
               const existing = existingRows[0];
               const providerTurn =
                 existing === undefined
@@ -3865,6 +3889,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   THEN json_type(payload_json, '$.delegatedCompletion.delivery') = 'object'
                   ELSE 0 END
               `;
+            case "side-chats":
+              return sql`
+                SELECT thread_id FROM orchestration_v2_projection_threads
+                WHERE CASE WHEN json_valid(payload_json)
+                  THEN json_extract(payload_json, '$.lineage.relationshipToParent') = 'side'
+                  ELSE 0 END
+              `;
             case "subagent-results":
               return sql`
                 SELECT child.thread_id FROM orchestration_v2_projection_threads AS child
@@ -4978,7 +5009,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               runRows[0] === undefined
                 ? undefined
                 : yield* decodeRunPayload(runRows[0].payload_json);
-            const [nodeRows, scopeRows, providerRows, readyRows] = yield* Effect.all([
+            const [nodeRows, scopeRows, providerRows, readyRows, turnRows] = yield* Effect.all([
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND node_id = ${run?.rootNodeId ?? null}`,
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoint_scopes
@@ -4991,6 +5022,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               sql<{ readonly ordinal: number }>`SELECT ordinal_within_scope AS ordinal
             FROM orchestration_v2_projection_checkpoints
             WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId} AND status = 'ready'`,
+              sql<{
+                readonly ordinal: number;
+                readonly run_id: string;
+                readonly app_run_ordinal: number;
+              }>`SELECT ordinal_within_scope AS ordinal, run_id, app_run_ordinal
+            FROM orchestration_v2_projection_checkpoints
+            WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId}
+              AND run_id IS NOT NULL AND app_run_ordinal IS NOT NULL`,
             ]);
             return {
               run,
@@ -5007,6 +5046,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ? undefined
                   : yield* decodeProviderThreadPayload(providerRows[0].payload_json),
               readyCheckpointOrdinals: readyRows.map(({ ordinal }) => ordinal),
+              turnCheckpoints: turnRows.map((row) => ({
+                ordinalWithinScope: row.ordinal,
+                runId: RunId.make(row.run_id),
+                appRunOrdinal: row.app_run_ordinal,
+              })),
             };
           }),
         )
