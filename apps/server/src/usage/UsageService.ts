@@ -1,3 +1,6 @@
+import * as UsageProjectionSource from "./UsageProjectionSource.ts";
+import * as NodeOS from "node:os";
+
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
@@ -6,6 +9,11 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageModelRates,
+  type UsageModelRatesInput,
+  type UsageSpeedInput,
+  type UsageSpeedSourceStatus,
+  type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
@@ -39,8 +47,17 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { readZCodeUsage } from "./zcodeUsageReader.ts";
 import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
+import { aggregateSpeed } from "./usageSpeed.ts";
+import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  resolveStandardRates,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -69,6 +86,7 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
 // mtime slack includes writes just before local midnight on the window's first day.
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_SPEED_WINDOW_MS = 91 * 24 * 60 * 60 * 1000;
 
 const CACHE_RETENTION_DAYS = 92;
 
@@ -143,7 +161,15 @@ export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
+    /** Request speed (time to first token, tokens per second) for a rolling window. */
+    readonly readSpeed: (
+      input: UsageSpeedInput,
+    ) => Effect.Effect<UsageSpeedSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Standard rates per model, with the same overrides and aliases as summaries. */
+    readonly readModelRates: (
+      input: UsageModelRatesInput,
+    ) => Effect.Effect<UsageModelRates, UsageReadError>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -156,6 +182,8 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  const cursorUsage = yield* CursorUsageSource.CursorUsage;
+  const projections = yield* UsageProjectionSource.UsageProjectionSource;
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -653,7 +681,27 @@ export const make = Effect.gen(function* () {
       [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs)), scans],
       { concurrency: "unbounded" },
     );
-    const scanned: readonly ScannedDir[] = [...transcripts, ...scanDirs.flat()];
+    const zcodeHome = hostEnvironment["USERPROFILE"] || hostEnvironment["HOME"] || NodeOS.homedir();
+    const zcodeRoot = path.join(zcodeHome, ".zcode", "cli", "db");
+    const zcodeDir = yield* fileSystem
+      .realPath(zcodeRoot)
+      .pipe(Effect.orElseSucceed(() => zcodeRoot));
+    const zcode = yield* Effect.promise(() =>
+      readZCodeUsage(path.join(zcodeDir, "db.sqlite"), windowStartMs),
+    );
+    const zcodeSource: ScannedDir = {
+      provider: "zcode",
+      dir: zcodeDir,
+      volumeId: yield* Effect.promise(() => readDirectoryVolumeId(zcodeDir)),
+      files: zcode.missing ? null : zcode.files.map((file) => ({ ...file, malformedRecords: 0 })),
+      status: zcode.error ? "partial" : "ok",
+      message: zcode.error
+        ? "ZCode usage history could not be fully read."
+        : zcode.missing
+          ? "No ZCode usage database on this environment."
+          : "ZCode retains up to 30 days of native usage history.",
+    };
+    const scanned: readonly ScannedDir[] = [...transcripts, zcodeSource, ...scanDirs.flat()];
     return scanned;
   });
 
@@ -724,10 +772,15 @@ export const make = Effect.gen(function* () {
       rates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
+      filters: input.filters,
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     });
 
     const sources: UsageSource[] = [];
+    const projected = yield* projections.read(input).pipe(Effect.option);
+    const projectionRecords = Option.isSome(projected) ? projected.value.records : [];
+    const owners = UsageProjectionSource.usageOwners(projectionRecords);
+    const historySessions = new Set<string>();
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
     const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
@@ -816,7 +869,9 @@ export const make = Effect.gen(function* () {
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
           const record = correctedRecord(rawRecord);
-          let usageRecord = record;
+          const sessionKey = encodeUsageRecordKey([record.provider, record.sessionId]);
+          const owner = owners.get(sessionKey);
+          let usageRecord = owner == null ? record : { ...record, thread: owner };
           if (
             sharedSessionProviders.has(record.provider) &&
             crossFileSessions.has(record.sessionId)
@@ -831,10 +886,11 @@ export const make = Effect.gen(function* () {
             ]);
             const occurrence = (eventOccurrences.get(key) ?? 0) + 1;
             eventOccurrences.set(key, occurrence);
-            usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
+            usageRecord = { ...usageRecord, dedupeKey: key + ":" + occurrence };
           }
           if (aggregator.add(usageRecord, dir) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
+            historySessions.add(sessionKey);
           }
         }
       }
@@ -869,6 +925,46 @@ export const make = Effect.gen(function* () {
     const pruned = pruneScanCache(fileCache, retentionCutoffMs);
     if (pruned > 0) cacheDirty = true;
 
+    const projectionVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(config.stateDir));
+    const fallbackSessions = new Map<UsageProviderKind, Set<string>>();
+    for (const record of projectionRecords) {
+      if (historySessions.has(encodeUsageRecordKey([record.provider, record.sessionId]))) continue;
+      if (!aggregator.add(record, config.dbPath)) continue;
+      const sessions = fallbackSessions.get(record.provider) ?? new Set<string>();
+      sessions.add(record.sessionId);
+      fallbackSessions.set(record.provider, sessions);
+    }
+    for (const [provider, sessions] of fallbackSessions)
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider,
+          resolvedHomePath: config.dbPath,
+          volumeId: projectionVolumeId,
+        },
+        status: "partial",
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: sessions.size,
+        message:
+          "Turn usage without a matching transcript; historical or unreported requests may be incomplete.",
+      });
+    if (Option.isNone(projected))
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider: "omp",
+          resolvedHomePath: config.dbPath,
+          volumeId: projectionVolumeId,
+        },
+        status: "failed",
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: 0,
+        message: "T3 thread attribution and turn usage could not be read.",
+      });
     const aggregated = aggregator.finish();
     const readAt = yield* DateTime.now;
     const finishedAtMs = yield* Clock.currentTimeMillis;
@@ -880,6 +976,8 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       buckets: aggregated.buckets,
+      threads: Option.isSome(projected) ? projected.value.threads : [],
+      ...(input.filters === undefined ? {} : { filtersApplied: true as const }),
       sources,
       pricing: pricing(),
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
@@ -899,6 +997,7 @@ export const make = Effect.gen(function* () {
       input.untilTime ?? null,
       settings,
       input.awaitRefresh === true,
+      input.filters ?? null,
       input.modelFilter ?? null,
     ]);
 
@@ -935,7 +1034,82 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  const readSpeed = Effect.fn("UsageService.readSpeed")(function* (input: UsageSpeedInput) {
+    const sinceMs = Date.parse(input.sinceTime);
+    const untilMs = Date.parse(input.untilTime);
+    if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || untilMs <= sinceMs) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed requires valid sinceTime and untilTime instants in order",
+      });
+    }
+    if (untilMs - sinceMs > MAX_SPEED_WINDOW_MS) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed window must be at most 91 days",
+      });
+    }
+    const settings = yield* readSettings;
+    const directories = (yield* resolveTranscriptDirs(settings, sinceMs).pipe(
+      Effect.provideContext(readerContext),
+    ))
+      .filter((entry) => entry.provider === "claude")
+      .map((entry) => entry.dir);
+    const [openCodex, claude, cursorSamples] = yield* Effect.all(
+      [
+        Effect.promise(() =>
+          readOpenCodexSpeed({ environment: hostEnvironment, sinceMs, untilMs }),
+        ),
+        Effect.promise(() => readClaudeSpeed({ directories, sinceMs, untilMs })),
+        cursorUsage.readTurnSpeed(sinceMs, untilMs),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const cursor: UsageSpeedSourceStatus =
+      cursorSamples === null
+        ? {
+            source: "cursor-turns",
+            status: "unavailable",
+            detail: "T3 Code's turn history could not be read.",
+            requests: 0,
+          }
+        : {
+            source: "cursor-turns",
+            status: "ok",
+            detail:
+              cursorSamples.length === 0
+                ? null
+                : "Timed from Cursor turns run in T3 Code. A turn includes its tool calls, and Cursor reports no token counts.",
+            requests: cursorSamples.length,
+          };
+    return {
+      readAt: DateTime.formatIso(yield* DateTime.now),
+      sinceTime: input.sinceTime,
+      untilTime: input.untilTime,
+      rows: aggregateSpeed([...openCodex.samples, ...claude.samples, ...(cursorSamples ?? [])]),
+      sources: [openCodex.status, claude.status, cursor],
+    } satisfies UsageSpeedSummary;
+  });
+
+  const readModelRates = Effect.fn("UsageService.readModelRates")(function* (
+    input: UsageModelRatesInput,
+  ) {
+    const settings = yield* readSettings;
+    yield* ensureRates(false);
+    const overrides = createOverrideRateTable(settings.usagePriceOverrides);
+    const aliases = resolveModelAliases(settings.usageModelAliases);
+    return {
+      models: input.models.map((model) => ({
+        model,
+        rate: resolveStandardRates(rates, model, overrides, aliases),
+      })),
+      pricing: pricing(),
+    } satisfies UsageModelRates;
+  });
+
+  return { readSummary, refreshRates, readSpeed, readModelRates, awaitPersisted } as const;
 });
 
-export const layer = Layer.effect(UsageService, make);
+export const layer = Layer.effect(UsageService, make).pipe(
+  Layer.provide(Layer.mergeAll(CursorUsageSource.layer, UsageProjectionSource.layer)),
+);
