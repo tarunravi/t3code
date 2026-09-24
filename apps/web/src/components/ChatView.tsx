@@ -191,6 +191,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestRunSettled,
+  canRestoreFilesForRun,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -8178,6 +8179,11 @@ export default function ChatView(props: ChatViewProps) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
+      if (restoreFiles === undefined && !canRestoreFilesForRun(turnDiffSummaries, message.runId)) {
+        // No file snapshot for this turn (for example, outside git): edit the
+        // conversation only, without asking about files.
+        restoreFiles = false;
+      }
       if (restoreFiles === undefined) {
         setPendingRevert({ turnCount, messageId, routeThreadKey });
         return;
@@ -8266,6 +8272,7 @@ export default function ChatView(props: ChatViewProps) {
       routeThreadKey,
       setThreadError,
       serverProjection,
+      turnDiffSummaries,
     ],
   );
 
