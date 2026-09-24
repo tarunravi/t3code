@@ -1163,7 +1163,6 @@ function MarkdownMermaidBlock({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  className="chat-markdown-chrome-action"
                   aria-pressed={view === "code"}
                   aria-label={toggleLabel}
                   onClick={() => setView((current) => (current === "diagram" ? "code" : "diagram"))}
@@ -1185,7 +1184,6 @@ function MarkdownMermaidBlock({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  className="chat-markdown-chrome-action"
                   onClick={handleCopy}
                   aria-label={copyLabel}
                 />
