@@ -959,13 +959,30 @@ export function inferCheckpointTurnCountByRunId(
   );
 }
 
+function isConversationRewriteCheckpoint(checkpoint: ThreadCheckpointSummary): boolean {
+  return checkpoint.status === "ready" || checkpoint.status === "missing";
+}
+
+/** True when rewriting from this run can also restore workspace files. */
+export function canRestoreFilesForRun(
+  checkpoints: ReadonlyArray<ThreadCheckpointSummary>,
+  runId: RunId | null,
+): boolean {
+  return (
+    runId !== null &&
+    checkpoints.some((checkpoint) => checkpoint.runId === runId && checkpoint.status === "ready")
+  );
+}
+
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
 }): Map<ChatMessage["id"], number> {
+  // A "missing" checkpoint (e.g. a project outside git) cannot restore files,
+  // but it still marks the turn boundary, so the conversation can be rewritten.
   const readyCheckpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
   for (const checkpoint of input.checkpoints) {
-    if (checkpoint.status === "ready") {
+    if (isConversationRewriteCheckpoint(checkpoint)) {
       readyCheckpointByRunId.set(checkpoint.runId, checkpoint);
     }
   }
