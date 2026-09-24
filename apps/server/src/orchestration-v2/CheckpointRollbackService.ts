@@ -19,7 +19,11 @@ import {
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
-import { decideRollbackExecution } from "./CommandPolicy.ts";
+import {
+  checkpointTurnOrdinal,
+  decideRollbackExecution,
+  isRewriteTarget,
+} from "./CommandPolicy.ts";
 import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
@@ -132,7 +136,7 @@ export const layer: Layer.Layer<
         checkpoint === undefined ||
         scope === undefined ||
         checkpoint.scopeId !== scope.id ||
-        checkpoint.status !== "ready"
+        !isRewriteTarget(checkpoint, input.restoreFiles)
       ) {
         return yield* new CheckpointRollbackExecutionError({
           reason: "rollback-target-invalid",
@@ -189,7 +193,7 @@ export const layer: Layer.Layer<
             }),
       });
 
-      const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
+      const targetOrdinal = checkpointTurnOrdinal(checkpoint, scope);
       if (
         projection.runs.some((run) =>
           ["preparing", "starting", "running", "waiting", "queued"].includes(run.status),
@@ -201,7 +205,7 @@ export const layer: Layer.Layer<
           cause: "Finish or cancel active and queued turns before rewriting conversation history.",
         });
       }
-      const execution = yield* decideRollbackExecution({
+      let execution = yield* decideRollbackExecution({
         commandId: CommandId.make(`rollback:${input.checkpointId}`),
         threadId: input.threadId,
         providerInstanceId: providerThread.providerInstanceId,
@@ -260,31 +264,57 @@ export const layer: Layer.Layer<
               };
             });
 
-      const snapshot =
+      const nativeSnapshot =
         runsToRollback.length === 0 || execution === "portable_context"
-          ? { providerThread }
+          ? Effect.succeed({ providerThread })
           : execution === "native_fork" && rollbackTarget.type === "provider_turn"
-            ? {
-                providerThread: yield* session.forkThread({
+            ? session
+                .forkThread({
                   sourceProviderThread: providerThread,
                   sourceProviderTurns: providerThreadTurns,
                   targetThreadId: input.threadId,
                   modelSelection,
                   runtimePolicy: resolvedRuntimePolicy,
                   providerTurnId: rollbackTarget.providerTurn.id,
-                }),
-              }
-            : yield* session.rollbackThread({
+                })
+                .pipe(Effect.map((forked) => ({ providerThread: forked })))
+            : session.rollbackThread({
                 providerThread,
                 target: rollbackTarget,
                 providerThreadTurns,
               });
+      // Some native threads refuse rollback at runtime (Codex threads with
+      // paginated history). A provider that accepts handoff summaries can
+      // still continue from the retained prefix in a fresh provider thread.
+      const snapshot = yield* nativeSnapshot.pipe(
+        Effect.catch((cause) =>
+          execution !== "portable_context" &&
+          session.providerSession.capabilities.context.canConsumeHandoffSummaries
+            ? Effect.logWarning("orchestrationV2.checkpointRollback.portableFallback", {
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                cause,
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    execution = "portable_context";
+                  }),
+                ),
+                Effect.as({ providerThread }),
+              )
+            : Effect.fail(cause),
+        ),
+      );
+      // Later turn boundaries no longer exist; only ready ones own a git ref to delete.
       const staleCheckpoints = projection.checkpoints.filter(
         (candidate) =>
           candidate.scopeId === scope.id &&
           candidate.appRunOrdinal !== null &&
           candidate.appRunOrdinal > targetOrdinal &&
-          candidate.status === "ready",
+          (candidate.status === "ready" || candidate.status === "missing"),
+      );
+      const staleCheckpointRefs = staleCheckpoints.filter(
+        (candidate) => candidate.status === "ready",
       );
 
       const now = yield* DateTime.now;
@@ -393,8 +423,8 @@ export const layer: Layer.Layer<
         );
       }
       if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
-      if (staleCheckpoints.length > 0) {
-        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+      if (staleCheckpointRefs.length > 0) {
+        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpointRefs });
       }
       for (const staleCheckpoint of staleCheckpoints) {
         events.push(
