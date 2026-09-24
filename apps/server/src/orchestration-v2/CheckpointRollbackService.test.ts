@@ -35,7 +35,11 @@ import {
   resolveCodexRollbackTurnCount,
 } from "./Adapters/CodexAdapterV2.ts";
 import { layer as contextHandoffLayer } from "./ContextHandoffService.ts";
-import { decideRollbackExecution } from "./CommandPolicy.ts";
+import {
+  checkpointTurnOrdinal,
+  decideRollbackExecution,
+  isRewriteTarget,
+} from "./CommandPolicy.ts";
 
 const checkpointRollbackServiceLayer = checkpointRollbackLayer.pipe(
   Layer.provide(NodeServices.layer),
@@ -76,13 +80,25 @@ it.effect("chooses rollback, native fork, or portable context by capability", ()
 );
 
 it.effect.each([
-  { targetOrdinal: 0, supported: true, busy: false },
-  { targetOrdinal: 1, supported: true, busy: false },
-  { targetOrdinal: 1, supported: false, busy: false },
-  { targetOrdinal: 1, supported: true, busy: true },
-])(
+  { targetOrdinal: 0, supported: true, busy: false, checkpointStatus: "ready" },
+  { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "ready" },
+  // Outside git a turn's checkpoint has no file snapshot, but keep-files rewrites still work.
+  { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "missing" },
+  { targetOrdinal: 1, supported: false, busy: false, checkpointStatus: "ready" },
+  { targetOrdinal: 1, supported: true, busy: true, checkpointStatus: "ready" },
+  // Codex threads with paginated history advertise rollback but refuse it at runtime.
+  {
+    targetOrdinal: 0,
+    supported: true,
+    busy: false,
+    checkpointStatus: "ready",
+    nativeRefuses: true,
+  },
+] as const)(
   "portable rewrite retains only the prefix and rejects unsafe requests: %s",
-  ({ targetOrdinal, supported, busy }) => {
+  (testCase) => {
+    const { targetOrdinal, supported, busy, checkpointStatus } = testCase;
+    const nativeRefuses = "nativeRefuses" in testCase && testCase.nativeRefuses;
     const threadId = ThreadId.make("portable-rewrite");
     const providerThreadId = ProviderThreadId.make("portable-original");
     const providerSessionId = ProviderSessionId.make("portable-original-session");
@@ -117,7 +133,12 @@ it.effect.each([
       nodes: [],
       attempts: [],
       checkpoints: [
-        { id: checkpointId, scopeId, status: "ready", appRunOrdinal: targetOrdinal || null },
+        {
+          id: checkpointId,
+          scopeId,
+          status: checkpointStatus,
+          appRunOrdinal: targetOrdinal || null,
+        },
       ],
       checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
       runs,
@@ -135,7 +156,9 @@ it.effect.each([
     const events: OrchestrationV2DomainEvent[] = [];
     const restore = vi.fn(() => Effect.die("keep-files rewrite must not restore files"));
     const rollbackThread = vi.fn(() =>
-      Effect.die("portable rewrite must not mutate native history"),
+      nativeRefuses
+        ? Effect.fail(new Error("thread uses paginated history, which rejects thread/rollback"))
+        : Effect.die("portable rewrite must not mutate native history"),
     );
     const testLayer = checkpointRollbackServiceLayer.pipe(
       Layer.provide(
@@ -158,7 +181,7 @@ it.effect.each([
                     ...CodexProviderCapabilitiesV2,
                     threads: {
                       ...CodexProviderCapabilitiesV2.threads,
-                      canRollbackThread: false,
+                      canRollbackThread: nativeRefuses,
                       canForkThread: false,
                     },
                     context: {
@@ -180,7 +203,7 @@ it.effect.each([
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
         .pipe(Effect.result);
       assert.equal(restore.mock.calls.length, 0);
-      assert.equal(rollbackThread.mock.calls.length, 0);
+      assert.equal(rollbackThread.mock.calls.length, nativeRefuses ? 1 : 0);
       assert.equal(original.nativeThreadRef.nativeId, "original-native-id");
       if (!supported || busy) {
         assert.equal(result._tag, "Failure");
@@ -211,6 +234,28 @@ it.effect.each([
     }).pipe(Effect.provide(testLayer));
   },
 );
+
+it("rewinds to a checkpoint without a file snapshot only when files are kept", () => {
+  const ready = { status: "ready" } as const;
+  const missing = { status: "missing" } as const;
+  assert.equal(isRewriteTarget(ready, undefined), true);
+  assert.equal(isRewriteTarget(ready, true), true);
+  assert.equal(isRewriteTarget(missing, false), true);
+  assert.equal(isRewriteTarget(missing, undefined), false);
+  assert.equal(isRewriteTarget(missing, true), false);
+  assert.equal(isRewriteTarget({ status: "stale" }, false), false);
+  assert.equal(isRewriteTarget({ status: "error" }, false), false);
+});
+
+it("resolves the turn a checkpoint marks, even after the turn link was lost", () => {
+  const root = { kind: "root_run" };
+  assert.equal(checkpointTurnOrdinal({ appRunOrdinal: 3, ordinalWithinScope: 3 }, root), 3);
+  assert.equal(checkpointTurnOrdinal({ appRunOrdinal: null, ordinalWithinScope: 2 }, root), 2);
+  assert.equal(
+    checkpointTurnOrdinal({ appRunOrdinal: null, ordinalWithinScope: 2 }, { kind: "subagent" }),
+    0,
+  );
+});
 
 it.effect("rejects a non-ready checkpoint before opening a session or restoring files", () => {
   const threadId = ThreadId.make("thread:rollback-non-ready");

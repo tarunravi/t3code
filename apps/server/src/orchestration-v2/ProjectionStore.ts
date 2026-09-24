@@ -212,6 +212,12 @@ export interface ProjectionCheckpointCaptureContext {
   readonly scope: OrchestrationV2CheckpointScope | undefined;
   readonly providerThread: OrchestrationV2ProviderThread | undefined;
   readonly readyCheckpointOrdinals: ReadonlyArray<number>;
+  /** Scope ordinals already owned by a completed turn, with that turn's identity. */
+  readonly turnCheckpoints: ReadonlyArray<{
+    readonly ordinalWithinScope: number;
+    readonly runId: RunId;
+    readonly appRunOrdinal: number;
+  }>;
 }
 
 /** Exact durable targets used by interrupt, restart, and steering effects. */
@@ -4265,7 +4271,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               runRows[0] === undefined
                 ? undefined
                 : yield* decodeRunPayload(runRows[0].payload_json);
-            const [nodeRows, scopeRows, providerRows, readyRows] = yield* Effect.all([
+            const [nodeRows, scopeRows, providerRows, readyRows, turnRows] = yield* Effect.all([
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND node_id = ${run?.rootNodeId ?? null}`,
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoint_scopes
@@ -4278,6 +4284,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               sql<{ readonly ordinal: number }>`SELECT ordinal_within_scope AS ordinal
             FROM orchestration_v2_projection_checkpoints
             WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId} AND status = 'ready'`,
+              sql<{
+                readonly ordinal: number;
+                readonly run_id: string;
+                readonly app_run_ordinal: number;
+              }>`SELECT ordinal_within_scope AS ordinal, run_id, app_run_ordinal
+            FROM orchestration_v2_projection_checkpoints
+            WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId}
+              AND run_id IS NOT NULL AND app_run_ordinal IS NOT NULL`,
             ]);
             return {
               run,
@@ -4294,6 +4308,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ? undefined
                   : yield* decodeProviderThreadPayload(providerRows[0].payload_json),
               readyCheckpointOrdinals: readyRows.map(({ ordinal }) => ordinal),
+              turnCheckpoints: turnRows.map((row) => ({
+                ordinalWithinScope: row.ordinal,
+                runId: RunId.make(row.run_id),
+                appRunOrdinal: row.app_run_ordinal,
+              })),
             };
           }),
         )
@@ -5678,6 +5697,19 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 (candidate) => candidate.scopeId === target.scopeId && candidate.status === "ready",
               )
               .map((candidate) => candidate.ordinalWithinScope),
+            turnCheckpoints: projection.checkpoints.flatMap((candidate) =>
+              candidate.scopeId === target.scopeId &&
+              candidate.runId !== null &&
+              candidate.appRunOrdinal !== null
+                ? [
+                    {
+                      ordinalWithinScope: candidate.ordinalWithinScope,
+                      runId: candidate.runId,
+                      appRunOrdinal: candidate.appRunOrdinal,
+                    },
+                  ]
+                : [],
+            ),
           };
         }),
       getRunMessage: (threadId, runId) =>

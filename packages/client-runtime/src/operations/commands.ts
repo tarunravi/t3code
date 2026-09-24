@@ -841,6 +841,11 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
       });
     }
     const projection = yield* getProjection(input.threadId);
+    const rootScopeIds = new Set(
+      projection.checkpointScopes
+        .filter((scope) => scope.kind === "root_run")
+        .map((scope) => scope.id),
+    );
     const checkpoint =
       projection.checkpoints.find(
         (candidate) => candidate.id === input.checkpointId && candidate.scopeId === input.scopeId,
@@ -849,8 +854,19 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
         input.turnCount === 0
           ? candidate.ordinalWithinScope === 0 && candidate.appRunOrdinal === null
           : candidate.appRunOrdinal === input.turnCount,
-      );
-    if (checkpoint === undefined || checkpoint.status !== "ready") {
+      ) ??
+      // Older threads outside git lost the turn link on earlier checkpoints;
+      // in a root scope, ordinal N still marks the end of turn N.
+      (input.restoreFiles === false && input.turnCount !== undefined
+        ? projection.checkpoints.findLast(
+            (candidate) =>
+              rootScopeIds.has(candidate.scopeId) &&
+              candidate.ordinalWithinScope === input.turnCount &&
+              candidate.status === "missing",
+          )
+        : undefined);
+    const conversationOnly = input.restoreFiles === false && checkpoint?.status === "missing";
+    if (checkpoint === undefined || (checkpoint.status !== "ready" && !conversationOnly)) {
       const target =
         input.checkpointId === undefined
           ? `run ordinal ${input.turnCount ?? "unknown"}`
