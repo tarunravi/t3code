@@ -36,6 +36,7 @@ import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { UsageSpeedSection } from "./UsageSpeed";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   enumerateDays,
@@ -555,6 +556,12 @@ export function UsagePage() {
                     />
                   ) : null
                 }
+              />
+            ) : metric === "speed" ? (
+              <UsageSpeedSection
+                key={windowDays}
+                windowDays={windowDays}
+                selectedEnvironmentIds={selectedEnvironmentIds}
               />
             ) : shown === null ? (
               <UsageSkeleton />
