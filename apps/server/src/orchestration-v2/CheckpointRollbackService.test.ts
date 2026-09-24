@@ -123,6 +123,7 @@ it.effect.each([
       providerSessions: [],
       providerTurns: [],
       nodes: [],
+      attempts: [],
       checkpoints: [
         { id: checkpointId, scopeId, status: "ready", appRunOrdinal: targetOrdinal || null },
       ],

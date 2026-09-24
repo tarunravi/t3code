@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import type { VoiceRecordingMetadata } from "@t3tools/contracts";
 
@@ -19,7 +19,7 @@ export function audioExtensionForMimeType(mimeType: string): string {
 }
 
 export function voiceRecordingsDir(userDataPath: string): string {
-  return path.join(userDataPath, VOICE_RECORDINGS_DIRNAME);
+  return NodePath.join(userDataPath, VOICE_RECORDINGS_DIRNAME);
 }
 
 function audioFileName(id: string, mimeType: string): string {
@@ -36,7 +36,7 @@ function isSafeId(id: string): boolean {
 
 function readSidecar(dir: string, file: string): VoiceRecordingMetadata | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as unknown;
+    const parsed = JSON.parse(NodeFS.readFileSync(NodePath.join(dir, file), "utf8")) as unknown;
     if (typeof parsed !== "object" || parsed === null) return null;
     const record = parsed as Record<string, unknown>;
     if (
@@ -65,9 +65,12 @@ function readSidecar(dir: string, file: string): VoiceRecordingMetadata | null {
 }
 
 function removeRecordingFiles(dir: string, metadata: VoiceRecordingMetadata): void {
-  for (const file of [sidecarFileName(metadata.id), audioFileName(metadata.id, metadata.mimeType)]) {
+  for (const file of [
+    sidecarFileName(metadata.id),
+    audioFileName(metadata.id, metadata.mimeType),
+  ]) {
     try {
-      fs.rmSync(path.join(dir, file), { force: true });
+      NodeFS.rmSync(NodePath.join(dir, file), { force: true });
     } catch {
       // Best-effort eviction; a leftover file is retried on the next save.
     }
@@ -78,7 +81,7 @@ function removeRecordingFiles(dir: string, metadata: VoiceRecordingMetadata): vo
 export function listVoiceRecordings(dir: string): VoiceRecordingMetadata[] {
   let files: string[];
   try {
-    files = fs.readdirSync(dir);
+    files = NodeFS.readdirSync(dir);
   } catch {
     return [];
   }
@@ -102,8 +105,8 @@ export function saveVoiceRecording(
   dir: string,
   input: SaveVoiceRecordingInput,
 ): VoiceRecordingMetadata {
-  fs.mkdirSync(dir, { recursive: true });
-  const id = randomUUID();
+  NodeFS.mkdirSync(dir, { recursive: true });
+  const id = NodeCrypto.randomUUID();
   const metadata: VoiceRecordingMetadata = {
     id,
     createdAt: new Date().toISOString(),
@@ -114,8 +117,8 @@ export function saveVoiceRecording(
     error: input.error,
     transcript: input.transcript,
   };
-  fs.writeFileSync(path.join(dir, audioFileName(id, input.mimeType)), input.audio);
-  fs.writeFileSync(path.join(dir, sidecarFileName(id)), JSON.stringify(metadata));
+  NodeFS.writeFileSync(NodePath.join(dir, audioFileName(id, input.mimeType)), input.audio);
+  NodeFS.writeFileSync(NodePath.join(dir, sidecarFileName(id)), JSON.stringify(metadata));
   for (const overflow of listVoiceRecordings(dir).slice(VOICE_RECORDINGS_MAX_COUNT)) {
     removeRecordingFiles(dir, overflow);
   }
@@ -132,7 +135,7 @@ export function readVoiceRecording(dir: string, id: string): VoiceRecordingWithA
   const metadata = readSidecar(dir, sidecarFileName(id));
   if (!metadata) return null;
   try {
-    const audio = fs.readFileSync(path.join(dir, audioFileName(id, metadata.mimeType)));
+    const audio = NodeFS.readFileSync(NodePath.join(dir, audioFileName(id, metadata.mimeType)));
     return { metadata, audio };
   } catch {
     return null;
@@ -156,7 +159,7 @@ export function updateVoiceRecording(
   if (!metadata) return null;
   const updated: VoiceRecordingMetadata = { ...metadata, ...patch };
   try {
-    fs.writeFileSync(path.join(dir, sidecarFileName(id)), JSON.stringify(updated));
+    NodeFS.writeFileSync(NodePath.join(dir, sidecarFileName(id)), JSON.stringify(updated));
   } catch {
     return null;
   }
