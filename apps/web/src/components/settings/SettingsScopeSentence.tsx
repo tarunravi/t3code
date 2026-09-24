@@ -53,6 +53,8 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
   "/settings/access",
   "/settings/about",
   "/settings/voice-recordings",
+  "/settings/machines",
+  "/settings/devbox",
 ]);
 
 interface SettingsScopeMenuProps {
