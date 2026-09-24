@@ -7696,16 +7696,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           render={
                             <Button
                               type="button"
-                              variant="ghost"
+                              variant={
+                                voiceInput.state.phase === "recording" ||
+                                voiceInput.state.phase === "error"
+                                  ? "destructive-outline"
+                                  : "ghost"
+                              }
                               size="icon-sm"
                               onPointerDown={(event) => event.preventDefault()}
                               disabled={voiceInput.state.phase === "transcribing"}
-                              className={cn(
-                                voiceInput.state.phase === "recording" &&
-                                  "bg-rose-500/10 text-rose-600 hover:bg-rose-500/20 dark:text-rose-400",
-                                voiceInput.state.phase === "error" &&
-                                  "text-destructive hover:text-destructive",
-                              )}
                               onClick={() => {
                                 switch (voiceInput.state.phase) {
                                   case "idle":
@@ -7806,8 +7805,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                     isPreparingWorktree={isPreparingWorktree}
                     hasSendableContent={
-                      composerSendState.hasSendableContent ||
-                      voiceInput.state.phase === "recording"
+                      composerSendState.hasSendableContent || voiceInput.state.phase === "recording"
                     }
                     canResume={showResumeAction}
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
