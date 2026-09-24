@@ -214,6 +214,7 @@ import {
 } from "./relayClient.ts";
 import {
   ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationBackgroundTaskError,
   OrchestrationGetWorkflowScriptError,
   OrchestrationV2StopWorkflowError,
   OrchestrationV2DispatchCommandError,
@@ -334,7 +335,16 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
-import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  UsageModelRates,
+  UsageModelRatesInput,
+  UsagePricing,
+  UsageReadError,
+  UsageSpeedInput,
+  UsageSpeedSummary,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import {
   StorageCleanupReport,
   DatabaseStorageStatus,
@@ -513,6 +523,8 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverGetUsageSpeed: "server.getUsageSpeed",
+  serverGetUsageModelRates: "server.getUsageModelRates",
 
   scheduledTasksList: "scheduledTasks.list",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
@@ -909,6 +921,19 @@ const WsServerCheckOtlpEndpointRpc = Rpc.make(WS_METHODS.serverCheckOtlpEndpoint
 const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+const WsServerGetUsageSpeedRpc = Rpc.make(WS_METHODS.serverGetUsageSpeed, {
+  payload: UsageSpeedInput,
+  success: UsageSpeedSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+/** Rates for pricing in-app token usage, such as a thread's estimated cost. */
+const WsServerGetUsageModelRatesRpc = Rpc.make(WS_METHODS.serverGetUsageModelRates, {
+  payload: UsageModelRatesInput,
+  success: UsageModelRates,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
@@ -1731,6 +1756,23 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetBackgroundTaskOutputRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput,
+  {
+    payload: OrchestrationV2RpcSchemas.getBackgroundTaskOutput.input,
+    success: OrchestrationV2RpcSchemas.getBackgroundTaskOutput.output,
+    error: Schema.Union([OrchestrationBackgroundTaskError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2StopBackgroundTaskRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask,
+  {
+    payload: OrchestrationV2RpcSchemas.stopBackgroundTask.input,
+    success: OrchestrationV2RpcSchemas.stopBackgroundTask.output,
+    error: Schema.Union([OrchestrationBackgroundTaskError, EnvironmentAuthorizationError]),
+  },
+);
 const WsOrchestrationV2GetTurnItemRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnItem, {
   payload: OrchestrationV2RpcSchemas.getTurnItem.input,
   success: OrchestrationV2RpcSchemas.getTurnItem.output,
@@ -1965,6 +2007,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerCheckOtlpEndpointRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerGetUsageSpeedRpc,
+  WsServerGetUsageModelRatesRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,
@@ -2101,6 +2145,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
+  WsOrchestrationV2GetBackgroundTaskOutputRpc,
+  WsOrchestrationV2StopBackgroundTaskRpc,
   WsOrchestrationV2StopWorkflowRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,
