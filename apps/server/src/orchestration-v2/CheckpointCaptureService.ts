@@ -65,7 +65,7 @@ export const layer: Layer.Layer<
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
     }) {
-      const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
+      const { run, rootNode, scope, providerThread, readyCheckpointOrdinals, turnCheckpoints } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
       // A stopped run is already terminal. Its checkpoint is the rollback point
       // for the message after it, so capture leaves its status alone.
@@ -107,19 +107,27 @@ export const layer: Layer.Layer<
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
         readyCheckpointOrdinals.includes(ordinalWithinScope);
+      // A baseline re-materialized over a completed turn's checkpoint (for
+      // example one left "missing" outside git) keeps that turn's identity, so
+      // the turn stays addressable for rewrites.
+      const materializeBaseline = (ordinalWithinScope: number) =>
+        checkpoints.materializeBaselineCheckpoint({ scope, ordinalWithinScope }).pipe(
+          Effect.map((baseline) => {
+            const turn = turnCheckpoints.find(
+              (candidate) => candidate.ordinalWithinScope === ordinalWithinScope,
+            );
+            return turn === undefined
+              ? baseline
+              : { ...baseline, runId: turn.runId, appRunOrdinal: turn.appRunOrdinal };
+          }),
+        );
       const threadStartCheckpoint =
         baselineOrdinalWithinScope === 0 || hasReadyCheckpoint(0)
           ? null
-          : yield* checkpoints.materializeBaselineCheckpoint({
-              scope,
-              ordinalWithinScope: 0,
-            });
+          : yield* materializeBaseline(0);
       const baselineCheckpoint = hasReadyCheckpoint(baselineOrdinalWithinScope)
         ? null
-        : yield* checkpoints.materializeBaselineCheckpoint({
-            scope,
-            ordinalWithinScope: baselineOrdinalWithinScope,
-          });
+        : yield* materializeBaseline(baselineOrdinalWithinScope);
       const checkpoint = yield* checkpoints.capture({
         scope,
         runId: run.id,
