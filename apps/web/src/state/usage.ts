@@ -10,6 +10,8 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
+  type UsageSpeedInput,
+  type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
@@ -150,4 +152,49 @@ export function useUsage(
     isPartial: answeredCount > 0 && stillReporting > 0,
     refresh,
   };
+}
+
+export interface EnvironmentUsageSpeedStatus {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPending: boolean;
+  readonly error: string | null;
+  readonly summary: UsageSpeedSummary | null;
+}
+
+const usageSpeedByWindowAtom = Atom.family((windowKey: string) =>
+  Atom.make((get): readonly EnvironmentUsageSpeedStatus[] => {
+    const input = JSON.parse(windowKey) as UsageSpeedInput;
+    const presentations = get(environmentPresentations.presentationsAtom);
+    const statuses: EnvironmentUsageSpeedStatus[] = [];
+    for (const [environmentId, presentation] of presentations) {
+      const result = get(serverEnvironment.usageSpeed({ environmentId, input }));
+      statuses.push({
+        environmentId,
+        label: presentation.entry.target.label,
+        isPending: result.waiting,
+        error: result._tag === "Failure" ? "This environment could not report speed." : null,
+        summary: Option.getOrNull(AsyncResult.value(result)),
+      });
+    }
+    return statuses;
+  }).pipe(Atom.withLabel(`web-usage-speed:window:${windowKey}`)),
+);
+
+/** Each environment's request speed for one rolling window. */
+export function useUsageSpeed(
+  input: UsageSpeedInput,
+  selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
+): readonly EnvironmentUsageSpeedStatus[] {
+  const windowKey = JSON.stringify({ sinceTime: input.sinceTime, untilTime: input.untilTime });
+  const environments = useAtomValue(usageSpeedByWindowAtom(windowKey));
+  return useMemo(
+    () =>
+      selectedEnvironmentIds === null
+        ? environments
+        : environments.filter((environment) =>
+            selectedEnvironmentIds.has(environment.environmentId),
+          ),
+    [environments, selectedEnvironmentIds],
+  );
 }
