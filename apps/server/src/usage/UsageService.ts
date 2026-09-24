@@ -23,6 +23,8 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageSpeedInput,
+  type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
@@ -48,6 +50,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
+import { aggregateSpeed } from "./usageSpeed.ts";
+import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
@@ -78,6 +82,7 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
  */
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_SPEED_WINDOW_MS = 91 * 24 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
@@ -111,6 +116,10 @@ export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
+    /** Request speed (time to first token, tokens per second) for a rolling window. */
+    readonly readSpeed: (
+      input: UsageSpeedInput,
+    ) => Effect.Effect<UsageSpeedSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
   }
@@ -140,6 +149,14 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readSpeed: (input) =>
+      Effect.succeed({
+        readAt: "1970-01-01T00:00:00.000Z",
+        sinceTime: input.sinceTime,
+        untilTime: input.untilTime,
+        rows: [],
+        sources: [],
+      }),
   }),
 );
 
@@ -691,7 +708,46 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  const readSpeed = Effect.fn("UsageService.readSpeed")(function* (input: UsageSpeedInput) {
+    const sinceMs = Date.parse(input.sinceTime);
+    const untilMs = Date.parse(input.untilTime);
+    if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || untilMs <= sinceMs) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed requires valid sinceTime and untilTime instants in order",
+      });
+    }
+    if (untilMs - sinceMs > MAX_SPEED_WINDOW_MS) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed window must be at most 91 days",
+      });
+    }
+    const settings = yield* readSettings;
+    const directories = (yield* resolveTranscriptDirs(settings, sinceMs).pipe(
+      Effect.provideService(Path.Path, path),
+    ))
+      .filter((entry) => entry.provider === "claude")
+      .map((entry) => entry.dir);
+    const [openCodex, claude] = yield* Effect.all(
+      [
+        Effect.promise(() =>
+          readOpenCodexSpeed({ environment: hostEnvironment, sinceMs, untilMs }),
+        ),
+        Effect.promise(() => readClaudeSpeed({ directories, sinceMs, untilMs })),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return {
+      readAt: new Date().toISOString(),
+      sinceTime: input.sinceTime,
+      untilTime: input.untilTime,
+      rows: aggregateSpeed([...openCodex.samples, ...claude.samples]),
+      sources: [openCodex.status, claude.status],
+    } satisfies UsageSpeedSummary;
+  });
+
+  return { readSummary, refreshRates, readSpeed } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

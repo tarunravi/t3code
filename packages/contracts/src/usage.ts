@@ -202,6 +202,71 @@ export const UsageSummary = Schema.Struct({
 });
 export type UsageSummary = typeof UsageSummary.Type;
 
+/** A rolling window for request speed, as UTC instants. */
+export const UsageSpeedInput = Schema.Struct({
+  /** Inclusive UTC instant. */
+  sinceTime: TrimmedNonEmptyString,
+  /** Exclusive UTC instant. */
+  untilTime: TrimmedNonEmptyString,
+});
+export type UsageSpeedInput = typeof UsageSpeedInput.Type;
+
+/**
+ * Where speed figures come from. OpenCodex measures each request it proxies,
+ * including time to first token; Claude Code transcripts only allow an
+ * end-to-end estimate from record timestamps.
+ */
+export const UsageSpeedSourceKind = Schema.Literals(["opencodex", "claude-transcripts"]);
+export type UsageSpeedSourceKind = typeof UsageSpeedSourceKind.Type;
+
+const UsageLatencySpread = Schema.Struct({
+  medianMs: Schema.Number,
+  p90Ms: Schema.Number,
+});
+
+/** Speed of one harness/model/effort/tier combination over the window. */
+export const UsageSpeedRow = Schema.Struct({
+  /** The harness that sent the requests, e.g. `codex` or `claude`. */
+  harness: TrimmedNonEmptyString,
+  /** Upstream provider when it differs from the harness, e.g. `openai`, `combo`, `cursor`. */
+  upstream: Schema.NullOr(Schema.String),
+  model: TrimmedNonEmptyString,
+  effort: Schema.NullOr(Schema.String),
+  /** Requested speed tier, e.g. `fast` or `default`, when the source records it. */
+  speedTier: Schema.NullOr(Schema.String),
+  source: UsageSpeedSourceKind,
+  requests: NonNegativeInt,
+  failedRequests: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  reasoningTokens: NonNegativeInt,
+  /** Null when the source cannot observe the first token. */
+  timeToFirstToken: Schema.NullOr(UsageLatencySpread),
+  duration: UsageLatencySpread,
+  /** Output tokens over total request time. */
+  outputTokensPerSecond: Schema.NullOr(Schema.Number),
+  /** Output tokens over the time after the first token; null without TTFT. */
+  decodeTokensPerSecond: Schema.NullOr(Schema.Number),
+});
+export type UsageSpeedRow = typeof UsageSpeedRow.Type;
+
+export const UsageSpeedSourceStatus = Schema.Struct({
+  source: UsageSpeedSourceKind,
+  status: Schema.Literals(["ok", "unavailable"]),
+  /** Why the source was skipped, or a note such as a truncated history. */
+  detail: Schema.NullOr(Schema.String),
+  requests: NonNegativeInt,
+});
+export type UsageSpeedSourceStatus = typeof UsageSpeedSourceStatus.Type;
+
+export const UsageSpeedSummary = Schema.Struct({
+  readAt: Schema.String,
+  sinceTime: TrimmedNonEmptyString,
+  untilTime: TrimmedNonEmptyString,
+  rows: Schema.Array(UsageSpeedRow),
+  sources: Schema.Array(UsageSpeedSourceStatus),
+});
+export type UsageSpeedSummary = typeof UsageSpeedSummary.Type;
+
 export class UsageReadError extends Schema.TaggedError<UsageReadError>()("UsageReadError", {
   reason: Schema.Literals(["scanFailed", "invalidWindow"]),
   /** Stable, bounded description. The underlying failure travels in `cause`. */
