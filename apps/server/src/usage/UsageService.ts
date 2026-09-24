@@ -27,6 +27,11 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageModelRates,
+  type UsageModelRatesInput,
+  type UsageSpeedInput,
+  type UsageSpeedSourceStatus,
+  type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
@@ -59,8 +64,17 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { readZCodeUsage } from "./zcodeUsageReader.ts";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
+import { aggregateSpeed } from "./usageSpeed.ts";
+import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  resolveStandardRates,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -92,6 +106,7 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
  */
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_SPEED_WINDOW_MS = 91 * 24 * 60 * 60 * 1000;
 
 /**
  * The longest window the UI offers, 90 days, plus its `MTIME_SLACK_MS`, rounded
@@ -189,8 +204,16 @@ export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
+    /** Request speed (time to first token, tokens per second) for a rolling window. */
+    readonly readSpeed: (
+      input: UsageSpeedInput,
+    ) => Effect.Effect<UsageSpeedSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Standard rates per model, with the same overrides and aliases as summaries. */
+    readonly readModelRates: (
+      input: UsageModelRatesInput,
+    ) => Effect.Effect<UsageModelRates, UsageReadError>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -218,6 +241,19 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readModelRates: (input) =>
+      Effect.succeed({
+        models: input.models.map((model) => ({ model, rate: null })),
+        pricing: EMPTY_PRICING,
+      }),
+    readSpeed: (input) =>
+      Effect.succeed({
+        readAt: "1970-01-01T00:00:00.000Z",
+        sinceTime: input.sinceTime,
+        untilTime: input.untilTime,
+        rows: [],
+        sources: [],
+      }),
   }),
 );
 
@@ -230,6 +266,7 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   // The readers yield their own services; scans run them against this context.
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  const cursorUsage = yield* CursorUsageSource.CursorUsage;
 
   const fileCache: ScanCache = new Map();
   const sourceCache = new Map<string, typeof CachedSource.Type>();
@@ -693,7 +730,27 @@ export const make = Effect.gen(function* () {
       [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs)), scans],
       { concurrency: "unbounded" },
     );
-    const scanned: readonly ScannedDir[] = [...transcripts, ...scanDirs.flat()];
+    const zcodeHome = hostEnvironment["USERPROFILE"] || hostEnvironment["HOME"] || NodeOS.homedir();
+    const zcodeRoot = path.join(zcodeHome, ".zcode", "cli", "db");
+    const zcodeDir = yield* fileSystem
+      .realPath(zcodeRoot)
+      .pipe(Effect.orElseSucceed(() => zcodeRoot));
+    const zcode = yield* Effect.promise(() =>
+      readZCodeUsage(path.join(zcodeDir, "db.sqlite"), windowStartMs),
+    );
+    const zcodeSource: ScannedDir = {
+      provider: "zcode",
+      dir: zcodeDir,
+      volumeId: yield* Effect.promise(() => readDirectoryVolumeId(zcodeDir)),
+      files: zcode.missing ? null : zcode.files,
+      status: zcode.error ? "partial" : "ok",
+      message: zcode.error
+        ? "ZCode usage history could not be fully read."
+        : zcode.missing
+          ? "No ZCode usage database on this environment."
+          : "ZCode retains up to 30 days of native usage history.",
+    };
+    const scanned: readonly ScannedDir[] = [...transcripts, zcodeSource, ...scanDirs.flat()];
     return scanned;
   });
 
@@ -928,9 +985,80 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  // `awaitPersisted` is outside the service interface: tests use it to restart
-  // against what a previous instance wrote.
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  const readSpeed = Effect.fn("UsageService.readSpeed")(function* (input: UsageSpeedInput) {
+    const sinceMs = Date.parse(input.sinceTime);
+    const untilMs = Date.parse(input.untilTime);
+    if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || untilMs <= sinceMs) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed requires valid sinceTime and untilTime instants in order",
+      });
+    }
+    if (untilMs - sinceMs > MAX_SPEED_WINDOW_MS) {
+      return yield* new UsageReadError({
+        reason: "invalidWindow",
+        detail: "Speed window must be at most 91 days",
+      });
+    }
+    const settings = yield* readSettings;
+    const directories = (yield* resolveTranscriptDirs(settings, sinceMs).pipe(
+      Effect.provideContext(readerContext),
+    ))
+      .filter((entry) => entry.provider === "claude")
+      .map((entry) => entry.dir);
+    const [openCodex, claude, cursorSamples] = yield* Effect.all(
+      [
+        Effect.promise(() =>
+          readOpenCodexSpeed({ environment: hostEnvironment, sinceMs, untilMs }),
+        ),
+        Effect.promise(() => readClaudeSpeed({ directories, sinceMs, untilMs })),
+        cursorUsage.readTurnSpeed(sinceMs, untilMs),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const cursor: UsageSpeedSourceStatus =
+      cursorSamples === null
+        ? {
+            source: "cursor-turns",
+            status: "unavailable",
+            detail: "T3 Code's turn history could not be read.",
+            requests: 0,
+          }
+        : {
+            source: "cursor-turns",
+            status: "ok",
+            detail:
+              cursorSamples.length === 0
+                ? null
+                : "Timed from Cursor turns run in T3 Code. A turn includes its tool calls, and Cursor reports no token counts.",
+            requests: cursorSamples.length,
+          };
+    return {
+      readAt: DateTime.formatIso(yield* DateTime.now),
+      sinceTime: input.sinceTime,
+      untilTime: input.untilTime,
+      rows: aggregateSpeed([...openCodex.samples, ...claude.samples, ...(cursorSamples ?? [])]),
+      sources: [openCodex.status, claude.status, cursor],
+    } satisfies UsageSpeedSummary;
+  });
+
+  const readModelRates = Effect.fn("UsageService.readModelRates")(function* (
+    input: UsageModelRatesInput,
+  ) {
+    const settings = yield* readSettings;
+    yield* ensureRates(false);
+    const overrides = createOverrideRateTable(settings.usagePriceOverrides);
+    const aliases = resolveModelAliases(settings.usageModelAliases);
+    return {
+      models: input.models.map((model) => ({
+        model,
+        rate: resolveStandardRates(rates, model, overrides, aliases),
+      })),
+      pricing: pricing(),
+    } satisfies UsageModelRates;
+  });
+
+  return { readSummary, refreshRates, readSpeed, readModelRates, awaitPersisted } as const;
 });
 
-export const layer = Layer.effect(UsageService, make);
+export const layer = Layer.effect(UsageService, make).pipe(Layer.provide(CursorUsageSource.layer));
