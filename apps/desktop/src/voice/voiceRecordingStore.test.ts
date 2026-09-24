@@ -1,6 +1,6 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -14,13 +14,13 @@ import {
 
 const tempDirs: string[] = [];
 function makeTempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-recordings-test-"));
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "voice-recordings-test-"));
   tempDirs.push(dir);
   return dir;
 }
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    NodeFS.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -69,9 +69,9 @@ describe("voiceRecordingStore", () => {
     const listed = listVoiceRecordings(dir);
     expect(listed).toHaveLength(VOICE_RECORDINGS_MAX_COUNT);
     expect(listed.map((entry) => entry.id)).not.toContain(oldest.id);
-    expect(fs.readdirSync(dir)).toHaveLength(VOICE_RECORDINGS_MAX_COUNT * 2);
-    expect(fs.existsSync(path.join(dir, `${oldest.id}.json`))).toBe(false);
-    expect(fs.existsSync(path.join(dir, `${oldest.id}.webm`))).toBe(false);
+    expect(NodeFS.readdirSync(dir)).toHaveLength(VOICE_RECORDINGS_MAX_COUNT * 2);
+    expect(NodeFS.existsSync(NodePath.join(dir, `${oldest.id}.json`))).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(dir, `${oldest.id}.webm`))).toBe(false);
   });
 
   it("reads audio bytes back by id", () => {
@@ -106,12 +106,14 @@ describe("voiceRecordingStore", () => {
 
     expect(updated).toMatchObject({ status: "ok", attempts: 1, transcript: "recovered" });
     expect(listVoiceRecordings(dir)[0]).toMatchObject({ id: saved.id, status: "ok" });
-    expect(updateVoiceRecording(dir, "missing", {
-      status: "ok",
-      attempts: 1,
-      error: null,
-      transcript: null,
-    })).toBe(null);
+    expect(
+      updateVoiceRecording(dir, "missing", {
+        status: "ok",
+        attempts: 1,
+        error: null,
+        transcript: null,
+      }),
+    ).toBe(null);
   });
 
   it("deletes audio + sidecar by id", () => {
@@ -120,15 +122,15 @@ describe("voiceRecordingStore", () => {
 
     expect(deleteVoiceRecording(dir, saved.id)).toBe(true);
     expect(listVoiceRecordings(dir)).toEqual([]);
-    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(NodeFS.readdirSync(dir)).toEqual([]);
     expect(deleteVoiceRecording(dir, saved.id)).toBe(false);
   });
 
   it("reads a missing directory and corrupt sidecars as empty", () => {
     const dir = makeTempDir();
-    expect(listVoiceRecordings(path.join(dir, "absent"))).toEqual([]);
+    expect(listVoiceRecordings(NodePath.join(dir, "absent"))).toEqual([]);
 
-    fs.writeFileSync(path.join(dir, "bogus.json"), "{not-json");
+    NodeFS.writeFileSync(NodePath.join(dir, "bogus.json"), "{not-json");
     expect(listVoiceRecordings(dir)).toEqual([]);
   });
 });

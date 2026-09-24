@@ -196,8 +196,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   listVoiceRecordings: () => ipcRenderer.invoke(IpcChannels.LIST_VOICE_RECORDINGS_CHANNEL),
   readVoiceRecording: (id) => ipcRenderer.invoke(IpcChannels.READ_VOICE_RECORDING_CHANNEL, id),
   retryVoiceRecording: (id) => ipcRenderer.invoke(IpcChannels.RETRY_VOICE_RECORDING_CHANNEL, id),
-  deleteVoiceRecording: (id) =>
-    ipcRenderer.invoke(IpcChannels.DELETE_VOICE_RECORDING_CHANNEL, id),
+  deleteVoiceRecording: (id) => ipcRenderer.invoke(IpcChannels.DELETE_VOICE_RECORDING_CHANNEL, id),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;
