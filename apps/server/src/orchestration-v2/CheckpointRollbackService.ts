@@ -116,6 +116,8 @@ export const layer: Layer.Layer<
         "attempts",
         "nodes",
         "providerTurns",
+        // A rewrite replays the retained turn items into the fresh provider thread.
+        "turnItems",
       ]);
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === input.providerThreadId,
