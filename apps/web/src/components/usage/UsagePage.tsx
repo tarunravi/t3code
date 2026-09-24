@@ -27,6 +27,7 @@ import { cn } from "../../lib/utils";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { UsageSpeedSection } from "./UsageSpeed";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   enumerateDays,
@@ -72,11 +73,12 @@ import {
   type UsagePagePreferences,
 } from "./usagePagePreferences";
 
-type UsageMetric = UsageChartMetric | "limits";
+type UsageMetric = UsageChartMetric | "limits" | "speed";
 const METRIC_OPTIONS = [
   { value: "cost", label: "Cost" },
   { value: "tokens", label: "Tokens" },
   { value: "limits", label: "Limits" },
+  { value: "speed", label: "Speed" },
 ] as const satisfies readonly { value: UsageMetric; label: string }[];
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
@@ -382,6 +384,12 @@ export function UsagePage() {
               </p>
             ) : showingLimits ? (
               <UsageLimitsSection selectedEnvironmentIds={selectedEnvironmentIds} now={limitsNow} />
+            ) : metric === "speed" ? (
+              <UsageSpeedSection
+                key={windowDays}
+                windowDays={windowDays}
+                selectedEnvironmentIds={selectedEnvironmentIds}
+              />
             ) : isPending ? (
               <UsageSkeleton />
             ) : (

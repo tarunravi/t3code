@@ -22,6 +22,19 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+## Compare model speed
+
+Choose **Speed** on the Usage page to compare models by time to first token,
+output tokens per second (end to end and after the first token), request
+duration, reasoning share, and failures, split by effort and fast tier.
+
+Codex figures are measured by [OpenCodex](https://github.com/lidge-jun/opencodex)
+when Codex runs through it on that machine; T3 Code reads its local request log.
+Claude Code figures are estimated from transcript timestamps, so they include
+time to first token in the duration and cannot show it separately. Requests that
+failed before producing any output are listed below each table rather than
+counted as speeds.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,
