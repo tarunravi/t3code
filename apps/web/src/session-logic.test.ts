@@ -25,6 +25,7 @@ import {
   deriveActivePlanState,
   deriveTimelineEntriesFromVisibleTurnItems,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
+  canRestoreFilesForRun,
   deriveRevertTurnCountByUserMessageId,
   findLatestProposedPlan,
   isLatestRunSettled,
@@ -258,6 +259,49 @@ describe("V2 session presentation", () => {
 
     expect([...targets]).toEqual([[turnStartMessageId, 0]]);
     expect(targets.has(steerMessageId)).toBe(false);
+  });
+
+  it("offers conversation-only rewrites for turns without a file snapshot", () => {
+    const runId = RunId.make("run-outside-git");
+    const messageId = MessageId.make("message-outside-git");
+    const checkpoint = {
+      runId,
+      checkpointTurnCount: 2,
+      checkpointRef: "checkpoint-outside-git" as never,
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-09-23T00:00:03.000Z",
+    };
+    const timelineEntries = [
+      {
+        id: messageId,
+        kind: "message" as const,
+        createdAt: "2026-09-23T00:00:00.000Z",
+        message: {
+          id: messageId,
+          role: "user" as const,
+          text: "Outside git",
+          runId,
+          inputIntent: "turn_start" as const,
+          streaming: false,
+          createdAt: "2026-09-23T00:00:00.000Z",
+          updatedAt: "2026-09-23T00:00:00.000Z",
+        },
+      },
+    ] as unknown as Parameters<typeof deriveRevertTurnCountByUserMessageId>[0]["timelineEntries"];
+
+    const missing = [{ ...checkpoint, status: "missing" as const }];
+    expect([
+      ...deriveRevertTurnCountByUserMessageId({ timelineEntries, checkpoints: missing }),
+    ]).toEqual([[messageId, 1]]);
+    expect(canRestoreFilesForRun(missing, runId)).toBe(false);
+
+    const ready = [{ ...checkpoint, status: "ready" as const }];
+    expect(canRestoreFilesForRun(ready, runId)).toBe(true);
+    const failed = [{ ...checkpoint, status: "error" as const }];
+    expect(
+      deriveRevertTurnCountByUserMessageId({ timelineEntries, checkpoints: failed }).size,
+    ).toBe(0);
   });
 
   it("uses visible turn item order and keeps provider errors in the work log", () => {
