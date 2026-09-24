@@ -360,6 +360,27 @@ const ensureContextHandoff: CommandPolicyV2Shape["ensureContextHandoff"] = (inpu
   return Effect.void;
 };
 
+/**
+ * A checkpoint can be rewound to when it is ready, or when it only marks the
+ * turn boundary ("missing": no file snapshot, e.g. outside git) and the
+ * rewrite keeps the workspace files as they are.
+ */
+export const isRewriteTarget = (
+  checkpoint: { readonly status: "ready" | "missing" | "error" | "stale" },
+  restoreFiles: boolean | undefined,
+): boolean =>
+  checkpoint.status === "ready" || (checkpoint.status === "missing" && restoreFiles === false);
+
+/**
+ * The turn a checkpoint marks. Root-run scopes capture turn N at scope
+ * ordinal N, so a baseline that lost its turn link still identifies the turn.
+ */
+export const checkpointTurnOrdinal = (
+  checkpoint: { readonly appRunOrdinal: number | null; readonly ordinalWithinScope: number },
+  scope: { readonly kind: string },
+): number =>
+  checkpoint.appRunOrdinal ?? (scope.kind === "root_run" ? checkpoint.ordinalWithinScope : 0);
+
 export const decideRollbackExecution = (
   input: Parameters<CommandPolicyV2Shape["ensureRollback"]>[0] & {
     readonly canForkFromTarget?: boolean;

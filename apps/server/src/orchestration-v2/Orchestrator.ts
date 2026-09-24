@@ -58,7 +58,9 @@ import {
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import {
   CommandPolicyV2,
+  checkpointTurnOrdinal,
   decideRollbackExecution,
+  isRewriteTarget,
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
@@ -7789,7 +7791,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} was not found.`,
         });
       }
-      if (targetCheckpoint.status !== "ready") {
+      if (!isRewriteTarget(targetCheckpoint, command.restoreFiles)) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -7835,7 +7837,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
       }
 
-      const targetOrdinal = targetCheckpoint.appRunOrdinal ?? 0;
+      const targetOrdinal = checkpointTurnOrdinal(targetCheckpoint, targetScope);
       if (
         projection.runs.some((run) =>
           ["preparing", "starting", "running", "waiting", "queued"].includes(run.status),

@@ -382,3 +382,85 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
       }),
   );
 });
+
+it.effect(
+  "keeps a completed turn's identity when its missing checkpoint is re-materialized",
+  () => {
+    const firstRunId = RunId.make("run:capture-outside-git:1");
+    const secondRunId = RunId.make("run:capture-outside-git:2");
+    const outsideGitScopeId = CheckpointScopeId.make("scope:capture-outside-git");
+    const nodeId = NodeId.make("node:capture-outside-git");
+    const committed: Array<OrchestrationV2DomainEvent> = [];
+    const baselineFor = (ordinalWithinScope: number) => ({
+      id: CheckpointId.make(`checkpoint:outside-git:${ordinalWithinScope}`),
+      threadId,
+      scopeId: outsideGitScopeId,
+      runId: null,
+      nodeId,
+      parentCheckpointId: null,
+      ordinalWithinScope,
+      appRunOrdinal: null,
+      ref: CheckpointRef.make(`checkpoint-ref:outside-git:${ordinalWithinScope}`),
+      status: "missing" as const,
+      files: [],
+      capturedAt: DateTime.makeUnsafe("2026-09-24T00:00:00Z"),
+    });
+    const layer = CheckpointCaptureService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getCheckpointCaptureContext: () =>
+              Effect.succeed({
+                run: {
+                  id: secondRunId,
+                  ordinal: 2,
+                  status: "waiting",
+                  checkpointId: null,
+                  providerInstanceId,
+                  delegatedCompletion: null,
+                },
+                rootNode: { id: nodeId, checkpointScopeId: outsideGitScopeId },
+                scope: { id: outsideGitScopeId, kind: "root_run", cwd: "/outside-git" },
+                providerThread: { driver },
+                readyCheckpointOrdinals: [],
+                turnCheckpoints: [{ ordinalWithinScope: 1, runId: firstRunId, appRunOrdinal: 1 }],
+              } as never),
+          }),
+          Layer.mock(CheckpointServiceV2)({
+            materializeBaselineCheckpoint: ({ ordinalWithinScope }) =>
+              Effect.succeed(baselineFor(ordinalWithinScope)),
+            capture: () =>
+              Effect.succeed({ ...baselineFor(2), runId: secondRunId, appRunOrdinal: 2 }),
+          }),
+          Layer.mock(EventSinkV2)({
+            commitCommand: (input) =>
+              Effect.sync(() => {
+                committed.push(...input.events);
+                return {
+                  commandId: input.commandId,
+                  committed: true,
+                  sequence: 1,
+                  events: input.events,
+                  effects: [],
+                } as never;
+              }),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
+      yield* service.execute({ threadId, runId: secondRunId, scopeId: outsideGitScopeId });
+      const captured = committed.flatMap((event) =>
+        event.type === "checkpoint.captured" ? [event.payload] : [],
+      );
+      const firstTurn = captured.find((checkpoint) => checkpoint.ordinalWithinScope === 1);
+      assert.equal(firstTurn?.runId, firstRunId);
+      assert.equal(firstTurn?.appRunOrdinal, 1);
+      const threadStart = captured.find((checkpoint) => checkpoint.ordinalWithinScope === 0);
+      assert.equal(threadStart?.runId, null);
+      assert.equal(threadStart?.appRunOrdinal, null);
+    }).pipe(Effect.provide(layer));
+  },
+);
