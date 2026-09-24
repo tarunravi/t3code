@@ -1089,6 +1089,11 @@ export function createServerEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
     }),
+    usageSpeed: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-speed",
+      tag: WS_METHODS.serverGetUsageSpeed,
+      staleTimeMs: 60_000,
+    }),
     resourceTelemetry: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry",
       tag: WS_METHODS.subscribeResourceTelemetry,
