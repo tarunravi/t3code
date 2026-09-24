@@ -997,6 +997,21 @@ export function deriveTimelineEntriesFromVisibleTurnItemsWithState(
 }
 
 // Run ordinals keep increasing after a rewind; only visible local runs define predecessors.
+function isConversationRewriteCheckpoint(checkpoint: ThreadCheckpointSummary): boolean {
+  return checkpoint.status === "ready" || checkpoint.status === "missing";
+}
+
+/** True when rewriting from this run can also restore workspace files. */
+export function canRestoreFilesForRun(
+  checkpoints: ReadonlyArray<ThreadCheckpointSummary>,
+  runId: RunId | null,
+): boolean {
+  return (
+    runId !== null &&
+    checkpoints.some((checkpoint) => checkpoint.runId === runId && checkpoint.status === "ready")
+  );
+}
+
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
@@ -1006,7 +1021,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
 }): Map<ChatMessage["id"], number> {
   const readyTurnCountByRunId = new Map<RunId, number>();
   for (const checkpoint of input.checkpoints) {
-    if (checkpoint.status === "ready") {
+    if (isConversationRewriteCheckpoint(checkpoint)) {
       readyTurnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
     }
   }
