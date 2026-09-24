@@ -1,6 +1,6 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 const CODEX_TRANSCRIBE_URL = "https://chatgpt.com/backend-api/transcribe";
 
@@ -22,11 +22,11 @@ interface CodexAuthFile {
 }
 
 export function readCodexCredentials(): CodexCredentials {
-  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
-  const authPath = path.join(codexHome, "auth.json");
+  const codexHome = process.env.CODEX_HOME ?? NodePath.join(NodeOS.homedir(), ".codex");
+  const authPath = NodePath.join(codexHome, "auth.json");
   let parsed: CodexAuthFile;
   try {
-    parsed = JSON.parse(fs.readFileSync(authPath, "utf8")) as CodexAuthFile;
+    parsed = JSON.parse(NodeFS.readFileSync(authPath, "utf8")) as CodexAuthFile;
   } catch {
     throw new Error(
       "No Codex login found. Sign in with the Codex app or CLI first, then try again.",
@@ -149,7 +149,11 @@ export async function transcribeWithRetry(
     try {
       // Electron's net.fetch uses Chromium's network stack, which passes the bot
       // mitigation that rejects plain Node/curl TLS fingerprints on this endpoint.
-      response = await deps.fetchImpl(CODEX_TRANSCRIBE_URL, { method: "POST", headers, body: form });
+      response = await deps.fetchImpl(CODEX_TRANSCRIBE_URL, {
+        method: "POST",
+        headers,
+        body: form,
+      });
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt < VOICE_TRANSCRIBE_MAX_ATTEMPTS) {

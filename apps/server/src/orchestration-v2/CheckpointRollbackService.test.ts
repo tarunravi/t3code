@@ -115,6 +115,7 @@ it.effect.each([
       providerSessions: [],
       providerTurns: [],
       nodes: [],
+      attempts: [],
       checkpoints: [
         { id: checkpointId, scopeId, status: "ready", appRunOrdinal: targetOrdinal || null },
       ],
@@ -148,7 +149,7 @@ it.effect.each([
               }),
           }),
           idAllocatorLayer,
-          Layer.mock(ProjectionStoreV2)({ getThreadProjection: () => Effect.succeed(projection) }),
+          Layer.mock(ProjectionStoreV2)({ getThreadRecords: () => Effect.succeed(projection) }),
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
