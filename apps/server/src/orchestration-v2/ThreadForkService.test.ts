@@ -86,10 +86,10 @@ function makeSourceRun(status: OrchestrationV2Run["status"]): OrchestrationV2Run
   };
 }
 
-function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2ThreadProjection {
+function makeSourceProjection(sourceRun?: OrchestrationV2Run): OrchestrationV2ThreadProjection {
   return {
     thread: makeSourceThread(),
-    runs: [sourceRun],
+    runs: sourceRun === undefined ? [] : [sourceRun],
     attempts: [],
     nodes: [],
     subagents: [],

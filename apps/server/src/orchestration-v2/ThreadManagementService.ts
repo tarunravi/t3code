@@ -419,6 +419,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error
   >;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly isProviderSessionLive?: ProviderSessionManager.ProviderSessionManagerV2["Service"]["isLive"];
   readonly listAppOwnedChildThreadIds: Orchestrator.OrchestratorV2["Service"]["listAppOwnedChildThreadIds"];
   /** Omit `projectId` to list every project's threads. Side chats are never listed. */
   readonly listProjectThreads: (input: {
@@ -1514,6 +1515,7 @@ const make = Effect.gen(function* () {
         );
       },
     ),
+    isProviderSessionLive: sessions.isLive,
     getThreadProjection,
     getCheckpointContext,
     getThreadSnapshot,
