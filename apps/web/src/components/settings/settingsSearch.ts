@@ -439,6 +439,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees latest matching remote branch local"],
   },
   {
+    id: "side-chat-model",
+    title: "Side chat model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["/side side question fork provider default parent"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",
