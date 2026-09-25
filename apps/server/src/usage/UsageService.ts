@@ -4,6 +4,7 @@
  * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
  * Grok Build) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
+ * Cursor writes no usage to disk; its events come from `CursorUsage`.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -24,6 +25,7 @@ import {
   type UsageSource,
   type UsagePricing,
   type UsageSpeedInput,
+  type UsageSpeedSourceStatus,
   type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
@@ -50,6 +52,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
 import { aggregateSpeed } from "./usageSpeed.ts";
 import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -167,6 +170,7 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const httpClient = yield* HttpClient.HttpClient;
   const hostEnvironment = yield* HostProcessEnvironment;
+  const cursorUsage = yield* CursorUsageSource.CursorUsage;
 
   const fileCache: ScanCache = new Map();
   const sourceCache = new Map<string, typeof CachedSource.Type>();
@@ -555,9 +559,13 @@ export const make = Effect.gen(function* () {
     // Pricing only matters once records are aggregated, so the rate table
     // loads while transcripts stream instead of gating them: a cold rates
     // fetch on a slow network no longer delays the scan by its own timeout.
-    const [, scannedDirs] = yield* Effect.all(
-      [ensureRates(false), collectDirs(windowStartMs, settings, retentionCutoffMs)],
-      { concurrency: 2 },
+    const [, scannedDirs, cursor] = yield* Effect.all(
+      [
+        ensureRates(false),
+        collectDirs(windowStartMs, settings, retentionCutoffMs),
+        cursorUsage.read(windowStartMs),
+      ],
+      { concurrency: 3 },
     );
 
     const aggregator = new UsageAggregator({
@@ -633,6 +641,28 @@ export const make = Effect.gen(function* () {
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
         message: files === null ? "No transcript directory on this environment." : null,
+      });
+    }
+
+    if (cursor.status !== "missing") {
+      const sessionIds = new Set<string>();
+      for (const record of cursor.records) {
+        if (aggregator.add(record) && record.sessionId.length > 0) sessionIds.add(record.sessionId);
+      }
+      sources.push({
+        // Account-wide, so every environment signed into this account is one source.
+        fingerprint: {
+          hostId: "cursor.com",
+          provider: "cursor",
+          resolvedHomePath: "cursor.com",
+          volumeId: cursor.userId ?? "",
+        },
+        status: cursor.status,
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: sessionIds.size,
+        message: cursor.message,
       });
     }
 
@@ -729,25 +759,43 @@ export const make = Effect.gen(function* () {
     ))
       .filter((entry) => entry.provider === "claude")
       .map((entry) => entry.dir);
-    const [openCodex, claude] = yield* Effect.all(
+    const [openCodex, claude, cursorSamples] = yield* Effect.all(
       [
         Effect.promise(() =>
           readOpenCodexSpeed({ environment: hostEnvironment, sinceMs, untilMs }),
         ),
         Effect.promise(() => readClaudeSpeed({ directories, sinceMs, untilMs })),
+        cursorUsage.readTurnSpeed(sinceMs, untilMs),
       ],
       { concurrency: "unbounded" },
     );
+    const cursor: UsageSpeedSourceStatus =
+      cursorSamples === null
+        ? {
+            source: "cursor-turns",
+            status: "unavailable",
+            detail: "T3 Code's turn history could not be read.",
+            requests: 0,
+          }
+        : {
+            source: "cursor-turns",
+            status: "ok",
+            detail:
+              cursorSamples.length === 0
+                ? null
+                : "Timed from Cursor turns run in T3 Code. A turn includes its tool calls, and Cursor reports no token counts.",
+            requests: cursorSamples.length,
+          };
     return {
       readAt: new Date().toISOString(),
       sinceTime: input.sinceTime,
       untilTime: input.untilTime,
-      rows: aggregateSpeed([...openCodex.samples, ...claude.samples]),
-      sources: [openCodex.status, claude.status],
+      rows: aggregateSpeed([...openCodex.samples, ...claude.samples, ...(cursorSamples ?? [])]),
+      sources: [openCodex.status, claude.status, cursor],
     } satisfies UsageSpeedSummary;
   });
 
   return { readSummary, refreshRates, readSpeed } as const;
 });
 
-export const layer = Layer.effect(UsageService, make);
+export const layer = Layer.effect(UsageService, make).pipe(Layer.provide(CursorUsageSource.layer));

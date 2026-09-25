@@ -92,6 +92,12 @@ export interface MergedUsage {
   readonly costQuality: CostQuality;
   /** Environments whose data was dropped as a duplicate of another's. */
   readonly duplicateSources: readonly string[];
+  /**
+   * Sources that failed or read only part of their history, as
+   * `<environment>: <message>`. Omitted when another environment covered the
+   * same source.
+   */
+  readonly sourceIssues: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly staleEnvironments: readonly EnvironmentId[];
 }
@@ -137,7 +143,9 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
 
   for (const environment of ordered) {
     for (const source of environment.summary.sources) {
-      if (source.status === "missing") continue;
+      // A failed source has nothing to contribute and must not shadow a
+      // healthy read of the same source from another environment.
+      if (source.status === "missing" || source.status === "failed") continue;
       const key = fingerprintKey(source.fingerprint);
       if (ownerByFingerprint.has(key)) {
         duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
@@ -148,6 +156,25 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   }
 
   return { ownerByFingerprint, duplicates };
+}
+
+function sourceIssues(
+  environments: readonly EnvironmentUsage[],
+  ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
+): string[] {
+  const issues: string[] = [];
+  for (const environment of environments) {
+    for (const source of environment.summary.sources) {
+      if (source.message === null) continue;
+      const owner = ownerByFingerprint.get(fingerprintKey(source.fingerprint));
+      const reported =
+        source.status === "failed"
+          ? owner === undefined
+          : source.status === "partial" && owner === environment.environmentId;
+      if (reported) issues.push(`${environment.label}: ${source.message}`);
+    }
+  }
+  return issues;
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
@@ -215,6 +242,7 @@ const EMPTY_MERGED: MergedUsage = {
     cacheSavingsUsd: 0,
   },
   duplicateSources: [],
+  sourceIssues: [],
   contributingEnvironments: [],
   staleEnvironments: [],
 };
@@ -446,6 +474,7 @@ export function mergeUsage(
       cacheSavingsUsd,
     },
     duplicateSources: duplicates,
+    sourceIssues: sourceIssues(current, ownerByFingerprint),
     contributingEnvironments,
     staleEnvironments,
   };

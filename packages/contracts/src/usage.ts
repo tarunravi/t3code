@@ -6,6 +6,8 @@
  * `~/.grok/sessions/**\/updates.jsonl`) rather than relying on T3 Code's own
  * orchestration projections, so usage stays complete even for turns that were
  * never driven through T3 Code. This mirrors the approach `ccusage` takes.
+ * Cursor keeps no token data on disk, so its usage comes from the cursor.com
+ * dashboard API using the desktop app's own session.
  *
  * Environments return pre-aggregated `(day, hourStart?, provider, model)`
  * buckets. Raw transcript records never cross the wire.
@@ -21,18 +23,18 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 5 as const;
+export const USAGE_CONTRACT_VERSION = 6 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * v5 only adds `grok` to {@link UsageProviderKind}; v4 Claude/Codex buckets
- * remain valid, so mixed-version environments keep those totals instead of
- * treating every older server as stale.
+ * v5 and v6 only add `grok` and `cursor` to {@link UsageProviderKind}; v4
+ * Claude/Codex buckets remain valid, so mixed-version environments keep those
+ * totals instead of treating every older server as stale.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "cursor"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
@@ -116,6 +118,11 @@ export type UsageBucket = typeof UsageBucket.Type;
  * Two environments on the same machine (worktree servers, for example) resolve
  * the same provider home and would otherwise double count. The client drops
  * duplicate fingerprints before merging.
+ *
+ * Cursor usage is account-wide rather than per machine, so its fingerprint
+ * carries the account id in `volumeId` and `cursor.com` as host and path,
+ * letting every environment signed into the same account collapse to one
+ * source.
  */
 export const UsageSourceFingerprint = Schema.Struct({
   hostId: TrimmedNonEmptyString,
@@ -214,9 +221,14 @@ export type UsageSpeedInput = typeof UsageSpeedInput.Type;
 /**
  * Where speed figures come from. OpenCodex measures each request it proxies,
  * including time to first token; Claude Code transcripts only allow an
- * end-to-end estimate from record timestamps.
+ * end-to-end estimate from record timestamps; Cursor turns driven through T3
+ * Code are timed from T3 Code's own turn history, without token counts.
  */
-export const UsageSpeedSourceKind = Schema.Literals(["opencodex", "claude-transcripts"]);
+export const UsageSpeedSourceKind = Schema.Literals([
+  "opencodex",
+  "claude-transcripts",
+  "cursor-turns",
+]);
 export type UsageSpeedSourceKind = typeof UsageSpeedSourceKind.Type;
 
 const UsageLatencySpread = Schema.Struct({
