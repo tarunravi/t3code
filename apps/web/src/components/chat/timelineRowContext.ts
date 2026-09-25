@@ -80,10 +80,10 @@ export interface TimelineRowSharedState {
   turnItemSource: TurnItemSource | undefined;
   onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
   workflowOpening: WorkflowOpening | null;
-  /** Absent hides "Fork from this response", as in the guest view. */
   onForkFromRun:
     | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
     | undefined;
+  onSendToParent: ((text: string) => void) | undefined;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;

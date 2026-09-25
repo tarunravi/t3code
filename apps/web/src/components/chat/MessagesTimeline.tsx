@@ -70,6 +70,7 @@ import { type AssistantCitationRequest } from "./AssistantCitationSource";
 import { useAssistantCitationTarget } from "./useAssistantCitationTarget";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveCitationPhase, type CitedHistory } from "./citationProcedure";
+import type { ConversationRewriteRun } from "../../session-logic";
 import {
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -128,7 +129,12 @@ import {
 } from "./timelineViewport";
 import { useThreadFindPositionReader } from "./useThreadFindPositionReader";
 import { ThreadActivityAnnouncer } from "./ThreadActivityAnnouncer";
-import { useStableHandoffRuns, useIncrementalTimelineRows, useStableRows } from "./useTimelineRows";
+import {
+  useStableRewriteRuns,
+  useStableHandoffRuns,
+  useIncrementalTimelineRows,
+  useStableRows,
+} from "./useTimelineRows";
 
 function timelineListStateFor(identity: string): {
   readonly identity: string;
@@ -263,6 +269,8 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
+  /** Side chats relay an assistant answer to their parent thread. */
+  onSendToParent?: (text: string) => void;
   supportsConversationRollback: boolean;
   threadStartCheckpointReady?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -280,7 +288,7 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<ServerProviderSkill>;
-  runs: ReadonlyArray<HandoffTimelineRun>;
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -362,6 +370,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
+  onSendToParent,
   supportsConversationRollback,
   threadStartCheckpointReady = false,
   availableRevertTurnCounts,
@@ -659,6 +668,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       ? new Set(paintedExpandedAttemptIds).add(activeFindAttemptId)
       : paintedExpandedAttemptIds;
 
+  const rewriteRuns = useStableRewriteRuns(runsProp);
   const pendingApprovalsByRequestId = new Map(
     pendingApprovals
       .filter((approval) => !heldApprovalRequestIds?.has(approval.requestId))
@@ -680,6 +690,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     supportsConversationRollback,
     threadStartCheckpointReady,
     availableRevertTurnCounts,
+    rewriteRuns,
     worktreeSetup,
   });
   const rows = useStableRows(rawRows, listIdentityKey);
@@ -1033,6 +1044,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     turnItemSource,
     workflowOpening,
     onForkFromRun,
+    onSendToParent,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,

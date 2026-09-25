@@ -1,4 +1,5 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
+import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { WorkLogButton, WorkLogList, WorkLogRow } from "./WorkLog";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { type ToolActivityIcon } from "@t3tools/contracts";
@@ -497,85 +498,88 @@ export function LiveWorkEntryTimelineRow({
   const item = row.entry.projectedItem?.item;
   const pendingApproval =
     item?.type === "approval_request" ? ctx.pendingApprovals.get(item.requestId) : undefined;
+  const liveThinking = useEnvironmentSettings(
+    ctx.activeThreadEnvironmentId,
+    (settings) => settings.liveThinking,
+  );
   if (pendingApproval) return <TimelinePendingApprovalRow approval={pendingApproval} />;
 
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
-  const thoughtLine = row.thought && !row.expanded ? liveThoughtLine(row.thought.detail ?? "") : "";
-  const thoughtIsStatus = thoughtLine !== "" && row.entry === row.thought;
+  const showsThought = row.thought !== undefined && !row.expanded;
+  // Live thinking swaps the one-line preview for the whole thought as it streams in.
+  const liveThought = liveThinking && showsThought ? row.thought : undefined;
+  const thoughtLine =
+    showsThought && !liveThinking ? liveThoughtLine(row.thought?.detail ?? "") : "";
+  const thoughtIsStatus =
+    (thoughtLine !== "" || liveThought !== undefined) && row.entry === row.thought;
 
   return (
-    <button
-      type="button"
-      className={cn(
-        "group/live-work flex w-full max-w-full cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-        thoughtLine ? "flex-col items-start" : "min-h-6 items-center",
-      )}
-      aria-label={
-        failed
-          ? `${thoughtLine ? `${thoughtLine} ` : ""}${threadLabel?.text ?? label}, tool call failed`
-          : undefined
-      }
-      aria-expanded={row.expanded}
-      onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
-    >
-      {thoughtLine ? (
-        <WorkLogRow
-          icon={
-            <span className="flex size-4 items-center justify-center text-icon-muted">
-              <ToolActivityIconView
-                icon={undefined}
-                fallbackName="brain"
-                className="block size-4 shrink-0 stroke-2"
-                muted
-              />
-            </span>
-          }
+    <>
+      {/* Beside the button, not inside it: markdown links must not nest in a button. */}
+      {liveThought ? <ReasoningTraceContent entries={[liveThought]} /> : null}
+      <button
+        type="button"
+        className={cn(
+          "group/live-work flex w-full max-w-full cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          thoughtLine ? "flex-col items-start" : "min-h-6 items-center",
+        )}
+        aria-label={
+          failed
+            ? `${thoughtLine ? `${thoughtLine} ` : ""}${threadLabel?.text ?? label}, tool call failed`
+            : undefined
+        }
+        aria-expanded={row.expanded}
+        onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
+      >
+        {thoughtLine ? (
+          <WorkLogRow
+            icon={
+              <span className="flex size-4 items-center justify-center text-icon-muted">
+                <ToolActivityIconView
+                  icon={undefined}
+                  fallbackName="brain"
+                  className="block size-4 shrink-0 stroke-2"
+                  muted
+                />
+              </span>
+            }
+            label={<span className="line-clamp-4">{thoughtLine}</span>}
+            wrapLabel
+          />
+        ) : null}
+        <LiveActivityRow
           label={
-            <span className="line-clamp-4">
+            thoughtIsStatus ? (
+              row.active ? (
+                "Thinking"
+              ) : (
+                "Thought"
+              )
+            ) : row.entry.itemType === "reasoning" ? (
               <ChatMarkdown
                 inline
-                text={thoughtLine}
+                text={row.entry.detail ?? label}
                 cwd={ctx.markdownCwd}
                 parseRawHtml={false}
-                extraRemarkPlugins={[[remarkThoughtPreview, "Thought"]]}
+                extraRemarkPlugins={[[remarkThoughtPreview, row.active ? "Thinking" : "Thought"]]}
               />
-            </span>
-          }
-          wrapLabel
-        />
-      ) : null}
-      <LiveActivityRow
-        label={
-          thoughtIsStatus ? (
-            row.active ? (
-              "Thinking"
+            ) : threadLabel ? (
+              <ThreadReadLabel
+                label={threadLabel}
+                environmentId={ctx.activeThreadEnvironmentId}
+                linked={false}
+              />
             ) : (
-              "Thought"
+              label
             )
-          ) : row.entry.itemType === "reasoning" ? (
-            <ChatMarkdown
-              inline
-              text={row.entry.detail ?? label}
-              cwd={ctx.markdownCwd}
-              parseRawHtml={false}
-              extraRemarkPlugins={[[remarkThoughtPreview, row.active ? "Thinking" : "Thought"]]}
-            />
-          ) : threadLabel ? (
-            <ThreadReadLabel
-              label={threadLabel}
-              environmentId={ctx.activeThreadEnvironmentId}
-              linked={false}
-            />
-          ) : (
-            label
-          )
-        }
-        iconName={workEntryIconName(row.entry)}
-        toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
-        failed={failed}
-        active={row.active}
-      />
-    </button>
+          }
+          iconName={workEntryIconName(row.entry)}
+          toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
+          failed={failed}
+          active={row.active}
+        />
+      </button>
+    </>
   );
 }
 

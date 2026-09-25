@@ -1,3 +1,4 @@
+import { CornerUpLeftIcon } from "lucide-react";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
 import { type RunId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
@@ -178,6 +179,9 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.onSendToParent && !message.streaming && message.text ? (
+        <SendToParentButton text={message.text} onSend={ctx.onSendToParent} />
+      ) : null}
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
@@ -368,5 +372,26 @@ function AssistantChangedFilesSectionInner({
         )
       }
     />
+  );
+}
+
+function SendToParentButton({ text, onSend }: { text: string; onSend: (text: string) => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => onSend(text)}
+            aria-label="Send to parent thread"
+          />
+        }
+      >
+        <CornerUpLeftIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Send to parent thread</TooltipPopup>
+    </Tooltip>
   );
 }

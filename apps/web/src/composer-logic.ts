@@ -18,7 +18,7 @@ import {
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "plan" | "default" | "side";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
@@ -320,7 +320,7 @@ export function composerStateAtPromptEnd(
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
+): Extract<ComposerSlashCommand, "plan" | "default"> | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
@@ -343,6 +343,12 @@ export function extendReplacementRangeForTrailingSpace(
     return rangeEnd;
   }
   return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
+}
+
+/** `/side` opens an empty side chat; `/side <question>` also asks it. */
+export function parseSideChatCommand(text: string): { readonly question: string } | null {
+  const match = /^\/side(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  return match === null ? null : { question: match[1]?.trim() ?? "" };
 }
 
 export { replaceTextRange } from "@t3tools/shared/composerTrigger";
