@@ -32,10 +32,13 @@ import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { CodexAppServerRequestError } from "effect-codex-app-server/errors";
 import { SqlError, classifySqliteError } from "effect/sql/SqlError";
 
@@ -47,6 +50,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
@@ -66,7 +70,24 @@ const layerTurnItemPositionsTest = Layer.mock(TurnItemPositionStore.TurnItemPosi
   allocate: () => Effect.succeed(1),
 });
 
-const layerRunExecutionTest = RunExecutionService.layer.pipe(
+const layerRunExecution = (
+  getThread: ProjectionStore.ProjectionStoreV2["Service"]["getThread"] = (id) =>
+    Effect.succeed({ id } as OrchestrationV2AppThread),
+  commands?: ThreadCommandExecutor.ThreadCommandExecutor["Service"],
+) =>
+  RunExecutionService.layerFromServices.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        PreviewAgentActivity.layer,
+        commands === undefined
+          ? ThreadCommandExecutor.layer
+          : Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, commands),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread }),
+      ),
+    ),
+  );
+
+const layerRunExecutionTest = layerRunExecution().pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layerEmpty,
@@ -881,7 +902,7 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
     ]);
   }).pipe(
     Effect.provide(
-      RunExecutionService.layer.pipe(
+      layerRunExecution().pipe(
         Layer.provide(
           Layer.mergeAll(
             PreviewAgentActivity.layer,
@@ -922,7 +943,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
     const runId = RunId.make("run:run-execution-start-guard-read");
     const attemptId = RunAttemptId.make("attempt:run-execution-start-guard-read");
     const providerInstanceId = ProviderInstanceId.make("codex");
-    const layerTest = RunExecutionService.layer.pipe(
+    const layerTest = layerRunExecution().pipe(
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
@@ -1124,7 +1145,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
         effects: ReadonlyArray<PendingOrchestrationEffectV2>;
       }>
     >([]);
-    const layerTest = RunExecutionService.layer.pipe(
+    const layerTest = layerRunExecution().pipe(
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
@@ -1224,6 +1245,136 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
   }),
 );
 
+it.effect("proceeds without a baseline when baseline capture exceeds the budget", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("thread:run-execution-baseline-timeout");
+    const runId = RunId.make("run:run-execution-baseline-timeout");
+    const attemptId = RunAttemptId.make("attempt:run-execution-baseline-timeout");
+    const providerThreadId = ProviderThreadId.make(
+      "provider-thread:run-execution-baseline-timeout",
+    );
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const providerSessionId = ProviderSessionId.make("session:run-execution-baseline-timeout");
+    const rootNodeId = NodeId.make("node:run-execution-baseline-timeout");
+    const workspacePath = "/workspace/huge";
+    const checkpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:run-execution-baseline-timeout"),
+      cwd: workspacePath,
+    } as unknown as OrchestrationV2CheckpointScope;
+    const providerStarts = yield* Ref.make(0);
+    const baselineStarted = yield* Deferred.make<void>();
+    const baselineInterrupted = yield* Ref.make(false);
+    const timeoutWarnings: Array<{ message: string; fields: unknown }> = [];
+    const capture = Logger.make(({ message }) => {
+      const [text, fields] = Array.isArray(message) ? message : [message];
+      if (typeof text === "string" && text.includes("baseline capture timed out")) {
+        timeoutWarnings.push({ message: text, fields });
+      }
+    });
+    const layerTest = layerRunExecution().pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          McpAppModelContext.layerEmpty,
+          layerTurnItemPositionsTest,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            // Simulates a huge workspace (including lock wait): the capture
+            // never resolves on its own, so the run start budget must bound it.
+            captureBaseline: () =>
+              Deferred.succeed(baselineStarted, undefined).pipe(
+                Effect.andThen(
+                  Effect.never.pipe(Effect.onInterrupt(() => Ref.set(baselineInterrupted, true))),
+                ),
+              ),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({}),
+          IdAllocator.layer,
+          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            ingestNormalized: () => Effect.succeed([]),
+          }),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    );
+
+    const runFiber = yield* Effect.gen(function* () {
+      const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+      yield* runExecution.startRootRun({
+        commandId: CommandId.make("command:run-execution-baseline-timeout"),
+        appThread: rootAppThread(threadId),
+        providerSessionId,
+        session: {
+          events: Stream.never,
+          startTurn: () => Ref.update(providerStarts, (count) => count + 1),
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        run: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+        } as OrchestrationV2Run,
+        rootNode: { id: rootNodeId } as OrchestrationV2ExecutionNode,
+        checkpointScope,
+        providerThread: {
+          id: providerThreadId,
+          driver,
+        } as OrchestrationV2ProviderThread,
+        attempt: {
+          id: attemptId,
+          providerTurnId: null,
+        } as OrchestrationV2RunAttempt,
+        attemptId,
+        providerTurnOrdinal: 1,
+        message: {
+          messageId: MessageId.make("message:run-execution-baseline-timeout"),
+          text: "Start the provider despite a slow baseline.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+          approvalPolicy: "never",
+          sandboxPolicy: {
+            type: "readOnly",
+            access: { type: "fullAccess" },
+            networkAccess: false,
+          },
+        },
+      });
+    }).pipe(Effect.provide(Layer.mergeAll(layerTest, Logger.layer([capture]))), Effect.forkChild);
+
+    yield* Effect.raceFirst(Deferred.await(baselineStarted), Fiber.join(runFiber));
+    yield* TestClock.adjust(RunExecutionService.BASELINE_CAPTURE_BUDGET_MS + 1_000);
+    const exit = yield* Fiber.await(runFiber);
+    assert.equal(exit._tag, "Success");
+
+    // The run proceeds with prompt dispatch despite the hung baseline.
+    assert.equal(yield* Ref.get(providerStarts), 1);
+    assert.isTrue(yield* Ref.get(baselineInterrupted));
+    assert.equal(timeoutWarnings.length, 1);
+    const fields = timeoutWarnings[0]?.fields as
+      | {
+          readonly threadId?: unknown;
+          readonly runId?: unknown;
+          readonly workspacePath?: unknown;
+          readonly elapsedMs?: unknown;
+          readonly budgetMs?: unknown;
+        }
+      | undefined;
+    assert.equal(fields?.workspacePath, workspacePath);
+    assert.equal(fields?.budgetMs, RunExecutionService.BASELINE_CAPTURE_BUDGET_MS);
+    assert.equal(String(fields?.threadId), String(threadId));
+    assert.equal(String(fields?.runId), String(runId));
+    assert.isTrue(
+      typeof fields?.elapsedMs === "number" &&
+        (fields.elapsedMs as number) >= RunExecutionService.BASELINE_CAPTURE_BUDGET_MS,
+    );
+  }),
+);
+
 it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as const)(
   "handles %s before the provider turn starts",
   (scenario) =>
@@ -1243,15 +1394,18 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
       const providerStarts = yield* Ref.make(0);
       const refreshes = yield* Ref.make(0);
       const guardedWrites = yield* Ref.make(0);
+      const baselineCaptures = yield* Ref.make(0);
       const writes = yield* Ref.make<ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>>([]);
-      const layerTest = RunExecutionService.layer.pipe(
+      const layerTest = layerRunExecution().pipe(
         Layer.provide(
           Layer.mergeAll(
             McpAppModelContext.layerEmpty,
             PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () =>
-                scenario === "start-guard" ? Effect.void : Effect.die("not reached"),
+                scenario === "start-guard"
+                  ? Ref.update(baselineCaptures, (count) => count + 1)
+                  : Effect.die("not reached"),
             }),
             layerTurnItemPositionsTest,
             Layer.mock(EventSink.EventSinkV2)({
@@ -1362,6 +1516,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
       }
       assert.isTrue(Exit.isSuccess(result));
       if (scenario === "start-guard") {
+        assert.equal(yield* Ref.get(baselineCaptures), 0);
         assert.equal(yield* Ref.get(guardedWrites), 0);
         assert.equal(yield* Ref.get(refreshes), 0);
         assert.isEmpty(events);
@@ -1417,7 +1572,7 @@ it.effect("ingests new member threads of an owned child after the root turn term
     const order = yield* Ref.make<ReadonlyArray<string>>([]);
     const origins = yield* Ref.make<ReadonlyArray<readonly [string, unknown, unknown]>>([]);
     const requests = yield* Ref.make<ReadonlyArray<string>>([]);
-    const layerTest = RunExecutionService.layer.pipe(
+    const layerTest = layerRunExecution().pipe(
       Layer.provide(
         Layer.mergeAll(
           Layer.succeed(ProviderUsageAnalytics.ProviderTurnAnalytics, {
@@ -1687,7 +1842,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
     const nestedId = NodeId.make(`node:${key}:nested`);
     const grandchildRootId = NodeId.make(`node:${key}:grandchild-root`);
     const finalized = yield* Deferred.make<ReadonlyArray<OrchestrationV2DomainEvent>>();
-    const layerTest = RunExecutionService.layer.pipe(
+    const layerTest = layerRunExecution().pipe(
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
@@ -2015,6 +2170,26 @@ it.effect("does not pin ingestion on background items when the root turn is inte
   }),
 );
 
+it.effect.each(["completed", "interrupted", "failed"] as const)(
+  "enqueues checkpoint capture after a %s root turn so the message can be rewritten",
+  (status) =>
+    Effect.gen(function* () {
+      const captureEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
+      yield* runBackgroundItemScenario(
+        `checkpoint-after-${status}`,
+        (ids) => [rootTerminalEvent(ids, status)],
+        {
+          onFinalizationEffects: (effects) =>
+            Ref.set(
+              captureEffects,
+              effects.filter((effect) => effect.request.type === "checkpoint.capture"),
+            ),
+        },
+      );
+      assert.equal((yield* Ref.get(captureEffects)).length, 1);
+    }),
+);
+
 it.effect("seeds inherited background items before their next update", () =>
   Effect.gen(function* () {
     const key = "inherited-background-seeded";
@@ -2098,7 +2273,7 @@ it.effect(
       const written = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
       const ingested = yield* Ref.make<ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>>([]);
       const ingestionDone = yield* Deferred.make<void>();
-      const layerTest = RunExecutionService.layer.pipe(
+      const layerTest = layerRunExecution().pipe(
         Layer.provide(
           Layer.mergeAll(
             McpAppModelContext.layerEmpty,
@@ -3111,6 +3286,97 @@ it.effect("does not start a turn whose run settled during the app context read",
   }),
 );
 
+it.effect.each([
+  "deferred-preparation",
+  "queued-admission",
+  "already-frozen",
+  "baseline-failure",
+  "context-read",
+  "ordinary",
+] as const)("rechecks authoritative preservation at side-effect admission: %s", (scenario) =>
+  Effect.gen(function* () {
+    const frozen = yield* Ref.make(scenario === "already-frozen");
+    const commands = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
+      Effect.provide(ThreadCommandExecutor.layer),
+    );
+    const settingsRead = yield* Deferred.make<void>();
+    const resumeSettings = yield* Deferred.make<void>();
+    const baselines = yield* Ref.make(0);
+    const refs = yield* Ref.make(0);
+    const providers = yield* Ref.make(0);
+    const execute = () =>
+      captureRootRunTermination({
+        key: `late-freeze:${scenario}`,
+        commands,
+        getThread: (id) =>
+          Ref.get(frozen).pipe(
+            Effect.map(
+              (preservationOnly) =>
+                ({
+                  id,
+                  ...(preservationOnly ? { preservationOnly: true as const } : {}),
+                }) as OrchestrationV2AppThread,
+            ),
+          ),
+        beforeSettings:
+          scenario === "deferred-preparation"
+            ? Deferred.succeed(settingsRead, undefined).pipe(
+                Effect.andThen(Deferred.await(resumeSettings)),
+              )
+            : Effect.void,
+        expectNoSubscription: scenario !== "ordinary" && scenario !== "context-read",
+        shouldFinalizeRun: () => Effect.succeed(false),
+        captureBaseline: () =>
+          Effect.gen(function* () {
+            yield* Ref.update(baselines, (n) => n + 1);
+            yield* Ref.update(refs, (n) => n + 1);
+            if (scenario === "baseline-failure") {
+              yield* Ref.set(frozen, true);
+              return yield* Effect.die("real baseline failure concurrent with freeze");
+            }
+          }),
+        appContext:
+          scenario === "context-read"
+            ? Ref.set(frozen, true).pipe(Effect.as([]))
+            : Effect.succeed([]),
+        events: () => Stream.never,
+        startTurn: () => Ref.update(providers, (n) => n + 1),
+        afterStart: (closed) => Deferred.succeed(closed, undefined).pipe(Effect.asVoid),
+      });
+    if (scenario === "queued-admission") {
+      const holder = yield* commands
+        .withLock(
+          ThreadId.make(`thread:late-freeze:${scenario}`),
+          Deferred.succeed(settingsRead, undefined).pipe(
+            Effect.andThen(Deferred.await(resumeSettings)),
+            Effect.andThen(Ref.set(frozen, true)),
+          ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(settingsRead);
+      const pending = yield* execute().pipe(Effect.forkChild);
+      yield* Deferred.succeed(resumeSettings, undefined);
+      yield* Fiber.join(holder);
+      yield* Fiber.join(pending);
+    } else if (scenario === "deferred-preparation") {
+      const pending = yield* execute().pipe(Effect.forkChild);
+      yield* Deferred.await(settingsRead);
+      yield* Ref.set(frozen, true);
+      yield* Deferred.succeed(resumeSettings, undefined);
+      yield* Fiber.join(pending);
+      // A previously claimed or repeated start must remain inert too.
+      yield* execute();
+    } else {
+      yield* execute();
+    }
+    const admittedBaseline =
+      scenario === "ordinary" || scenario === "context-read" || scenario === "baseline-failure";
+    assert.equal(yield* Ref.get(baselines), admittedBaseline ? 1 : 0);
+    assert.equal(yield* Ref.get(refs), admittedBaseline ? 1 : 0);
+    assert.equal(yield* Ref.get(providers), scenario === "ordinary" ? 1 : 0);
+  }),
+);
+
 it.effect("keeps completed runs completed when pull request refresh fails", () =>
   Effect.gen(function* () {
     const { observed } = yield* captureRootRunTermination({
@@ -3146,6 +3412,11 @@ function captureRootRunTermination(input: {
   readonly refreshAfterTurn?: Effect.Effect<void>;
   readonly onSubscriptionClose?: Effect.Effect<void>;
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
+  readonly getThread?: ProjectionStore.ProjectionStoreV2["Service"]["getThread"];
+  readonly commands?: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
+  readonly captureBaseline?: CheckpointService.CheckpointServiceV2["Service"]["captureBaseline"];
+  readonly beforeSettings?: Effect.Effect<void>;
+  readonly expectNoSubscription?: boolean;
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
@@ -3185,13 +3456,18 @@ function captureRootRunTermination(input: {
           }
         }
       });
-    const layerTest = RunExecutionService.layer.pipe(
+    const defaultSettings = yield* ServerSettings.ServerSettingsService.pipe(
+      Effect.provide(ServerSettings.layerTest()),
+    );
+    const layerTest = layerRunExecution(input.getThread, input.commands).pipe(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(McpAppModelContext.McpAppModelContext)({
             forThread: () => input.appContext ?? Effect.succeed([]),
           }),
-          Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: input.captureBaseline ?? (() => Effect.void),
+          }),
           layerTurnItemPositionsTest,
           Layer.mock(EventSink.EventSinkV2)({
             write: (payload) =>
@@ -3230,7 +3506,11 @@ function captureRootRunTermination(input: {
           Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
             ingestNormalized: input.ingestNormalized ?? (() => Effect.succeed([])),
           }),
-          ServerSettings.layerTest(),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: (input.beforeSettings ?? Effect.void).pipe(
+              Effect.andThen(defaultSettings.getSettings),
+            ),
+          }),
           Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
             refresh: () => Effect.void,
             refreshAfterTurn: () =>
@@ -3348,7 +3628,7 @@ function captureRootRunTermination(input: {
         Effect.catch((error) => input.onStartFailure?.(error) ?? Effect.fail(error)),
       );
       yield* input.afterStart?.(ingestionDone) ?? Effect.void;
-      yield* Deferred.await(ingestionDone);
+      if (!input.expectNoSubscription) yield* Deferred.await(ingestionDone);
       const activity = yield* PreviewAgentActivity.PreviewAgentActivity;
       return !(yield* activity.active(ids.threadId));
     }).pipe(Effect.provide(layerTest));
@@ -3695,6 +3975,9 @@ function runBackgroundItemScenario(
     readonly afterEvents?: (
       activity: PreviewAgentActivity.PreviewAgentActivity["Service"],
     ) => Effect.Effect<void>;
+    readonly onFinalizationEffects?: (
+      effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+    ) => Effect.Effect<void>;
     readonly onFinalized?: (
       events: ReadonlyArray<OrchestrationV2DomainEvent>,
     ) => Effect.Effect<void>;
@@ -3708,7 +3991,7 @@ function runBackgroundItemScenario(
     const previewActivity = yield* PreviewAgentActivity.PreviewAgentActivity.pipe(
       Effect.provide(PreviewAgentActivity.layer),
     );
-    const layerTest = RunExecutionService.layer.pipe(
+    const layerTest = layerRunExecution().pipe(
       Layer.provide(
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
@@ -3725,6 +4008,7 @@ function runBackgroundItemScenario(
                   )
                 ) {
                   yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  yield* options?.onFinalizationEffects?.(input.effects) ?? Effect.void;
                   yield* options?.onFinalized?.(input.events) ?? Effect.void;
                 }
                 return [];
