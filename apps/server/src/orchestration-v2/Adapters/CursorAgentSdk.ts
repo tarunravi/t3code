@@ -174,6 +174,15 @@ export type CursorAgentSdkProtocolLogEvent =
       readonly direction: "outgoing";
       readonly stage: "decoded";
       readonly payload: {
+        readonly type: "run.cancel-stale";
+        readonly agentId: string;
+        readonly runId: string;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
         readonly type: "agent.messages.list";
         readonly agentId: string;
       };
@@ -204,6 +213,35 @@ function runnerError(cause: unknown, method: string): CursorAgentSdkRunnerError 
   return isCursorAgentSdkRunnerError(cause)
     ? cause
     : new CursorAgentSdkRunnerError({ method, cause });
+}
+
+function isStaleCursorRunStatus(status: string): boolean {
+  return status === "running" || status === "queued";
+}
+
+function errorText(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  return typeof cause === "string" ? cause : "";
+}
+
+/** Cursor keeps a local active run after T3 restarts and cancels the projection. */
+export function isCursorAgentBusyError(cause: unknown): boolean {
+  const seen = new Set<object>();
+  let current = cause;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    if (Reflect.get(current, "name") === "AgentBusyError") return true;
+    if (errorText(current).includes("already has active run")) return true;
+    seen.add(current);
+    current = Reflect.get(current, "cause");
+  }
+  return typeof current === "string" && current.includes("already has active run");
+}
+
+function localRunOptions(cwd: string | undefined) {
+  return {
+    runtime: "local" as const,
+    ...(cwd === undefined ? {} : { cwd }),
+  };
 }
 
 export function isCursorCancellationError(cause: unknown): boolean {
@@ -390,7 +428,7 @@ export const cursorAgentSdkRunnerLiveLayer: Layer.Layer<
               return callbackChain;
             };
 
-            const run = yield* Effect.tryPromise({
+            const startSdkRun = Effect.tryPromise({
               try: () =>
                 agent.send(sendInput.message, {
                   ...sendInput.options,
@@ -404,6 +442,44 @@ export const cursorAgentSdkRunnerLiveLayer: Layer.Layer<
                 }),
               catch: (cause) => runnerError(cause, "run.start"),
             });
+            const firstStart = yield* Effect.result(startSdkRun);
+            if (firstStart._tag === "Failure") {
+              const busy =
+                input.operation === "resume" && isCursorAgentBusyError(firstStart.failure.cause);
+              if (!busy) {
+                return yield* firstStart.failure;
+              }
+              const listed = yield* Effect.tryPromise({
+                try: () => Agent.listRuns(agent.agentId, localRunOptions(cwd)),
+                catch: (cause) => runnerError(cause, "agent.runs.list"),
+              });
+              const staleRunIds = listed.items
+                .filter((existing) => isStaleCursorRunStatus(existing.status))
+                .map((existing) => existing.id);
+              if (staleRunIds.length === 0) {
+                return yield* firstStart.failure;
+              }
+              for (const staleRunId of staleRunIds) {
+                yield* log({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "run.cancel-stale",
+                    agentId: agent.agentId,
+                    runId: staleRunId,
+                  },
+                });
+                yield* Effect.tryPromise({
+                  try: () => Agent.cancelRun(staleRunId, localRunOptions(cwd)),
+                  catch: (cause) => runnerError(cause, "run.cancel-stale"),
+                });
+              }
+              yield* Effect.logWarning("orchestration-v2.cursor-cleared-stale-run", {
+                agentId: agent.agentId,
+                cancelledRunIds: staleRunIds,
+              });
+            }
+            const run = firstStart._tag === "Success" ? firstStart.success : yield* startSdkRun;
             runId = run.id;
             yield* log({
               direction: "incoming",
