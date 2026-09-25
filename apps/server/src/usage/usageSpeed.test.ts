@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { aggregateSpeed, ClaudeSpeedReader, speedSampleFromOpenCodex } from "./usageSpeed.ts";
+import {
+  aggregateSpeed,
+  ClaudeSpeedReader,
+  speedSampleFromCursorTurn,
+  speedSampleFromOpenCodex,
+  type CursorTurnRow,
+} from "./usageSpeed.ts";
 
 const openCodexEntry = (overrides: Record<string, unknown> = {}) => ({
   timestamp: 1_790_000_000_000,
@@ -114,5 +120,46 @@ describe("aggregateSpeed", () => {
       { ...base, model: "other" },
     ]);
     expect(rows).toHaveLength(3);
+  });
+});
+
+describe("speedSampleFromCursorTurn", () => {
+  const turn = (overrides: Partial<CursorTurnRow> = {}): CursorTurnRow => ({
+    status: "completed",
+    startedAt: "2026-09-22T15:39:32.000Z",
+    completedAt: "2026-09-22T15:39:47.000Z",
+    firstOutputAt: "2026-09-22T15:39:34.000Z",
+    model: "claude-4.5-sonnet",
+    options: JSON.stringify([{ id: "reasoning_effort", value: "medium" }]),
+    ...overrides,
+  });
+
+  it("times a turn from start to first item and completion, without tokens", () => {
+    const sample = speedSampleFromCursorTurn(turn());
+    expect(sample).toMatchObject({
+      harness: "cursor",
+      model: "claude-4.5-sonnet",
+      effort: "medium",
+      speedTier: null,
+      source: "cursor-turns",
+      ok: true,
+      durationMs: 15_000,
+      ttftMs: 2_000,
+      outputTokens: 0,
+    });
+    const [row] = aggregateSpeed([sample!]);
+    expect(row?.timeToFirstToken).toEqual({ medianMs: 2_000, p90Ms: 2_000 });
+    expect(row?.outputTokensPerSecond).toBeNull();
+  });
+
+  it("counts failures, skips interrupted turns, and drops impossible timing", () => {
+    expect(speedSampleFromCursorTurn(turn({ status: "failed" }))?.ok).toBe(false);
+    expect(speedSampleFromCursorTurn(turn({ status: "interrupted" }))).toBeNull();
+    expect(speedSampleFromCursorTurn(turn({ model: null }))).toBeNull();
+    expect(speedSampleFromCursorTurn(turn({ completedAt: turn().startedAt }))).toBeNull();
+    expect(speedSampleFromCursorTurn(turn({ firstOutputAt: null }))?.ttftMs).toBeNull();
+    expect(
+      speedSampleFromCursorTurn(turn({ firstOutputAt: "2026-09-22T15:40:00.000Z" }))?.ttftMs,
+    ).toBeNull();
   });
 });
