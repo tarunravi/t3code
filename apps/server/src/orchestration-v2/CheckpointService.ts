@@ -126,6 +126,8 @@ export interface CheckpointServiceV2Shape {
     readonly ordinalWithinScope: number;
     readonly appRunOrdinal: number | null;
     readonly capturedAt: DateTime.Utc;
+    /** Reuse the ordinal's ref when one was already captured instead of overwriting it. */
+    readonly keepExistingRef?: boolean;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   readonly restore: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -380,11 +382,8 @@ export const layer: Layer.Layer<
             });
           }
 
-          const captureStatus = yield* checkpointStore
-            .captureCheckpoint({
-              cwd: input.scope.cwd,
-              checkpointRef,
-            })
+          const reuseExistingRef = input.keepExistingRef === true && (yield* checkpointStore.hasCheckpointRef({cwd:input.scope.cwd,checkpointRef}).pipe(Effect.orElseSucceed(()=>false)));
+          const captureStatus = yield* (reuseExistingRef ? Effect.void : checkpointStore.captureCheckpoint({cwd:input.scope.cwd,checkpointRef}))
             .pipe(
               Effect.as("ready" as const),
               Effect.catchTags({
