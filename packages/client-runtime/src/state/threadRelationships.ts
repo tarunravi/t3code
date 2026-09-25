@@ -50,7 +50,13 @@ export function deriveThreadRelationshipGraph(input: {
   readonly projection: OrchestrationV2ThreadProjection | null;
 }): ThreadRelationshipGraph {
   const threadsById = new Map<ThreadId, OrchestrationV2ThreadShell>();
+  // Side chats live in their parent's panel, not in its lineage.
+  const sideThreadIds = new Set<ThreadId>();
   for (const thread of input.threads) {
+    if (thread.lineage.relationshipToParent === "side") {
+      sideThreadIds.add(thread.id);
+      continue;
+    }
     // Callers order shells from most to least authoritative. In particular,
     // live shells precede archived snapshots, which may still contain a stale
     // copy during archive refresh.
@@ -100,7 +106,12 @@ export function deriveThreadRelationshipGraph(input: {
       });
     }
     for (const transfer of input.projection.contextTransfers) {
-      if (transfer.sourceThreadId === transfer.targetThreadId) continue;
+      if (
+        transfer.sourceThreadId === transfer.targetThreadId ||
+        sideThreadIds.has(transfer.sourceThreadId) ||
+        sideThreadIds.has(transfer.targetThreadId)
+      )
+        continue;
       addEdge({
         sourceThreadId: transfer.sourceThreadId,
         targetThreadId: transfer.targetThreadId,
