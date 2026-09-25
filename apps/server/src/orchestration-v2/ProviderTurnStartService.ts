@@ -49,6 +49,7 @@ import {
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import { withSideChatBoundary } from "./SideChatBoundary.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -893,9 +894,13 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
+      const userText = withSideChatBoundary({
+        thread: projection.thread,
+        startsNativeThread: providerThread.nativeThreadRef === null,
+        text: projectComposerContextForProvider({
+          text: message.text,
+          records: message.context?.records ?? [],
+        }),
       });
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),

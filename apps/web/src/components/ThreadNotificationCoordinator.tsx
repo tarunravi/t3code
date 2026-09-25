@@ -2,6 +2,7 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { isParentOwnedThread } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -115,7 +116,7 @@ function EnvironmentNotifications({
     }
     const next = new Map<ThreadId, { attention: string | null; completion: number | null }>();
     for (const rawThread of shell.snapshot.value.threads) {
-      if (rawThread.lineage.relationshipToParent === "subagent") continue;
+      if (isParentOwnedThread(rawThread.lineage)) continue;
       const thread = presentThreadShell(environmentId, rawThread);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";

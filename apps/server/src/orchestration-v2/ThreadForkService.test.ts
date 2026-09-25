@@ -88,10 +88,10 @@ function makeSourceRun(status: OrchestrationV2Run["status"]): OrchestrationV2Run
   };
 }
 
-function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2ThreadProjection {
+function makeSourceProjection(sourceRun?: OrchestrationV2Run): OrchestrationV2ThreadProjection {
   return {
     thread: makeSourceThread(),
-    runs: [sourceRun],
+    runs: sourceRun === undefined ? [] : [sourceRun],
     attempts: [],
     nodes: [],
     subagents: [],
@@ -122,6 +122,7 @@ const planFork = (sourceRun: OrchestrationV2Run) =>
         threadId: sourceThreadId,
         runId: sourceRunId,
       },
+      relationshipToParent: "fork",
       transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
       targetThreadId,
       title: "Awake fork",
@@ -195,4 +196,37 @@ it.effect("rejects in-progress and rolled-back fork sources", () =>
       assert.equal(error.cause, forkableSourceRunStatusError(sourceRun));
     }
   }),
+);
+
+it.effect("plans a side chat before the parent completes a run", () =>
+  Effect.gen(function* () {
+    const service = yield* ThreadForkServiceV2;
+    const plan = (relationshipToParent: "fork" | "side") =>
+      service.plan({
+        sourceProjection: makeSourceProjection(),
+        sourceRun: null,
+        sourceProviderThread: undefined,
+        canonicalSourcePoint: { threadId: sourceThreadId },
+        relationshipToParent,
+        transferId: ContextTransferId.make("context-transfer:side-chat"),
+        targetThreadId,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: forkCreatedAt,
+      });
+
+    const side = yield* plan("side");
+    assert.equal(side.targetThread.title, "Side chat");
+    assert.deepEqual(side.targetThread.lineage, {
+      parentThreadId: sourceThreadId,
+      relationshipToParent: "side",
+      rootThreadId: sourceThreadId,
+    });
+    assert.isNull(side.targetThread.forkedFrom);
+    assert.equal(side.transfer.sourceProviderInstanceId, providerInstanceId);
+    assert.deepEqual(side.transfer.sourcePoint, { threadId: sourceThreadId });
+
+    const fork = yield* Effect.flip(plan("fork"));
+    assert.equal(fork._tag, "ThreadForkPlanError");
+  }).pipe(Effect.provide(layer)),
 );
