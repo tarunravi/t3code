@@ -27,6 +27,26 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("keeps one side chat tab per thread and never persists it", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "files");
+    store.openSideChat(refA, ThreadId.make("side-1"));
+    store.openSideChat(refA, ThreadId.make("side-2"));
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["files", "side-chat"]);
+    expect(state.surfaces[1]).toMatchObject({ threadId: "side-2" });
+    expect(state.activeSurfaceId).toBe("side-chat");
+
+    const persisted = useRightPanelStore.persist
+      .getOptions()
+      .partialize?.(useRightPanelStore.getState()) as {
+      byThreadKey: Record<string, { surfaces: { id: string }[]; activeSurfaceId: string | null }>;
+    };
+    const persistedThread = Object.values(persisted.byThreadKey)[0];
+    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual(["files"]);
+    expect(persistedThread?.activeSurfaceId).toBe("files");
+  });
+
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {
