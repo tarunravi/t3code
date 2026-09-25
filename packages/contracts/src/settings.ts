@@ -293,6 +293,15 @@ export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
+/**
+ * Microphone chosen for voice input. The label is kept alongside the id so the
+ * device can be found again when the browser rotates its device ids.
+ */
+export const VoiceInputDevice = Schema.Struct({
+  deviceId: TrimmedNonEmptyString,
+  label: Schema.String,
+});
+export type VoiceInputDevice = typeof VoiceInputDevice.Type;
 export const ModelFavorite = Schema.Struct({
   provider: ProviderInstanceId,
   model: TrimmedNonEmptyString,
@@ -478,6 +487,10 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** `null` uses the system default microphone. */
+  voiceInputDevice: Schema.NullOr(VoiceInputDevice).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -691,9 +704,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    blockNativeSubagents: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Use T3 subagents only",
+        description:
+          "Block Claude's native Agent and Workflow tools so subagents run as T3 delegated tasks you can see and stop. Applies to Claude sessions started after the change.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs", "blockNativeSubagents"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -774,6 +796,59 @@ export const AntigravitySettings = makeProviderSettingsSchema(
   { order: ["authMethod", "apiKey", "gcpProject", "gcpLocation", "binaryPath"] },
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
+
+export const ZCodeSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("zcode").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the ZCode CLI, or a wrapper script that launches it.",
+        providerSettingsForm: { placeholder: "zcode", clearWhenEmpty: "omit" },
+      }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type ZCodeSettings = typeof ZCodeSettings.Type;
+
+export const OmpSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("omp").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the oh-my-pi CLI. T3 Code runs it as `omp acp`.",
+        providerSettingsForm: { placeholder: "omp", clearWhenEmpty: "omit" },
+      }),
+    ),
+    launchArgs: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description:
+          "Additional arguments passed after `omp acp`, for example --model provider/id --thinking high.",
+        providerSettingsForm: { clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "launchArgs"],
+  },
+);
+export type OmpSettings = typeof OmpSettings.Type;
 
 export const UsageLimitSourceConfig = Schema.Struct({
   kind: Schema.Literal("cliproxy"),
@@ -867,7 +942,7 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
-export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
+export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph", "token"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
 
 const StorageRetentionDays = Schema.NullOr(
@@ -1065,6 +1140,53 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/** What a roster entry is for, so agents pick the right worker for the job. */
+export const SubagentRole = Schema.Literals(["default", "hard", "bulk", "overnight"]);
+export type SubagentRole = typeof SubagentRole.Type;
+
+/**
+ * One subagent a thread may delegate to: a model on a provider instance, its
+ * options, its role, and when to pick it. Copied entries (for example applied
+ * from a preset) carry the description along so rosters keep that intent.
+ */
+export const SubagentRosterEntry = Schema.Struct({
+  selection: ModelSelection,
+  role: Schema.optionalKey(SubagentRole),
+  description: Schema.optionalKey(TrimmedString),
+});
+export type SubagentRosterEntry = typeof SubagentRosterEntry.Type;
+
+/**
+ * A thread's own subagent list. It replaces the environment-wide subagent
+ * allowlist for that thread; order is preference, so the first entry (or the
+ * "default" role) is the fallback when an agent names no model.
+ */
+export const ThreadSubagentRoster = Schema.Struct({
+  entries: Schema.Array(SubagentRosterEntry),
+});
+export type ThreadSubagentRoster = typeof ThreadSubagentRoster.Type;
+
+/**
+ * One subagent in a named preset: a model, its role, and when an agent should
+ * pick it. The `description` is free text ("when to use this subagent") shown
+ * in tooltips and carried onto thread rosters that copy the entry, where
+ * agents see it.
+ */
+export const SubagentPresetEntry = Schema.Struct({
+  selection: ModelSelection,
+  role: Schema.optionalKey(SubagentRole),
+  description: Schema.optionalKey(TrimmedString),
+});
+export type SubagentPresetEntry = typeof SubagentPresetEntry.Type;
+
+/** A user-named subagent set offered when composing a thread's roster. */
+export const SubagentPreset = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  entries: Schema.Array(SubagentPresetEntry),
+});
+export type SubagentPreset = typeof SubagentPreset.Type;
+
 export const ServerSettings = Schema.Struct({
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
@@ -1089,6 +1211,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Streams the latest reasoning into the live activity row as it arrives,
+  // instead of the first-sentence preview. Display-only; adapters are unchanged.
+  liveThinking: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
@@ -1210,6 +1335,42 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Model for /side chats; null uses the parent thread's model. */
+  sideChatModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Models withheld from subagent delegation, per provider instance.
+   * Independent of the device-local composer picker. An absent entry allows
+   * every model that provider advertises. Agents read this list from
+   * `orchestrator_capabilities`.
+   */
+  subagentModelPreferences: Schema.Record(
+    ProviderInstanceId,
+    Schema.Struct({
+      hiddenModels: Schema.Array(Schema.String).pipe(
+        Schema.withDecodingDefault(Effect.succeed([])),
+      ),
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Saved subagents offered first when building a thread's roster. */
+  subagentHotlist: Schema.Array(SubagentRosterEntry).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Per-thread subagent rosters. A thread without an entry uses the allowlist above. */
+  threadSubagentRosters: Schema.Record(ThreadId, ThreadSubagentRoster).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /** Named subagent sets the user saves; entries carry "when to use" descriptions. */
+  subagentPresets: Schema.Array(SubagentPreset).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Preset id new threads start with; `null` starts them on the environment's subagents. */
+  defaultSubagentPresetId: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   */
   reviewGuidesEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   reviewGuideModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -1408,6 +1569,7 @@ export const ServerSettingsPatch = Schema.Struct({
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  liveThinking: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
@@ -1472,6 +1634,27 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  sideChatModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  /** Per-instance replacement. `null` removes that instance's entry. */
+  subagentModelPreferences: Schema.optionalKey(
+    Schema.Record(
+      ProviderInstanceId,
+      Schema.NullOr(
+        Schema.Struct({
+          hiddenModels: Schema.Array(Schema.String),
+        }),
+      ),
+    ),
+  ),
+  /** Replaces the whole hotlist. */
+  subagentHotlist: Schema.optionalKey(Schema.Array(SubagentRosterEntry)),
+  /** Per-thread replacement. `null` returns that thread to the environment allowlist. */
+  threadSubagentRosters: Schema.optionalKey(
+    Schema.Record(ThreadId, Schema.NullOr(ThreadSubagentRoster)),
+  ),
+  /** Replaces the whole preset list. */
+  subagentPresets: Schema.optionalKey(Schema.Array(SubagentPreset)),
+  defaultSubagentPresetId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   reviewGuidesEnabled: Schema.optionalKey(Schema.Boolean),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
@@ -1619,6 +1802,7 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotSound: Schema.optionalKey(SnapShotSound),
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
+  voiceInputDevice: Schema.optionalKey(Schema.NullOr(VoiceInputDevice)),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
