@@ -1,8 +1,9 @@
 /**
- * Request speed from the two places that record timing: OpenCodex request
- * history (exact, including time to first token) and Claude Code transcripts
- * (end-to-end estimates from record timestamps). Pure: no filesystem or
- * network access, so callers stream input and tests pass fixtures.
+ * Request speed from the places that record timing: OpenCodex request history
+ * (exact, including time to first token), Claude Code transcripts (end-to-end
+ * estimates from record timestamps), and Cursor turns run through T3 Code
+ * (turn timing without token counts). Pure: no filesystem or network access,
+ * so callers stream input and tests pass fixtures.
  *
  * @module usageSpeed
  */
@@ -188,6 +189,77 @@ export class ClaudeSpeedReader {
       ];
     });
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cursor turns run through T3 Code                                           */
+/* -------------------------------------------------------------------------- */
+
+/** Agent turns run tools between model calls, so they legitimately outlast one request. */
+const MAX_TURN_MS = 2 * 60 * 60_000;
+
+/** One finished Cursor provider turn, joined with its run's model selection. */
+export interface CursorTurnRow {
+  readonly status: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  /** Start of the turn's first reasoning, message, or tool item. */
+  readonly firstOutputAt: string | null;
+  readonly model: string | null;
+  /** The run's `modelSelection.options` as JSON text: `[{ id, value }]`. */
+  readonly options: string | null;
+}
+
+function cursorModelOptions(options: string | null): {
+  readonly effort: string | null;
+  readonly speedTier: string | null;
+} {
+  let parsed: unknown;
+  try {
+    parsed = options === null ? [] : JSON.parse(options);
+  } catch {
+    parsed = [];
+  }
+  let effort: string | null = null;
+  let speedTier: string | null = null;
+  for (const option of Array.isArray(parsed) ? parsed.map(record) : []) {
+    const id = text(option?.["id"]);
+    if (id === null) continue;
+    if (/effort/iu.test(id)) effort = text(option?.["value"]);
+    if (id === "fastMode") speedTier = option?.["value"] === true ? "fast" : "standard";
+  }
+  return { effort, speedTier };
+}
+
+/**
+ * One Cursor turn as a sample. The Cursor SDK reports no token usage, so
+ * rates stay empty; the turn spans every model call and tool run in it, and
+ * time to first token is the delay before its first streamed item.
+ * Interrupted turns say nothing about speed and are skipped.
+ */
+export function speedSampleFromCursorTurn(row: CursorTurnRow): SpeedSample | null {
+  if (row.status !== "completed" && row.status !== "failed") return null;
+  const model = text(row.model);
+  const startMs = row.startedAt === null ? NaN : Date.parse(row.startedAt);
+  const endMs = row.completedAt === null ? NaN : Date.parse(row.completedAt);
+  if (model === null || !Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  const durationMs = endMs - startMs;
+  if (durationMs <= 0 || durationMs > MAX_TURN_MS) return null;
+  const firstOutputMs = row.firstOutputAt === null ? NaN : Date.parse(row.firstOutputAt);
+  const ttftMs = firstOutputMs - startMs;
+  return {
+    harness: "cursor",
+    upstream: null,
+    model,
+    ...cursorModelOptions(row.options),
+    source: "cursor-turns",
+    timestampMs: endMs,
+    ok: row.status === "completed",
+    outputTokens: 0,
+    reasoningTokens: 0,
+    durationMs,
+    ttftMs: Number.isFinite(ttftMs) && ttftMs >= 0 && ttftMs <= durationMs ? ttftMs : null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
