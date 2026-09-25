@@ -406,6 +406,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error
   >;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly isProviderSessionLive?: ProviderSessionManager.ProviderSessionManagerV2["Service"]["isLive"];
   /** Omit `projectId` to list every project's threads. */
   readonly listProjectThreads: (input: {
     readonly projectId?: ProjectId | undefined;
@@ -756,7 +757,8 @@ const make = Effect.gen(function* () {
           snapshot.threads
             .filter(
               (thread) =>
-                input.includeSubagents || thread.lineage.relationshipToParent !== "subagent",
+                thread.lineage.relationshipToParent !== "side" &&
+                (input.includeSubagents || thread.lineage.relationshipToParent !== "subagent"),
             )
             .toSorted(
               (left, right) =>
@@ -1325,6 +1327,7 @@ const make = Effect.gen(function* () {
         );
       },
     ),
+    isProviderSessionLive: sessions.isLive,
     getThreadProjection,
     getCheckpointContext,
     getThreadSnapshot,

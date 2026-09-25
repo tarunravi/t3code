@@ -5,7 +5,12 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import {
+  isParentOwnedThread,
+  type EnvironmentId,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
 import type { AtomRegistry } from "effect/reactivity";
@@ -181,15 +186,8 @@ export function startThreadNotifications(
     const delegatedUnderParent = registry.get(environmentThreadShells.delegatedUnderParentAtom);
     const changed: Array<[NotificationState | undefined, NotificationState]> = [];
     for (const rawThread of threads) {
-      if (
-        isShownUnderParent(
-          { environmentId, threadId: rawThread.id },
-          rawThread.lineage,
-          delegatedUnderParent,
-        )
-      ) {
-        continue;
-      }
+      const isSubagent = rawThread.lineage.relationshipToParent === "subagent";
+      if (rawThread.lineage.relationshipToParent !== null && !isSubagent) continue;
       const prior = previous.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
       if (prior?.raw === rawThread && prior.subagentRequest === subagentRequest) {
@@ -200,11 +198,12 @@ export function startThreadNotifications(
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
       const attention =
-        status === "input" ||
-        status === "request" ||
-        status === "approval" ||
-        status === "failed" ||
-        status === "limited"
+        !isSubagent &&
+        (status === "input" ||
+          status === "request" ||
+          status === "approval" ||
+          status === "failed" ||
+          status === "limited")
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");

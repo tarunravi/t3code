@@ -19,6 +19,7 @@ import {
 } from "./runtime.ts";
 import {
   type InterruptThreadTurnInput,
+  type OpenSideChatInput,
   archiveThread,
   closeGuestShare,
   resolveGuestMessage,
@@ -30,6 +31,7 @@ import {
   forkThreadFromRun,
   markThreadUnread,
   mergeThreadBack,
+  openSideChat,
   promoteQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
@@ -305,6 +307,15 @@ export function createThreadEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sourceThreadId]),
+      },
+    }),
+    openSideChat: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:open-side-chat",
+      execute: (input: OpenSideChatInput) => openSideChat(input),
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.parentThreadId]),
       },
     }),
     mergeBack: createEnvironmentCommand(runtime, {
