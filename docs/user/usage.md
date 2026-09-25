@@ -6,12 +6,17 @@ desktop when the terminal is not focused. Customize `usage.open` in
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, and Grok Build session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, and Cursor usage from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost. These estimates are not your subscription bill.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
+
+Cursor saves no usage on disk, so each server signed in to the Cursor desktop app reads its
+account's usage from cursor.com with that app's session. It covers the whole account, not just
+turns run in T3 Code, and servers signed in to the same account count it once. Cursor figures
+refresh at most every two minutes.
 
 Usage includes each configured account's history, including disabled accounts. Custom homes follow
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
@@ -35,7 +40,9 @@ duration, reasoning share, and failures, split by effort and fast tier.
 Codex figures are measured by [OpenCodex](https://github.com/lidge-jun/opencodex)
 when Codex runs through it on that machine; T3 Code reads its local request log.
 Claude Code figures are estimated from transcript timestamps, so they include
-time to first token in the duration and cannot show it separately. Requests that
+time to first token in the duration and cannot show it separately. Cursor
+figures cover only Cursor turns run in T3 Code: each turn's duration includes its
+tool calls, and Cursor reports no token counts, so output rates are blank. Requests that
 failed before producing any output are listed below each table rather than
 counted as speeds.
 
