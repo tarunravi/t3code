@@ -22,6 +22,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "side-chat",
+  "background-task",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -76,7 +77,9 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
+  /** Live output of one provider background task (for example a background Bash command). */
+  | { id: `background-task:${string}`; kind: "background-task"; taskId: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -123,7 +126,10 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "side-chat" | "background-task"
+    >,
   ) => void;
   openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
@@ -157,6 +163,8 @@ interface RightPanelStoreState {
     detailTab: PullRequestDetailTab,
   ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
+  /** Shows the side chat, replacing an earlier one's tab in place. */
+  openBackgroundTask: (ref: ScopedThreadRef, taskId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -185,7 +193,10 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "side-chat" | "background-task"
+    >,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -208,7 +219,10 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "side-chat" | "background-task"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -860,6 +874,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             upsertSurface(current, terminalSurface(terminalId)),
           ),
         ),
+
+      openBackgroundTask: (ref, taskId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, {
+              id: `background-task:${taskId}`,
+              kind: "background-task",
+              taskId,
+            }),
+          ),
+        ),
       splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => ({
@@ -1164,9 +1189,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
       ),
       partialize: (state) => ({
         byThreadKey: Object.fromEntries(
-          Object.entries(state.byThreadKey).filter(
-            ([threadKey]) => !isPullRequestsPanelKey(threadKey),
-          ),
+          Object.entries(state.byThreadKey)
+            .filter(([threadKey]) => !isPullRequestsPanelKey(threadKey))
+            .map(([threadKey, threadState]) => [threadKey, withoutSessionSurfaces(threadState)]),
         ),
         threadPanelVisibilityByThreadKey: Object.fromEntries(
           Object.entries(state.threadPanelVisibilityByThreadKey).flatMap(
@@ -1205,6 +1230,19 @@ useRightPanelStore.subscribe((next, previous) => {
     }
   }
 });
+
+const isSessionSurface = (surface: RightPanelSurface) =>
+  surface.kind === "side-chat" || surface.kind === "background-task";
+
+/** Session-backed surfaces are ephemeral, so a restored panel never points at one. */
+function withoutSessionSurfaces(state: ThreadRightPanelState): ThreadRightPanelState {
+  if (!state.surfaces.some(isSessionSurface)) return state;
+  const surfaces = state.surfaces.filter((surface) => !isSessionSurface(surface));
+  const activeSurfaceId = surfaces.some((surface) => surface.id === state.activeSurfaceId)
+    ? state.activeSurfaceId
+    : (surfaces[0]?.id ?? null);
+  return { ...state, surfaces, activeSurfaceId, isOpen: state.isOpen && surfaces.length > 0 };
+}
 
 export function selectThreadRightPanelState(
   byThreadKey: Record<string, ThreadRightPanelState>,

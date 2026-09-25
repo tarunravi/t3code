@@ -24,6 +24,7 @@ import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import { BackgroundTaskPanel } from "./BackgroundTasks";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -49,7 +50,7 @@ interface RightPanelPullRequestProps {
   readonly onBack: (() => void) | undefined;
 }
 
-interface RightPanelFileProps {
+export interface RightPanelFileProps {
   readonly projectName: string | null;
   readonly workspaceRoot: string | undefined;
   readonly availableEditors: ReadonlyArray<EditorId>;
@@ -177,6 +178,15 @@ export function RightPanelSurfaceContent(props: {
           threadId={surface.threadId}
           parentPanel={props.sideChatParentPanel}
           onClose={() => onCloseSurface(surface)}
+        />
+      );
+    case "background-task":
+      return (
+        <BackgroundTaskPanel
+          key={surface.taskId}
+          environmentId={props.environmentId}
+          threadId={threadRef.threadId}
+          taskId={surface.taskId}
         />
       );
     case "device":
