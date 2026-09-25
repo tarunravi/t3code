@@ -4,10 +4,20 @@ import { useMemo, useState } from "react";
 import { useUsageSpeed } from "../../state/usage";
 import { Skeleton } from "../ui/skeleton";
 
-const HARNESS_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude Code" };
+const HARNESS_LABELS: Record<string, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  cursor: "Cursor",
+};
 const SOURCE_LABELS: Record<UsageSpeedSourceStatus["source"], string> = {
   opencodex: "OpenCodex",
   "claude-transcripts": "Claude Code transcripts",
+  "cursor-turns": "Cursor turns in T3 Code",
+};
+const SOURCE_METHODS: Record<UsageSpeedSourceStatus["source"], string> = {
+  opencodex: "Measured by OpenCodex",
+  "claude-transcripts": "Estimated from transcripts",
+  "cursor-turns": "Timed from T3 Code turns",
 };
 
 function formatMs(ms: number): string {
@@ -252,9 +262,7 @@ export function UsageSpeedSection({
               <h2 className="text-sm font-medium text-foreground">
                 {HARNESS_LABELS[harness] ?? harness}
                 <span className="ms-2 text-xs font-normal text-muted-foreground">
-                  {harnessRows[0]!.source === "opencodex"
-                    ? "Measured by OpenCodex"
-                    : "Estimated from transcripts"}
+                  {SOURCE_METHODS[allRows[0]!.source]}
                 </span>
               </h2>
               <HarnessSummary harness={harness} rows={allRows} />
