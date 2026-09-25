@@ -1,3 +1,5 @@
+import { SideChatModelSetting } from "./SideChatModelSetting";
+import { SettingsGroup } from "./SettingsGroup";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
@@ -1583,6 +1585,7 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        <SideChatModelSetting />
       </SettingsSection>
 
       <ProjectDefaultsSettings category="general" />
