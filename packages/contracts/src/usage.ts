@@ -223,9 +223,14 @@ export type UsageSpeedInput = typeof UsageSpeedInput.Type;
 /**
  * Where speed figures come from. OpenCodex measures each request it proxies,
  * including time to first token; Claude Code transcripts only allow an
- * end-to-end estimate from record timestamps.
+ * end-to-end estimate from record timestamps; Cursor turns run in T3 Code are
+ * timed from its projections, without token counts.
  */
-export const UsageSpeedSourceKind = Schema.Literals(["opencodex", "claude-transcripts"]);
+export const UsageSpeedSourceKind = Schema.Literals([
+  "opencodex",
+  "claude-transcripts",
+  "cursor-turns",
+]);
 export type UsageSpeedSourceKind = typeof UsageSpeedSourceKind.Type;
 
 const UsageLatencySpread = Schema.Struct({
