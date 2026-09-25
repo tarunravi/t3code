@@ -720,7 +720,8 @@ const make = Effect.gen(function* () {
         snapshot.threads
           .filter(
             (thread) =>
-              input.includeSubagents || thread.lineage.relationshipToParent !== "subagent",
+              thread.lineage.relationshipToParent !== "side" &&
+              (input.includeSubagents || thread.lineage.relationshipToParent !== "subagent"),
           )
           .toSorted(
             (left, right) =>
