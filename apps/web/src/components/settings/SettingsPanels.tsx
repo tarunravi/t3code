@@ -162,6 +162,7 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { SideChatModelSetting } from "./SideChatModelSetting";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 
@@ -2959,6 +2960,7 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <SideChatModelSetting />
       </SettingsSection>
 
       <SettingsSection id="confirmations" title="Confirmations">
