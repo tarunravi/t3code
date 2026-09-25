@@ -85,6 +85,7 @@ import {
   type MouseEvent,
   type ReactNode,
   type CSSProperties,
+  useMemo,
 } from "react";
 import {
   LegendList,
@@ -141,6 +142,7 @@ import {
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  CornerUpLeftIcon,
   PencilIcon,
   MinusIcon,
   Redo2Icon,
@@ -203,6 +205,7 @@ import {
   type AssistantCitationTarget,
 } from "./AssistantCitationSource";
 import { useAssistantCitationTarget, type CitationHistoryPage } from "./useAssistantCitationTarget";
+import type { ConversationRewriteRun } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
@@ -276,7 +279,7 @@ import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import { ContextChip, ContextChipLabel, type ContextChipKind } from "../ContextChip";
 import { createContextPresentationRegistry } from "../contextPresentationRegistry";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
-import { useClientSettings } from "~/hooks/useSettings";
+import { useClientSettings, useEnvironmentSettings } from "~/hooks/useSettings";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
@@ -335,10 +338,10 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
   onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
   workflowOpening: WorkflowOpening | null;
-  onForkFromRun: (input: {
-    readonly sourceThreadId: ThreadId;
-    readonly runId: RunId;
-  }) => Promise<void>;
+  onForkFromRun:
+    | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
+    | undefined;
+  onSendToParent: ((text: string) => void) | undefined;
   onRollbackCheckpoint: (input: {
     readonly checkpointId: string;
     readonly scopeId: string;
@@ -479,10 +482,13 @@ interface MessagesTimelineProps {
   } | null;
   /** Set on a workflow coordinator's thread: its script message renders as this opening. */
   workflowOpening?: WorkflowOpening | null;
-  onForkFromRun: (input: {
+  /** Omitted where forking makes no sense, such as a side chat. */
+  onForkFromRun?: (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
+  /** Side chats relay an assistant answer to their parent thread. */
+  onSendToParent?: (text: string) => void;
   onRollbackCheckpoint: (input: {
     readonly checkpointId: string;
     readonly scopeId: string;
@@ -502,7 +508,7 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
-  runs: ReadonlyArray<HandoffTimelineRun>;
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -583,6 +589,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
+  onSendToParent,
   onRollbackCheckpoint,
   supportsConversationRollback,
   onRevertToTurnCount,
@@ -803,6 +810,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     });
   }, [latestRun, listIdentityKey]);
 
+  const rewriteRuns = useStableRewriteRuns(runsProp);
   // Imported turns fold under synthetic keys rather than the entries' own run ids.
   const findFoldRunIds = findActive
     ? timelineTurnFoldRunIdsByEntryId({
@@ -858,6 +866,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     activeTurnStartedAt,
     turnDiffSummaries,
     supportsConversationRollback,
+    rewriteRuns,
     worktreeSetup,
   });
   const rows = useStableRows(rawRows, listIdentityKey);
@@ -1278,6 +1287,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onOpenThread,
     workflowOpening,
     onForkFromRun,
+    onSendToParent,
     onRollbackCheckpoint,
     onToggleTurnFold,
     onToggleAttemptFold,
@@ -2713,7 +2723,8 @@ function AssistantForkButton({
     capabilities: support.providerSession?.capabilities,
   });
 
-  if (!canFork || projectedItem.item.runId === null) return null;
+  const { onForkFromRun } = ctx;
+  if (!canFork || projectedItem.item.runId === null || onForkFromRun === undefined) return null;
   const runId = projectedItem.item.runId;
 
   return (
@@ -2727,9 +2738,9 @@ function AssistantForkButton({
             disabled={busy}
             onClick={() => {
               setBusy(true);
-              void ctx
-                .onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId })
-                .finally(() => setBusy(false));
+              void onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId }).finally(
+                () => setBusy(false),
+              );
             }}
             aria-label="Fork from this response"
           />
@@ -2798,6 +2809,9 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.onSendToParent && !message.streaming && message.text ? (
+        <SendToParentButton text={message.text} onSend={ctx.onSendToParent} />
+      ) : null}
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
@@ -2812,6 +2826,27 @@ function AssistantMessageMeta({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+function SendToParentButton({ text, onSend }: { text: string; onSend: (text: string) => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => onSend(text)}
+            aria-label="Send to parent thread"
+          />
+        }
+      >
+        <CornerUpLeftIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Send to parent thread</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -3827,81 +3862,94 @@ function LiveWorkEntryTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
   const threadLabel = threadReadLabel(label, threadTarget);
 
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
-  const thoughtLine = row.thought && !row.expanded ? liveThoughtLine(row.thought.detail ?? "") : "";
-  const thoughtIsStatus = thoughtLine !== "" && row.entry === row.thought;
+  const liveThinking = useEnvironmentSettings(
+    ctx.activeThreadEnvironmentId,
+    (settings) => settings.liveThinking,
+  );
+  const showsThought = row.thought !== undefined && !row.expanded;
+  // Live thinking swaps the one-line preview for the whole thought as it streams in.
+  const liveThought = liveThinking && showsThought ? row.thought : undefined;
+  const thoughtLine =
+    showsThought && !liveThinking ? liveThoughtLine(row.thought?.detail ?? "") : "";
+  const thoughtIsStatus =
+    (thoughtLine !== "" || liveThought !== undefined) && row.entry === row.thought;
 
   return (
-    <button
-      type="button"
-      className={cn(
-        "group/live-work flex w-full max-w-full cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-        thoughtLine ? "flex-col items-start" : "min-h-6 items-center",
-      )}
-      aria-label={
-        failed
-          ? `${thoughtLine ? `${thoughtLine} ` : ""}${threadLabel?.text ?? label}, tool call failed`
-          : undefined
-      }
-      aria-expanded={row.expanded}
-      onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
-    >
-      {thoughtLine ? (
-        <WorkLogRow
-          icon={
-            <span className="flex size-4 items-center justify-center text-icon-muted">
-              <ToolActivityIconView
-                icon={undefined}
-                fallbackName="brain"
-                className="block size-4 shrink-0 stroke-2"
-                muted
-              />
-            </span>
-          }
-          label={<span className="line-clamp-4">{thoughtLine}</span>}
-          wrapLabel
-        />
-      ) : null}
-      <LiveActivityRow
-        label={
-          thoughtIsStatus ? (
-            row.active ? (
-              "Thinking"
-            ) : (
-              "Thought"
-            )
-          ) : row.entry.questionAnswer && hasQuestionAnswer(row.entry.questionAnswer) ? (
-            <span className="flex min-w-0 gap-1.5">
-              <span className="min-w-0 truncate">{label}</span>
-              <span className="min-w-0 truncate text-foreground">
-                {getQuestionAnswerPreview(row.entry.questionAnswer)}
-              </span>
-            </span>
-          ) : row.entry.itemType === "reasoning" ? (
-            <ReactMarkdown
-              remarkPlugins={[
-                remarkGfm,
-                remarkKeepWindowsPaths,
-                [remarkThoughtPreview, row.active ? "Thinking" : "Thought"],
-              ]}
-            >
-              {row.entry.detail ?? label}
-            </ReactMarkdown>
-          ) : threadLabel ? (
-            <ThreadReadLabel
-              label={threadLabel}
-              environmentId={ctx.activeThreadEnvironmentId}
-              linked={false}
-            />
-          ) : (
-            label
-          )
+    <>
+      {/* Beside the button, not inside it: markdown links must not nest in a button. */}
+      {liveThought ? <ReasoningTraceContent entries={[liveThought]} /> : null}
+      <button
+        type="button"
+        className={cn(
+          "group/live-work flex w-full max-w-full cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          thoughtLine ? "flex-col items-start" : "min-h-6 items-center",
+        )}
+        aria-label={
+          failed
+            ? `${thoughtLine ? `${thoughtLine} ` : ""}${threadLabel?.text ?? label}, tool call failed`
+            : undefined
         }
-        iconName={workEntryIconName(row.entry)}
-        toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
-        failed={failed}
-        active={row.active}
-      />
-    </button>
+        aria-expanded={row.expanded}
+        onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
+      >
+        {thoughtLine ? (
+          <WorkLogRow
+            icon={
+              <span className="flex size-4 items-center justify-center text-icon-muted">
+                <ToolActivityIconView
+                  icon={undefined}
+                  fallbackName="brain"
+                  className="block size-4 shrink-0 stroke-2"
+                  muted
+                />
+              </span>
+            }
+            label={<span className="line-clamp-4">{thoughtLine}</span>}
+            wrapLabel
+          />
+        ) : null}
+        <LiveActivityRow
+          label={
+            thoughtIsStatus ? (
+              row.active ? (
+                "Thinking"
+              ) : (
+                "Thought"
+              )
+            ) : row.entry.questionAnswer && hasQuestionAnswer(row.entry.questionAnswer) ? (
+              <span className="flex min-w-0 gap-1.5">
+                <span className="min-w-0 truncate">{label}</span>
+                <span className="min-w-0 truncate text-foreground">
+                  {getQuestionAnswerPreview(row.entry.questionAnswer)}
+                </span>
+              </span>
+            ) : row.entry.itemType === "reasoning" ? (
+              <ReactMarkdown
+                remarkPlugins={[
+                  remarkGfm,
+                  remarkKeepWindowsPaths,
+                  [remarkThoughtPreview, row.active ? "Thinking" : "Thought"],
+                ]}
+              >
+                {row.entry.detail ?? label}
+              </ReactMarkdown>
+            ) : threadLabel ? (
+              <ThreadReadLabel
+                label={threadLabel}
+                environmentId={ctx.activeThreadEnvironmentId}
+                linked={false}
+              />
+            ) : (
+              label
+            )
+          }
+          iconName={workEntryIconName(row.entry)}
+          toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
+          failed={failed}
+          active={row.active}
+        />
+      </button>
+    </>
   );
 }
 
@@ -4729,6 +4777,37 @@ function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): string {
         `${run.id}\0${run.providerInstanceId}\0${run.ordinal}\0${run.modelSelection.instanceId}\0${run.modelSelection.model}`,
     )
     .join("\n");
+}
+
+const EMPTY_REWRITE_RUNS: ReadonlyArray<ConversationRewriteRun> = [];
+
+/** Terminal runs whose messages stay editable. Stable across streaming updates. */
+
+function useStableRewriteRuns(
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>,
+): ReadonlyArray<ConversationRewriteRun> {
+  const prev = useRef<{
+    signature: string;
+    value: ReadonlyArray<ConversationRewriteRun>;
+  }>({ signature: "", value: EMPTY_REWRITE_RUNS });
+  return useMemo(() => {
+    const terminal = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [`${run.id}\0${run.ordinal}\0${run.status}`]
+        : [],
+    );
+    const signature = terminal.join("\n");
+    if (signature === prev.current.signature) {
+      return prev.current.value;
+    }
+    const value = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [{ id: run.id, ordinal: run.ordinal, status: run.status }]
+        : [],
+    );
+    prev.current = { signature, value };
+    return value;
+  }, [runs]);
 }
 
 function useStableHandoffRuns(
