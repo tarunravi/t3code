@@ -362,6 +362,201 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect("forks a side chat from a parent run in progress and discards it with the parent", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const eventSink = yield* EventSinkV2;
+      const threads = yield* ThreadManagementService;
+      const projectId = ProjectId.make("runtime-side-chat-project");
+      const parentThreadId = ThreadId.make("runtime-side-chat-parent");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-side-chat-create"),
+        threadId: parentThreadId,
+        projectId,
+        title: "Side chat parent",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const sendToParent = (name: string, text: string) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-side-chat-${name}`),
+          threadId: parentThreadId,
+          messageId: MessageId.make(`runtime-side-chat-${name}`),
+          text,
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+      const now = yield* DateTime.now;
+      const assistantItem = (
+        run: { readonly id: RunId; readonly providerThreadId: ProviderThreadId | null },
+        text: string,
+        status: "completed" | "running",
+      ) => ({
+        id: EventId.make(`runtime-side-chat-${run.id}-assistant-event`),
+        type: "turn-item.updated" as const,
+        threadId: parentThreadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`runtime-side-chat-${run.id}-assistant`),
+          threadId: parentThreadId,
+          runId: run.id,
+          nodeId: null,
+          providerThreadId: run.providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 50,
+          status,
+          title: null,
+          startedAt: now,
+          completedAt: status === "completed" ? now : null,
+          updatedAt: now,
+          type: "assistant_message" as const,
+          messageId: MessageId.make(`runtime-side-chat-${run.id}-assistant`),
+          text,
+          streaming: status === "running",
+        },
+      });
+
+      yield* sendToParent("first", "Remember the anchor marker.");
+      const first = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+      const parentProviderThread = (yield* orchestrator.getThreadProjection(parentThreadId))
+        .providerThreads[0]!;
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-side-chat-first-completed"),
+        events: [
+          {
+            id: EventId.make("runtime-side-chat-native-thread"),
+            type: "provider-thread.updated",
+            threadId: parentThreadId,
+            driver,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              ...parentProviderThread,
+              nativeThreadRef: { driver, nativeId: "native-side-chat-parent", strength: "strong" },
+              status: "idle",
+            },
+          },
+          assistantItem(first, "Anchor stored.", "completed"),
+          {
+            id: EventId.make("runtime-side-chat-first-run"),
+            type: "run.updated",
+            threadId: parentThreadId,
+            runId: first.id,
+            occurredAt: now,
+            payload: { ...first, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* sendToParent("second", "Refactor the parser.");
+      const second = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[1]!;
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-side-chat-second-running"),
+        events: [
+          assistantItem(second, "Halfway through the parser refactor.", "running"),
+          {
+            id: EventId.make("runtime-side-chat-second-run"),
+            type: "run.updated",
+            threadId: parentThreadId,
+            runId: second.id,
+            occurredAt: now,
+            payload: { ...second, status: "running", startedAt: now },
+          },
+        ],
+      });
+
+      const openSideChat = Effect.fn("openSideChat")(function* (
+        name: string,
+        sideModelSelection: ModelSelection,
+      ) {
+        const sideThreadId = ThreadId.make(`runtime-side-chat-${name}`);
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-side-chat-${name}-fork`),
+          sourceThreadId: parentThreadId,
+          targetThreadId: sideThreadId,
+          sourcePoint: { type: "latest_stable" },
+          relationshipToParent: "side",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-side-chat-${name}-ask`),
+          threadId: sideThreadId,
+          messageId: MessageId.make(`runtime-side-chat-${name}-ask`),
+          text: "What are you doing right now?",
+          attachments: [],
+          modelSelection: sideModelSelection,
+          dispatchMode: { type: "start_immediately" },
+        });
+        const side = yield* orchestrator.getThreadProjection(sideThreadId);
+        const handoffText = side.contextHandoffs
+          .flatMap((handoff) => handoff.history?.messages ?? [])
+          .map((message) => message.text);
+        return { side, handoffText, transfer: side.contextTransfers[0]! };
+      });
+
+      const native = yield* openSideChat("native", modelSelection);
+      assert.deepEqual(native.side.thread.lineage, {
+        parentThreadId,
+        relationshipToParent: "side",
+        rootThreadId: parentThreadId,
+      });
+      assert.isNull(native.side.thread.forkedFrom);
+      assert.equal(native.transfer.sourcePoint.runId, first.id);
+      assert.equal(native.transfer.status, "pending");
+      assert.equal(native.side.contextHandoffs[0]?.strategy, "delta_since_target_last_seen");
+      assert.deepEqual(native.handoffText, [
+        "Refactor the parser.",
+        "Halfway through the parser refactor.",
+      ]);
+
+      const portable = yield* openSideChat("portable", {
+        instanceId: alternateInstanceId,
+        model: "gpt-5.5",
+      });
+      assert.equal(portable.transfer.resolution?.strategy, "portable_context");
+      assert.equal(portable.side.contextHandoffs[0]?.strategy, "full_thread_summary");
+      assert.deepEqual(portable.handoffText, [
+        "Remember the anchor marker.",
+        "Anchor stored.",
+        "Refactor the parser.",
+        "Halfway through the parser refactor.",
+      ]);
+
+      const listed = yield* threads.listProjectThreads({ projectId, includeSubagents: true });
+      assert.deepEqual(
+        listed.map((thread) => thread.id),
+        [parentThreadId],
+      );
+
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("runtime-side-chat-delete-parent"),
+        threadId: parentThreadId,
+      });
+      for (const side of [native.side, portable.side]) {
+        const deleted = yield* orchestrator.getThreadProjection(side.thread.id);
+        assert.isNotNull(deleted.thread.deletedAt);
+        assert.isTrue(deleted.runs.every((run) => run.status === "cancelled"));
+      }
+    }),
+  );
+
   it.effect("emits model updates separately from provider switches", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;

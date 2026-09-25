@@ -440,6 +440,18 @@ function latestStableRun(
   );
 }
 
+function latestCompletedRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+): OrchestrationV2Run | null {
+  return projection.runs.reduce<OrchestrationV2Run | null>(
+    (latest, run) =>
+      run.status === "completed" && (latest === null || run.ordinal > latest.ordinal)
+        ? run
+        : latest,
+    null,
+  );
+}
+
 function runForSourcePoint(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "checkpoints">,
   sourcePoint: Extract<
@@ -3107,23 +3119,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-    const sourceRun = runForSourcePoint(sourceProjection, command.sourcePoint);
+    const relationshipToParent = command.relationshipToParent ?? "fork";
+    // A side chat anchors native history at the latest completed run; later runs,
+    // including one still in progress, reach it as delta context on its first turn.
+    const sourceRun =
+      relationshipToParent === "side"
+        ? latestCompletedRun(sourceProjection)
+        : runForSourcePoint(sourceProjection, command.sourcePoint);
 
-    if (sourceRun === null) {
+    if (sourceRun === null && relationshipToParent === "fork") {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
         cause: `No stable source run was found for fork source ${command.sourcePoint.type}.`,
       });
     }
-    if (sourceRun.status !== "completed") {
+    if (sourceRun !== null && sourceRun.status !== "completed") {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
         cause: `Fork source run ${sourceRun.id} is ${sourceRun.status}; only completed runs are supported.`,
       });
     }
-    const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    const sourceProviderThread =
+      sourceRun === null ? undefined : providerThreadForRun(sourceProjection, sourceRun);
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -3138,7 +3157,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sourceProjection,
         sourceRun,
         sourceProviderThread,
-        canonicalSourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
+        canonicalSourcePoint:
+          sourceRun === null
+            ? { threadId: sourceProjection.thread.id }
+            : contextSourcePointForRun(sourceProjection, sourceRun),
+        relationshipToParent,
         transferId,
         targetThreadId: command.targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
@@ -3158,7 +3181,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitEvent({
       type: "context-transfer.created",
       threadId: command.targetThreadId,
-      providerInstanceId: sourceRun.providerInstanceId,
+      providerInstanceId:
+        sourceRun?.providerInstanceId ?? sourceProjection.thread.providerInstanceId,
       occurredAt: now,
       payload: transfer,
     });
@@ -4635,6 +4659,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       const pendingForkTransfer = pendingForkTransferForThread(projection);
+      const isSideFork =
+        pendingForkTransfer !== undefined &&
+        projection.thread.lineage.relationshipToParent === "side";
       const pendingMergeBackSourceThreadIds = new Set(
         pendingMergeBackTransfers.map((transfer) => transfer.sourceThreadId),
       );
@@ -5074,7 +5101,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             )?.providerTurnId ??
             undefined);
       if (pendingForkTransfer !== undefined) {
-        if (sourceRun === null || sourceProviderThread === undefined) {
+        // A side chat without a native anchor falls back to portable context.
+        if (!isSideFork && (sourceRun === null || sourceProviderThread === undefined)) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -5205,20 +5233,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               providerSessionId,
               updatedAt: now,
             };
-      const portableForkItems =
-        !requiresPortableFork || sourceProjection === null || sourceRun === null
+      // A side chat sees the parent as it is now: portable context covers every
+      // run so far, and a native fork gets the runs after its anchor as a delta.
+      const forkContextRuns =
+        pendingForkTransfer === undefined || sourceProjection === null
+          ? []
+          : sourceProjection.runs.filter((run) =>
+              requiresPortableFork
+                ? isSideFork || (sourceRun !== null && run.ordinal <= sourceRun.ordinal)
+                : isSideFork && sourceRun !== null && run.ordinal > sourceRun.ordinal,
+            );
+      const forkContextItems =
+        sourceProjection === null ||
+        (forkContextRuns.length === 0 && !(requiresPortableFork && isSideFork))
           ? []
           : yield* readHandoffItems(sourceProjection.thread.id, [
-              ...sourceProjection.runs
-                .filter((run) => run.ordinal <= sourceRun.ordinal)
-                .map((run) => run.id),
-              ...(sourceProjection.thread.historyOrigin === "v1_import" ? [null] : []),
+              ...forkContextRuns.map((run) => run.id),
+              ...(requiresPortableFork && sourceProjection.thread.historyOrigin === "v1_import"
+                ? [null]
+                : []),
             ]);
-      const portableForkHandoff =
-        !requiresPortableFork ||
+      if (canResolveForkNatively && forkContextItems.length > 0) {
+        yield* enforceCommandPolicy(command)(
+          commandPolicy.ensureContextHandoff({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            providerInstanceId: modelSelection.instanceId,
+            capabilities,
+            strategy: "delta_context",
+          }),
+        );
+      }
+      const forkContextHandoff =
         pendingForkTransfer === undefined ||
         sourceProjection === null ||
-        sourceRun === null
+        (requiresPortableFork ? sourceRun === null && !isSideFork : forkContextItems.length === 0)
           ? null
           : yield* contextHandoffService
               .prepareProviderHandoff({
@@ -5228,11 +5277,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 fromProviderThreadIds:
                   sourceProviderThread === undefined ? [] : [sourceProviderThread.id],
                 toProviderThreadId: ensuredProviderThread.id,
-                fromProviderInstanceId: sourceRun.providerInstanceId,
+                fromProviderInstanceId:
+                  sourceRun?.providerInstanceId ??
+                  pendingForkTransfer.sourceProviderInstanceId ??
+                  sourceProjection.thread.providerInstanceId,
                 toProviderInstanceId: modelSelection.instanceId,
-                coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, portableForkItems),
-                strategy: "full_thread_summary",
-                items: portableForkItems,
+                coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, forkContextItems),
+                strategy: requiresPortableFork
+                  ? "full_thread_summary"
+                  : "delta_since_target_last_seen",
+                items: forkContextItems,
                 runs: sourceProjection.runs,
                 createdAt: now,
               })
@@ -5246,6 +5300,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+      const portableForkHandoff = requiresPortableFork ? forkContextHandoff : null;
       const requiresFullProviderSwitchContext =
         isProviderSwitch && pendingMergeBackTransfer !== undefined;
       const targetLastCompletedRun =
@@ -5364,7 +5419,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         lastRunOrdinal: ordinal,
         handoffIds: [
           ...ensuredProviderThread.handoffIds,
-          ...[portableForkHandoff, providerSwitchHandoff, legacyImportRecoveryHandoff].flatMap(
+          ...[forkContextHandoff, providerSwitchHandoff, legacyImportRecoveryHandoff].flatMap(
             (handoff) => (handoff === null ? [] : [handoff.id]),
           ),
         ],
@@ -5511,7 +5566,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         completedAt: null,
         checkpointId: null,
         contextHandoffId:
-          portableForkHandoff?.id ??
+          forkContextHandoff?.id ??
           providerSwitchHandoff?.id ??
           mergeBackHandoff?.id ??
           legacyImportRecoveryHandoff?.id ??
@@ -5600,9 +5655,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.context ? { context: command.context } : {}),
         attachments: command.attachments,
       };
-      const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
+      const activeHandoff = forkContextHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
       const handoffSourceRuns =
-        portableForkHandoff !== null
+        forkContextHandoff !== null
           ? sourceRun === null
             ? []
             : [sourceRun]
@@ -5637,8 +5692,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ordinal: ordinal * 100 - 1,
               status: "completed",
               title:
-                portableForkHandoff !== null
-                  ? "Fork context"
+                forkContextHandoff !== null
+                  ? isSideFork
+                    ? "Parent context"
+                    : "Fork context"
                   : providerSwitchHandoff !== null
                     ? "Provider handoff"
                     : "Merge-back context",
@@ -5723,14 +5780,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: providerThread,
       });
-      if (portableForkHandoff !== null) {
+      if (forkContextHandoff !== null) {
         yield* emitEvent({
           type: "context-handoff.updated",
           threadId: command.threadId,
           runId,
           providerInstanceId: modelSelection.instanceId,
           occurredAt: now,
-          payload: portableForkHandoff,
+          payload: forkContextHandoff,
         });
       }
       if (legacyImportRecoveryHandoff !== null) {
@@ -9073,8 +9130,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   });
 
+  /** Side chats are ephemeral: discard them all, or only those of one parent. */
+  const discardSideChats = (input: {
+    readonly parentThreadId?: ThreadId;
+    readonly reason: string;
+  }) =>
+    projectionStore.getRecoveryThreadIds("side-chats").pipe(
+      Effect.flatMap((threadIds) =>
+        Effect.forEach(
+          threadIds,
+          (threadId) =>
+            Effect.gen(function* () {
+              if (input.parentThreadId !== undefined) {
+                const thread = yield* projectionStore.getThreadShell(threadId);
+                if (thread?.lineage.parentThreadId !== input.parentThreadId) return;
+              }
+              yield* threadDispatch.withLock(
+                threadId,
+                dispatchWithReceiptEffect({
+                  type: "thread.delete",
+                  commandId: CommandId.make(
+                    `command:side-chat-discard:${input.reason}:${threadId}`,
+                  ),
+                  threadId,
+                }),
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Failed to discard side chat", { threadId, cause }),
+              ),
+            ),
+          { concurrency: 8, discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) => Effect.logWarning("Failed to list side chats", { cause })),
+    );
+
   const dispatchWithReceipt = (command: OrchestrationV2Command) =>
-    threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+    threadDispatch
+      .withLock(commandThreadId(command), dispatchWithReceiptEffect(command))
+      .pipe(
+        Effect.tap(() =>
+          command.type === "thread.delete"
+            ? discardSideChats({ parentThreadId: command.threadId, reason: command.commandId })
+            : Effect.void,
+        ),
+      );
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
@@ -9217,6 +9318,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     ),
   );
+
+  yield* discardSideChats({ reason: "startup" });
 
   return OrchestratorV2.of({
     resumeQueuedRuns,

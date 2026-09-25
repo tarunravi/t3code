@@ -99,10 +99,17 @@ export type OrchestrationV2ProviderRef = typeof OrchestrationV2ProviderRef.Type;
 
 export const OrchestrationV2AppThreadLineage = Schema.Struct({
   parentThreadId: Schema.NullOr(ThreadId),
-  relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+  relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent", "side"])),
   rootThreadId: ThreadId,
 });
 export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLineage.Type;
+
+/** Subagent and side-chat threads belong to their parent and stay out of thread lists. */
+export function isParentOwnedThread(
+  lineage: Pick<OrchestrationV2AppThreadLineage, "relationshipToParent">,
+): boolean {
+  return lineage.relationshipToParent === "subagent" || lineage.relationshipToParent === "side";
+}
 
 export const OrchestrationV2ContextTransferType = Schema.Literals([
   "fork",
@@ -2589,6 +2596,11 @@ export const OrchestrationV2Command = Schema.Union([
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+    /**
+     * "side" forks an ephemeral side chat from the parent's latest state, including a run
+     * still in progress; sourcePoint is ignored.
+     */
+    relationshipToParent: Schema.optional(Schema.Literals(["fork", "side"])),
     title: Schema.optional(TrimmedNonEmptyString),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
