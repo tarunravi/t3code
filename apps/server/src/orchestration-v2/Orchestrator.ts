@@ -7622,6 +7622,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: { ...run, status: "interrupted", completedAt: now },
         });
+        const checkpointScopeId = rootNode.checkpointScopeId;
+        if (checkpointScopeId !== null) {
+          // Same capture as a provider-reported interrupt, so the turn can be rewritten.
+          yield* Ref.update(effects, (existing) => [
+            ...existing,
+            {
+              id: `effect:checkpoint.capture:${run.id}`,
+              commandId: CommandId.make(`command:effect:checkpoint.capture:${run.id}`),
+              threadId: command.threadId,
+              request: {
+                type: "checkpoint.capture",
+                runId: run.id,
+                scopeId: checkpointScopeId,
+              },
+            } satisfies PendingOrchestrationEffectV2,
+          ]);
+        }
         yield* stopCompletionCohort();
         return {
           effectTypes: ["provider-turn.start", "provider-turn.restart"],
