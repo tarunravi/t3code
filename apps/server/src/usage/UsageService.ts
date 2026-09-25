@@ -25,6 +25,7 @@ import {
   type UsageSource,
   type UsagePricing,
   type UsageSpeedInput,
+  type UsageSpeedSourceStatus,
   type UsageSpeedSummary,
   type UsageSummary,
   type UsageSummaryInput,
@@ -57,6 +58,7 @@ import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
 import { aggregateSpeed } from "./usageSpeed.ts";
 import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -210,6 +212,7 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const hostEnvironment = yield* HostProcessEnvironment;
   const platform = yield* HostProcessPlatform;
+  const cursorUsage = yield* CursorUsageSource.CursorUsage;
 
   const fileCache: ScanCache = new Map();
   const sourceCache = new Map<string, typeof CachedSource.Type>();
@@ -1019,25 +1022,43 @@ export const make = Effect.gen(function* () {
     ))
       .filter((entry) => entry.provider === "claude")
       .map((entry) => entry.dir);
-    const [openCodex, claude] = yield* Effect.all(
+    const [openCodex, claude, cursorSamples] = yield* Effect.all(
       [
         Effect.promise(() =>
           readOpenCodexSpeed({ environment: hostEnvironment, sinceMs, untilMs }),
         ),
         Effect.promise(() => readClaudeSpeed({ directories, sinceMs, untilMs })),
+        cursorUsage.readTurnSpeed(sinceMs, untilMs),
       ],
       { concurrency: "unbounded" },
     );
+    const cursor: UsageSpeedSourceStatus =
+      cursorSamples === null
+        ? {
+            source: "cursor-turns",
+            status: "unavailable",
+            detail: "T3 Code's turn history could not be read.",
+            requests: 0,
+          }
+        : {
+            source: "cursor-turns",
+            status: "ok",
+            detail:
+              cursorSamples.length === 0
+                ? null
+                : "Timed from Cursor turns run in T3 Code. A turn includes its tool calls, and Cursor reports no token counts.",
+            requests: cursorSamples.length,
+          };
     return {
       readAt: new Date().toISOString(),
       sinceTime: input.sinceTime,
       untilTime: input.untilTime,
-      rows: aggregateSpeed([...openCodex.samples, ...claude.samples]),
-      sources: [openCodex.status, claude.status],
+      rows: aggregateSpeed([...openCodex.samples, ...claude.samples, ...(cursorSamples ?? [])]),
+      sources: [openCodex.status, claude.status, cursor],
     } satisfies UsageSpeedSummary;
   });
 
   return { readSummary, refreshRates, readSpeed } as const;
 });
 
-export const layer = Layer.effect(UsageService, make);
+export const layer = Layer.effect(UsageService, make).pipe(Layer.provide(CursorUsageSource.layer));
