@@ -2394,8 +2394,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     resetTrigger: resetComposerTrigger,
   } = useComposerTriggerState(() => detectComposerTrigger(prompt, prompt.length));
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
-  const composerSuggestionId = useId();
-  const composerSuggestionListId = `${composerSuggestionId}-${encodeURIComponent(draftId ?? activeThreadId ?? "new")}-suggestions`;
   const voiceInput = useCodexVoiceInput({
     ownerKey: composerTargetKey(composerDraftTarget),
     draftText: prompt,
@@ -2437,6 +2435,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
     });
   }, [navigate, voiceInput.state]);
+  const composerSuggestionId = useId();
+  const composerSuggestionListId = `${composerSuggestionId}-${encodeURIComponent(draftId ?? activeThreadId ?? "new")}-suggestions`;
   // Active ArrowUp recall. Cleared on edit and on thread switch.
   const promptHistoryPositionRef = useRef<ComposerPromptHistoryPosition | null>(null);
   const [composerHighlightedSearchKey, setComposerHighlightedSearchKey] = useState<string | null>(
@@ -2704,6 +2704,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/model",
           description: "Switch response model for this thread",
         },
+        ...(routeKind === "server" && composerTrigger.rangeStart === 0
+          ? ([
+              {
+                id: "slash:side",
+                type: "slash-command",
+                command: "side",
+                label: "/side",
+                description: "Ask a side question without interrupting this thread",
+              },
+            ] as const)
+          : []),
         ...(planModeUiEnabled
           ? ([
               {
@@ -2836,6 +2847,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestProjectId,
     pullRequestRepository,
     pullRequestTriggerNumber,
+    routeKind,
     selectedProvider,
     selectedProviderSkills,
     selectedProviderSlashCommands,
@@ -4006,6 +4018,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             setComposerHighlightedItemId(null);
             setIsComposerModelPickerOpen(true);
           }
+          return;
+        }
+        if (item.command === "side") {
+          const replacement = "/side ";
+          const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+            snapshot.value,
+            trigger.rangeEnd,
+            replacement,
+          );
+          const applied = applyPromptReplacement(
+            trigger.rangeStart,
+            replacementRangeEnd,
+            replacement,
+            { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+          );
+          if (applied) setComposerHighlightedItemId(null);
           return;
         }
         if (!planModeUiEnabled) return;
