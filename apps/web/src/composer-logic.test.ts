@@ -22,6 +22,7 @@ import {
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
+  parseSideChatCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
@@ -807,5 +808,19 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseSideChatCommand", () => {
+  it("opens an empty side chat or asks a question", () => {
+    expect(parseSideChatCommand(" /side ")).toEqual({ question: "" });
+    expect(parseSideChatCommand("/side what are you doing?\nand why")).toEqual({
+      question: "what are you doing?\nand why",
+    });
+  });
+
+  it("ignores other commands that start with /side", () => {
+    expect(parseSideChatCommand("/sidebar")).toBeNull();
+    expect(parseSideChatCommand("ask /side later")).toBeNull();
   });
 });
