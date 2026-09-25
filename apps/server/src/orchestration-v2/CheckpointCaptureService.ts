@@ -65,15 +65,18 @@ export const layer: Layer.Layer<
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals, turnCheckpoints } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
 
-      // The effect is at-least-once. A completed run with a checkpoint proves
+      // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.
-      if (run?.status === "completed" && run.checkpointId !== null) {
+      if (
+        (run?.status === "completed" || run?.status === "interrupted") &&
+        run.checkpointId !== null
+      ) {
         return;
       }
 
       if (
         run === undefined ||
-        run.status !== "waiting" ||
+        (run.status !== "waiting" && run.status !== "interrupted") ||
         rootNode === undefined ||
         scope === undefined ||
         rootNode.checkpointScopeId !== scope.id ||
@@ -86,11 +89,29 @@ export const layer: Layer.Layer<
           cause: "The persisted checkpoint capture target is incomplete or no longer waiting.",
         });
       }
+      // An interrupted run is already terminal, so it keeps its status and the
+      // next queued run may start while this capture is pending.
+      const interrupted = run.status === "interrupted";
 
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
         readyCheckpointOrdinals.includes(ordinalWithinScope);
+      if (interrupted) {
+        // A stop can land before the run recorded its baseline. The provider
+        // has not touched the workspace then, so the current tree is the
+        // baseline; an existing baseline ref is left as is.
+        yield* checkpoints
+          .captureBaseline({ scope, ordinalWithinScope: baselineOrdinalWithinScope })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration V2 interrupted run baseline capture failed", {
+                runId: run.id,
+                cause: String(cause),
+              }),
+            ),
+          );
+      }
       // A baseline re-materialized over a completed turn's checkpoint (for
       // example one left "missing" outside git) keeps that turn's identity, so
       // the turn stays addressable for rewrites.
@@ -119,6 +140,9 @@ export const layer: Layer.Layer<
         ordinalWithinScope: run.ordinal,
         appRunOrdinal: run.ordinal,
         capturedAt,
+        // A queued run that already started recorded this boundary as its own
+        // baseline; recapturing now could include that run's edits.
+        keepExistingRef: interrupted,
       });
       // Match RunExecutionService: capture loaded the waiting run before
       // materializing baselines. Omit delegatedCompletion so a newer cohort
@@ -200,8 +224,7 @@ export const layer: Layer.Layer<
             occurredAt: capturedAt,
             payload: {
               ...runWithoutDelegatedCompletion,
-              status: "completed",
-              completedAt: capturedAt,
+              ...(interrupted ? {} : { status: "completed" as const, completedAt: capturedAt }),
               checkpointId: checkpoint.id,
             },
           },
@@ -215,8 +238,7 @@ export const layer: Layer.Layer<
             occurredAt: capturedAt,
             payload: {
               ...rootNode,
-              status: "completed",
-              completedAt: capturedAt,
+              ...(interrupted ? {} : { status: "completed" as const, completedAt: capturedAt }),
               checkpointScopeId: scope.id,
             },
           },

@@ -1239,6 +1239,26 @@ it.effect("does not pin ingestion on background items when the root turn is inte
   }),
 );
 
+it.effect.each(["completed", "interrupted", "failed"] as const)(
+  "enqueues checkpoint capture after a %s root turn only when it can be rewritten",
+  (status) =>
+    Effect.gen(function* () {
+      const captureEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
+      yield* runBackgroundItemScenario(
+        `checkpoint-after-${status}`,
+        (ids) => [rootTerminalEvent(ids, status)],
+        {
+          onFinalizationEffects: (effects) =>
+            Ref.set(
+              captureEffects,
+              effects.filter((effect) => effect.request.type === "checkpoint.capture"),
+            ),
+        },
+      );
+      assert.equal((yield* Ref.get(captureEffects)).length, status === "failed" ? 0 : 1);
+    }),
+);
+
 it.effect("seeds inherited background items before their next update", () =>
   Effect.gen(function* () {
     const key = "inherited-background-seeded";
@@ -3648,6 +3668,9 @@ function runBackgroundItemScenario(
       ReadonlyArray<{ readonly id: TurnItemId; readonly runId: RunId }>
     >;
     readonly onSubscribe?: Effect.Effect<void>;
+    readonly onFinalizationEffects?: (
+      effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+    ) => Effect.Effect<void>;
   },
 ) {
   return Effect.gen(function* () {
@@ -3669,6 +3692,7 @@ function runBackgroundItemScenario(
                   )
                 ) {
                   yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  yield* options?.onFinalizationEffects?.(input.effects) ?? Effect.void;
                 }
                 return [];
               }),
