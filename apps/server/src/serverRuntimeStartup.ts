@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
+  isParentOwnedThread,
   type ModelSelection,
   type Project,
   ProjectId,
@@ -277,8 +278,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
     });
     const shell = yield* threads.getShellSnapshot();
     const existingThread = shell.threads.find(
-      (thread) =>
-        thread.projectId === project.id && thread.lineage.relationshipToParent !== "subagent",
+      (thread) => thread.projectId === project.id && !isParentOwnedThread(thread.lineage),
     );
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
