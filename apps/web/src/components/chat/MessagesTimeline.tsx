@@ -137,6 +137,7 @@ import {
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  CornerUpLeftIcon,
   PencilIcon,
   MinusIcon,
   Redo2Icon,
@@ -197,6 +198,7 @@ import {
   type AssistantCitationTarget,
 } from "./AssistantCitationSource";
 import { useAssistantCitationTarget, type CitationHistoryPage } from "./useAssistantCitationTarget";
+import type { ConversationRewriteRun } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
@@ -343,10 +345,10 @@ interface TimelineRowSharedState {
   displayThreadKey?: string;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
   onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
-  onForkFromRun: (input: {
-    readonly sourceThreadId: ThreadId;
-    readonly runId: RunId;
-  }) => Promise<void>;
+  onForkFromRun:
+    | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
+    | undefined;
+  onSendToParent: ((text: string) => void) | undefined;
   onRollbackCheckpoint: (input: {
     readonly checkpointId: string;
     readonly scopeId: string;
@@ -490,10 +492,13 @@ interface MessagesTimelineProps {
     readonly threadId: ThreadId;
     readonly title: string;
   } | null;
-  onForkFromRun: (input: {
+  /** Omitted where forking makes no sense, such as a side chat. */
+  onForkFromRun?: (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
+  /** Side chats relay an assistant answer to their parent thread. */
+  onSendToParent?: (text: string) => void;
   onRollbackCheckpoint: (input: {
     readonly checkpointId: string;
     readonly scopeId: string;
@@ -514,7 +519,7 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerStatuses: ReadonlyArray<ServerProvider>;
-  runs: ReadonlyArray<HandoffTimelineRun>;
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -603,6 +608,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onOpenThread,
   parentThreadLink = null,
   onForkFromRun,
+  onSendToParent,
   onRollbackCheckpoint,
   supportsConversationRollback,
   onRevertToTurnCount,
@@ -855,6 +861,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     });
   }, [latestRun]);
 
+  const rewriteRuns = useStableRewriteRuns(runsProp);
   // Find the fold that hides the match: imported turns have no run id but still
   // fold under a synthetic key, so the match's own run id cannot open them.
   const findFoldRunIds = useMemo(
@@ -923,6 +930,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         activeTurnStartedAt,
         turnDiffSummaries,
         supportsConversationRollback,
+        rewriteRuns,
         worktreeSetup,
       },
       previous?.threadKey === listIdentityKey && previous.workspaceRoot === workspaceRoot
@@ -946,6 +954,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     activeTurnStartedAt,
     turnDiffSummaries,
     supportsConversationRollback,
+    rewriteRuns,
     worktreeSetup,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
@@ -1375,6 +1384,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onOpenTurnDiff,
       onOpenThread,
       onForkFromRun,
+      onSendToParent,
       onRollbackCheckpoint,
       onToggleTurnFold,
       onToggleAttemptFold,
@@ -1413,6 +1423,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onOpenTurnDiff,
       onOpenThread,
       onForkFromRun,
+      onSendToParent,
       onRollbackCheckpoint,
       onToggleTurnFold,
       onToggleAttemptFold,
@@ -2897,7 +2908,8 @@ function AssistantForkButton({
     capabilities: support.providerSession?.capabilities,
   });
 
-  if (!canFork || projectedItem.item.runId === null) return null;
+  const { onForkFromRun } = ctx;
+  if (!canFork || projectedItem.item.runId === null || onForkFromRun === undefined) return null;
   const runId = projectedItem.item.runId;
 
   return (
@@ -2911,9 +2923,9 @@ function AssistantForkButton({
             disabled={busy}
             onClick={() => {
               setBusy(true);
-              void ctx
-                .onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId })
-                .finally(() => setBusy(false));
+              void onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId }).finally(
+                () => setBusy(false),
+              );
             }}
             aria-label="Fork from this response"
           />
@@ -2982,6 +2994,9 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.onSendToParent && !message.streaming && message.text ? (
+        <SendToParentButton text={message.text} onSend={ctx.onSendToParent} />
+      ) : null}
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
@@ -2996,6 +3011,27 @@ function AssistantMessageMeta({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+function SendToParentButton({ text, onSend }: { text: string; onSend: (text: string) => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => onSend(text)}
+            aria-label="Send to parent thread"
+          />
+        }
+      >
+        <CornerUpLeftIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Send to parent thread</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -4962,6 +4998,37 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
 // Structural sharing — reuse old row references when data hasn't changed
 // so LegendList (and React) can skip re-rendering unchanged items.
 // ---------------------------------------------------------------------------
+
+const EMPTY_REWRITE_RUNS: ReadonlyArray<ConversationRewriteRun> = [];
+
+/** Terminal runs whose messages stay editable. Stable across streaming updates. */
+
+function useStableRewriteRuns(
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>,
+): ReadonlyArray<ConversationRewriteRun> {
+  const prev = useRef<{
+    signature: string;
+    value: ReadonlyArray<ConversationRewriteRun>;
+  }>({ signature: "", value: EMPTY_REWRITE_RUNS });
+  return useMemo(() => {
+    const terminal = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [`${run.id}\0${run.ordinal}\0${run.status}`]
+        : [],
+    );
+    const signature = terminal.join("\n");
+    if (signature === prev.current.signature) {
+      return prev.current.value;
+    }
+    const value = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [{ id: run.id, ordinal: run.ordinal, status: run.status }]
+        : [],
+    );
+    prev.current = { signature, value };
+    return value;
+  }, [runs]);
+}
 
 /** Content-stable projection of the runs the handoff rows read. The incoming
  *  array is rebuilt on every projection event (status/timestamp churn), but

@@ -33,6 +33,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  MessagesSquare,
   Plus,
   TerminalSquare,
 } from "lucide-react";
@@ -618,6 +619,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "side-chat":
+      return "Side chat";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -701,6 +704,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "side-chat":
+      return <MessagesSquare className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
