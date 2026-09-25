@@ -32,10 +32,13 @@ import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1152,6 +1155,136 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
   }),
 );
 
+it.effect("proceeds without a baseline when baseline capture exceeds the budget", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("thread:run-execution-baseline-timeout");
+    const runId = RunId.make("run:run-execution-baseline-timeout");
+    const attemptId = RunAttemptId.make("attempt:run-execution-baseline-timeout");
+    const providerThreadId = ProviderThreadId.make(
+      "provider-thread:run-execution-baseline-timeout",
+    );
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const providerSessionId = ProviderSessionId.make("session:run-execution-baseline-timeout");
+    const rootNodeId = NodeId.make("node:run-execution-baseline-timeout");
+    const workspacePath = "/workspace/huge";
+    const checkpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:run-execution-baseline-timeout"),
+      cwd: workspacePath,
+    } as unknown as OrchestrationV2CheckpointScope;
+    const providerStarts = yield* Ref.make(0);
+    const baselineStarted = yield* Deferred.make<void>();
+    const baselineInterrupted = yield* Ref.make(false);
+    const timeoutWarnings: Array<{ message: string; fields: unknown }> = [];
+    const capture = Logger.make(({ message }) => {
+      const [text, fields] = Array.isArray(message) ? message : [message];
+      if (typeof text === "string" && text.includes("baseline capture timed out")) {
+        timeoutWarnings.push({ message: text, fields });
+      }
+    });
+    const layerTest = RunExecutionService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          McpAppModelContext.layerEmpty,
+          layerTurnItemPositionsTest,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            // Simulates a huge workspace (including lock wait): the capture
+            // never resolves on its own, so the run start budget must bound it.
+            captureBaseline: () =>
+              Deferred.succeed(baselineStarted, undefined).pipe(
+                Effect.andThen(
+                  Effect.never.pipe(Effect.onInterrupt(() => Ref.set(baselineInterrupted, true))),
+                ),
+              ),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({}),
+          IdAllocator.layer,
+          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            ingestNormalized: () => Effect.succeed([]),
+          }),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    );
+
+    const runFiber = yield* Effect.gen(function* () {
+      const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+      yield* runExecution.startRootRun({
+        commandId: CommandId.make("command:run-execution-baseline-timeout"),
+        appThread: { id: threadId } as OrchestrationV2AppThread,
+        providerSessionId,
+        session: {
+          events: Stream.never,
+          startTurn: () => Ref.update(providerStarts, (count) => count + 1),
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        run: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+        } as OrchestrationV2Run,
+        rootNode: { id: rootNodeId } as OrchestrationV2ExecutionNode,
+        checkpointScope,
+        providerThread: {
+          id: providerThreadId,
+          driver,
+        } as OrchestrationV2ProviderThread,
+        attempt: {
+          id: attemptId,
+          providerTurnId: null,
+        } as OrchestrationV2RunAttempt,
+        attemptId,
+        providerTurnOrdinal: 1,
+        message: {
+          messageId: MessageId.make("message:run-execution-baseline-timeout"),
+          text: "Start the provider despite a slow baseline.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+          approvalPolicy: "never",
+          sandboxPolicy: {
+            type: "readOnly",
+            access: { type: "fullAccess" },
+            networkAccess: false,
+          },
+        },
+      });
+    }).pipe(Effect.provide(Layer.mergeAll(layerTest, Logger.layer([capture]))), Effect.forkChild);
+
+    yield* Deferred.await(baselineStarted);
+    yield* TestClock.adjust(RunExecutionService.BASELINE_CAPTURE_BUDGET_MS + 1_000);
+    const exit = yield* Fiber.await(runFiber);
+    assert.equal(exit._tag, "Success");
+
+    // The run proceeds with prompt dispatch despite the hung baseline.
+    assert.equal(yield* Ref.get(providerStarts), 1);
+    assert.isTrue(yield* Ref.get(baselineInterrupted));
+    assert.equal(timeoutWarnings.length, 1);
+    const fields = timeoutWarnings[0]?.fields as
+      | {
+          readonly threadId?: unknown;
+          readonly runId?: unknown;
+          readonly workspacePath?: unknown;
+          readonly elapsedMs?: unknown;
+          readonly budgetMs?: unknown;
+        }
+      | undefined;
+    assert.equal(fields?.workspacePath, workspacePath);
+    assert.equal(fields?.budgetMs, RunExecutionService.BASELINE_CAPTURE_BUDGET_MS);
+    assert.equal(String(fields?.threadId), String(threadId));
+    assert.equal(String(fields?.runId), String(runId));
+    assert.isTrue(
+      typeof fields?.elapsedMs === "number" &&
+        (fields.elapsedMs as number) >= RunExecutionService.BASELINE_CAPTURE_BUDGET_MS,
+    );
+  }),
+);
+
 it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as const)(
   "handles %s before the provider turn starts",
   (scenario) =>
@@ -1769,6 +1902,26 @@ it.effect("does not pin ingestion on background items when the root turn is inte
     ]);
     assert.deepEqual(observed, ["turn_item:running", "root-finalized"]);
   }),
+);
+
+it.effect.each(["completed", "interrupted", "failed"] as const)(
+  "enqueues checkpoint capture after a %s root turn only when it can be rewritten",
+  (status) =>
+    Effect.gen(function* () {
+      const captureEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
+      yield* runBackgroundItemScenario(
+        `checkpoint-after-${status}`,
+        (ids) => [rootTerminalEvent(ids, status)],
+        {
+          onFinalizationEffects: (effects) =>
+            Ref.set(
+              captureEffects,
+              effects.filter((effect) => effect.request.type === "checkpoint.capture"),
+            ),
+        },
+      );
+      assert.equal((yield* Ref.get(captureEffects)).length, status === "failed" ? 0 : 1);
+    }),
 );
 
 it.effect("seeds inherited background items before their next update", () =>
@@ -4377,6 +4530,9 @@ function runBackgroundItemScenario(
       ReadonlyArray<{ readonly id: TurnItemId; readonly runId: RunId }>
     >;
     readonly onSubscribe?: Effect.Effect<void>;
+    readonly onFinalizationEffects?: (
+      effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+    ) => Effect.Effect<void>;
     readonly onFinalized?: (
       events: ReadonlyArray<OrchestrationV2DomainEvent>,
     ) => Effect.Effect<void>;
@@ -4403,6 +4559,7 @@ function runBackgroundItemScenario(
                   )
                 ) {
                   yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  yield* options?.onFinalizationEffects?.(input.effects) ?? Effect.void;
                   yield* options?.onFinalized?.(input.events) ?? Effect.void;
                 }
                 return [];
