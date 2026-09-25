@@ -160,6 +160,7 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   type ComposerSubmissionIntent,
   collapseExpandedComposerCursor,
+  parseSideChatCommand,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
@@ -394,6 +395,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -1563,6 +1565,7 @@ export default function ChatView(props: ChatViewProps) {
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
+  const { open: openSideChat, discard: discardSideChat } = useSideChatActions(environmentId);
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, {
     reportFailure: false,
   });
@@ -5574,6 +5577,7 @@ export default function ChatView(props: ChatViewProps) {
             threadRef: activeThreadRef,
           });
         }
+        if (surface.kind === "side-chat") void discardSideChat(surface.threadId);
         if (surface.kind === "terminal") {
           for (const terminalId of surface.terminalIds) {
             storeCloseTerminal(activeThreadRef, terminalId);
@@ -5590,6 +5594,7 @@ export default function ChatView(props: ChatViewProps) {
       activePreviewState.sessions,
       closePreview,
       closeTerminalMutation,
+      discardSideChat,
       storeCloseTerminal,
     ],
   );
@@ -7998,6 +8003,27 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
+    const sideChatCommand =
+      isServerThread && !directAnnotation && !composerHasNonPromptContent
+        ? parseSideChatCommand(promptRef.current)
+        : null;
+    if (sideChatCommand !== null && rewritingMessage === null) {
+      if (activeMessageCount === 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Nothing to ask about yet",
+            description: "Send a message first, then try /side again.",
+          }),
+        );
+        return;
+      }
+      promptRef.current = "";
+      setComposerDraftPrompt(composerDraftTarget, "");
+      composerRef.current?.resetCursorState();
+      void openSideChat(activeThread, sideChatCommand.question);
+      return;
+    }
     if (activePendingProgress) {
       if (directAnnotation) {
         notifyDirectAnnotationAttached();
@@ -10237,6 +10263,15 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "side-chat" ? (
+      <SideChatPanel
+        key={renderedRightPanelSurface.threadId}
+        environmentId={activeThread.environmentId}
+        parent={activeThread}
+        sideThreadId={renderedRightPanelSurface.threadId}
+        markdownCwd={gitCwd ?? undefined}
+        workspaceRoot={activeWorkspaceRoot}
+      />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
