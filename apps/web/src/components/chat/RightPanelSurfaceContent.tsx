@@ -1,3 +1,5 @@
+import { SideChatPanel } from "./SideChatPanel";
+import { useThreadShell } from "../../state/entities";
 import type {
   EditorId,
   EnvironmentId,
@@ -77,8 +79,10 @@ export function RightPanelSurfaceContent(props: {
   readonly files: RightPanelFileProps;
 }) {
   const { surface, threadRef, visible } = props;
+  const parent = useThreadShell(threadRef);
   if (surface === null) return null;
   switch (surface.kind) {
+    case "side-chat": return parent ? <SideChatPanel environmentId={props.environmentId} parent={parent} sideThreadId={surface.threadId} markdownCwd={props.files.workspaceRoot} workspaceRoot={props.files.workspaceRoot} /> : null;
     case "preview":
       return (
         <Suspense fallback={null}>

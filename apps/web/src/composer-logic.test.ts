@@ -22,6 +22,7 @@ import {
   extendReplacementRangeForTrailingSpace,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
+  parseSideChatCommand,
   isPathSuggestionCurrent,
   replaceTextRange,
 } from "./composer-logic";
@@ -532,6 +533,20 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
 
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left")).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right")).toBe(true);
+  });
+});
+
+describe("parseSideChatCommand", () => {
+  it("opens an empty side chat or asks a question", () => {
+    expect(parseSideChatCommand(" /side ")).toEqual({ question: "" });
+    expect(parseSideChatCommand("/side what are you doing?\nand why")).toEqual({
+      question: "what are you doing?\nand why",
+    });
+  });
+
+  it("ignores other commands that start with /side", () => {
+    expect(parseSideChatCommand("/sidebar")).toBeNull();
+    expect(parseSideChatCommand("ask /side later")).toBeNull();
   });
 });
 
