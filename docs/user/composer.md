@@ -189,6 +189,18 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+## Side chats
+
+Send `/side` to open a side chat beside the thread, or `/side <question>` to open it and ask
+right away. The side agent sees the thread's history, including a turn still in progress, while the
+thread keeps working. It treats that history as background, avoids editing files unless you ask,
+and messages the thread only when you ask it to. The arrow on a side answer also sends it to the
+thread.
+
+Each thread has one side chat at a time. Closing its tab discards it, and side chats end when the
+server restarts. **Settings → General → Side chat model** picks the model side chats start with;
+the picker in the side chat changes it for that chat.
+
 ## Context in your message
 
 Context you attach lands where your cursor is, as a chip inside your text: a terminal excerpt,
