@@ -30,6 +30,12 @@ export const PROVIDER_PRESENTATION = {
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     driverKind: ProviderDriverKind.make("grok"),
   },
+  cursor: {
+    label: "Cursor",
+    // Cursor's mark is monochrome and the neutrals belong to Codex and Grok.
+    color: "#3b82f6",
+    driverKind: ProviderDriverKind.make("cursor"),
+  },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
 /** Stable provider reading order across charts, summaries, tables, and hover rows. */

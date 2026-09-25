@@ -289,6 +289,11 @@ export function UsageRouteScreen() {
                   {merged.duplicateSources.join(", ")}
                 </Text>
               ) : null}
+              {merged.sourceIssues.map((issue) => (
+                <Text key={issue} className="text-sm text-foreground-muted">
+                  {issue}
+                </Text>
+              ))}
               {isPending ? (
                 <Text className="py-16 text-center text-base text-foreground-muted">
                   Scanning provider transcripts…

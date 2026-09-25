@@ -1,9 +1,11 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
+  type UsageSourceStatus,
   type UsageSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -40,6 +42,8 @@ function summary(
     homePath: string;
     volumeId?: string;
     distinctSessions?: number;
+    status?: UsageSourceStatus;
+    message?: string;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
 ): UsageSummary {
@@ -57,12 +61,12 @@ function summary(
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
       },
-      status: "ok" as const,
+      status: source.status ?? "ok",
       scannedFiles: 1,
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
-      message: null,
+      message: source.message ?? null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -178,7 +182,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],
@@ -412,5 +416,79 @@ describe("mergeUsage", () => {
     ]);
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
+  });
+
+  describe("Cursor account sources", () => {
+    const cursorBucket = bucket({ provider: "cursor", model: "claude-4.5-sonnet", costUsd: 3 });
+    const cursorSource = (status: UsageSourceStatus = "ok", message?: string) => ({
+      provider: "cursor" as const,
+      hostId: "cursor.com",
+      homePath: "cursor.com",
+      volumeId: "user_1",
+      status,
+      ...(message === undefined ? {} : { message }),
+    });
+
+    it("counts one account once across environments", () => {
+      const merged = mergeUsage(
+        [
+          environment("mac", summary([cursorBucket], [cursorSource()])),
+          environment("devbox", summary([cursorBucket], [cursorSource()])),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+      expect(merged.costUsd).toBe(3);
+      expect(merged.duplicateSources).toHaveLength(1);
+      expect(merged.sourceIssues).toEqual([]);
+    });
+
+    it("keeps a healthy read when another environment failed", () => {
+      const failed = summary([], [cursorSource("failed", "cursor.com could not be reached.")]);
+      const merged = mergeUsage(
+        [
+          // Newer, so it would otherwise claim the fingerprint first.
+          environment("devbox", { ...failed, readAt: "2026-08-08T00:00:00.000Z" }),
+          environment("mac", summary([cursorBucket], [cursorSource()])),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+      expect(merged.costUsd).toBe(3);
+      expect(merged.sourceIssues).toEqual([]);
+    });
+
+    it("reports failed and partial sources nobody else covered", () => {
+      const merged = mergeUsage(
+        [
+          environment(
+            "mac",
+            summary(
+              [bucket()],
+              [
+                { provider: "claude", hostId: "mac", homePath: "/claude" },
+                cursorSource("failed", "cursor.com could not be reached."),
+              ],
+            ),
+          ),
+          environment(
+            "devbox",
+            summary(
+              [cursorBucket],
+              [
+                {
+                  ...cursorSource("partial", "Only the latest 5 Cursor usage events were read."),
+                  volumeId: "user_2",
+                },
+              ],
+            ),
+          ),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+      expect(merged.costUsd).toBe(13);
+      expect(merged.sourceIssues).toEqual([
+        "mac: cursor.com could not be reached.",
+        "devbox: Only the latest 5 Cursor usage events were read.",
+      ]);
+    });
   });
 });

@@ -30,6 +30,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as UsageService from "./UsageService.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
 
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -82,9 +83,11 @@ const serviceLayers = (input: {
   /** Defaults to an unparsable document so every scan retries the fetch. */
   readonly ratesDocument?: unknown;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly cursor?: Partial<typeof CursorUsageSource.CursorUsage.Service>;
 }) =>
   ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(CursorUsageSource.layerTest(input.cursor)),
     Layer.provideMerge(ServerSettings.layerTest(input.settings)),
     Layer.provideMerge(
       Layer.succeed(
@@ -407,6 +410,91 @@ describe("UsageService", () => {
       yield* Effect.promise(() => NodeFSP.appendFile(transcript, claudeLine(2, 7)));
       const second = yield* service.readSummary(WINDOW);
       assert.strictEqual(totalOutputTokens(second), 12);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("adds Cursor account usage beside transcripts and reports a failed read", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const cursorRecord = (timestamp: string, conversation: string) => ({
+        provider: "cursor" as const,
+        timestampMs: Date.parse(timestamp),
+        model: "gpt-5",
+        sessionId: conversation,
+        totals: {
+          uncachedInputTokens: 100,
+          cachedInputTokens: 50,
+          cacheCreationTokens: 0,
+          outputTokens: 20,
+          reasoningTokens: 0,
+        },
+        reportedCostUsd: 0.25,
+        dedupeKey: `${timestamp}:${conversation}`,
+      });
+      let cursorRead: CursorUsageSource.CursorUsageRead = {
+        status: "ok",
+        userId: "user_1",
+        records: [
+          cursorRecord("2026-08-01T09:00:00Z", "a"),
+          cursorRecord("2026-08-01T11:00:00Z", "a"),
+          cursorRecord("2026-08-02T11:00:00Z", "b"),
+          // Outside the window.
+          cursorRecord("2026-07-20T11:00:00Z", "c"),
+        ],
+        message: null,
+      };
+
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-cursor-test",
+            home,
+            settings,
+            cursor: { read: () => Effect.sync(() => cursorRead) },
+          }),
+        ),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      const cursorBuckets = summary.buckets.filter((bucket) => bucket.provider === "cursor");
+      assert.deepStrictEqual(
+        cursorBuckets.map((bucket) => [bucket.day, bucket.records, bucket.costSource]),
+        [
+          ["2026-08-01", 2, "providerReported"],
+          ["2026-08-02", 1, "providerReported"],
+        ],
+      );
+      assert.strictEqual(
+        cursorBuckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
+        0.75,
+      );
+      const cursorSource = summary.sources.find(
+        (source) => source.fingerprint.provider === "cursor",
+      );
+      assert.deepStrictEqual(cursorSource?.fingerprint, {
+        hostId: "cursor.com",
+        provider: "cursor",
+        resolvedHomePath: "cursor.com",
+        volumeId: "user_1",
+      });
+      assert.strictEqual(cursorSource?.distinctSessions, 2);
+
+      cursorRead = {
+        status: "failed",
+        userId: null,
+        records: [],
+        message: "cursor.com could not be reached.",
+      };
+      const failed = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(failed), 5);
+      assert.deepStrictEqual(
+        mergeUsage(
+          [{ environmentId: EnvironmentId.make("local"), label: "Local", summary: failed }],
+          failed.contractVersion,
+        ).sourceIssues,
+        ["Local: cursor.com could not be reached."],
+      );
     }).pipe(Effect.scoped),
   );
 
