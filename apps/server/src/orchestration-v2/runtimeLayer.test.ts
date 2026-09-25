@@ -2858,7 +2858,25 @@ it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (
         ["user_message", "run_interrupt_request", "run_interrupt_result"],
       );
       assert.deepEqual(interrupted.providerTurns, []);
+
+      // The only follow-up work is the checkpoint that makes the turn rewritable.
+      assert.isTrue(yield* effectWorker.runOnce);
       assert.isFalse(yield* effectWorker.runOnce);
+      const checkpointed = yield* orchestrator.getThreadProjection(threadId);
+      const checkpointedRun = checkpointed.runs[0];
+      assert.equal(checkpointedRun?.status, "interrupted");
+      assert.isNotNull(checkpointedRun?.checkpointId);
+      assert.deepEqual(
+        checkpointed.checkpoints.map((checkpoint) => [
+          checkpoint.ordinalWithinScope,
+          checkpoint.runId,
+        ]),
+        [
+          [0, null],
+          [1, run.id],
+        ],
+      );
+      assert.deepEqual(checkpointed.providerTurns, []);
     }),
   );
 });

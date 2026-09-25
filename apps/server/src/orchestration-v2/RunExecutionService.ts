@@ -648,8 +648,10 @@ export const layer: Layer.Layer<
           `command:effect:checkpoint.capture:${input.run.id}`,
         );
         const finalization = {
+          // Interrupted turns get a checkpoint too, so they can be diffed and
+          // rewritten like completed ones.
           effects:
-            input.terminal.status === "completed"
+            input.terminal.status === "completed" || input.terminal.status === "interrupted"
               ? [
                   {
                     id: `effect:checkpoint.capture:${input.run.id}`,
