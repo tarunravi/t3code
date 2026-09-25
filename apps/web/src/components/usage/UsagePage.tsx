@@ -315,6 +315,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             isPartial={isPartial}
             duplicateSources={merged.duplicateSources}
+            sourceIssues={merged.sourceIssues}
             staleEnvironments={merged.staleEnvironments}
           />
         </WorkspaceBreadcrumbItem>
@@ -906,23 +907,31 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
 }
 
 /**
- * Explains failed or incompatible environments and deduplicated transcripts.
- * Shown inside the environment filter so arriving results do not move the page.
+ * Explains failed or incompatible environments, failed sources, and
+ * deduplicated transcripts. Shown inside the environment filter so arriving
+ * results do not move the page.
  */
 function UsageCoverageNotice({
   environments,
   duplicateSources,
+  sourceIssues,
   staleEnvironments,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly duplicateSources: readonly string[];
+  readonly sourceIssues: readonly string[];
   readonly staleEnvironments: readonly string[];
 }) {
   const failed = environments.filter((environment) => environment.error !== null);
   const stale = environments.filter((environment) =>
     staleEnvironments.includes(environment.environmentId),
   );
-  if (failed.length === 0 && stale.length === 0 && duplicateSources.length === 0) {
+  if (
+    failed.length === 0 &&
+    stale.length === 0 &&
+    sourceIssues.length === 0 &&
+    duplicateSources.length === 0
+  ) {
     return null;
   }
 
@@ -935,6 +944,9 @@ function UsageCoverageNotice({
         <span key={environment.label}>
           {environment.label} runs an older server version and is excluded from totals.
         </span>
+      ))}
+      {sourceIssues.map((issue) => (
+        <span key={issue}>{issue}</span>
       ))}
       {duplicateSources.length > 0 ? (
         <span>
@@ -955,6 +967,7 @@ function UsageEnvironmentFilter({
   showUsageStatus,
   isPartial,
   duplicateSources,
+  sourceIssues,
   staleEnvironments,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -964,6 +977,7 @@ function UsageEnvironmentFilter({
   readonly showUsageStatus: boolean;
   readonly isPartial: boolean;
   readonly duplicateSources: readonly string[];
+  readonly sourceIssues: readonly string[];
   readonly staleEnvironments: readonly string[];
 }) {
   const [modelPricesOpen, setModelPricesOpen] = useState(false);
@@ -979,7 +993,8 @@ function UsageEnvironmentFilter({
   ).length;
   const hasIssue =
     selectedEnvironments.some((environment) => environment.error !== null) ||
-    staleEnvironments.length > 0;
+    staleEnvironments.length > 0 ||
+    sourceIssues.length > 0;
 
   return (
     <>
@@ -1079,6 +1094,7 @@ function UsageEnvironmentFilter({
             <UsageCoverageNotice
               environments={selectedEnvironments}
               duplicateSources={duplicateSources}
+              sourceIssues={sourceIssues}
               staleEnvironments={staleEnvironments}
             />
           ) : null}

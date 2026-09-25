@@ -31,6 +31,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as UsageService from "./UsageService.ts";
+import * as CursorUsageSource from "./usageCursorSource.ts";
 
 const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -85,10 +86,12 @@ const serviceLayers = (input: {
   readonly ratesDocument?: unknown;
   readonly environment?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
+  readonly cursor?: Partial<typeof CursorUsageSource.CursorUsage.Service>;
 }) =>
   ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(HostProcessPlatform, input.platform ?? "linux")),
+    Layer.provideMerge(CursorUsageSource.layerTest(input.cursor)),
     Layer.provideMerge(ServerSettings.layerTest(input.settings)),
     Layer.provideMerge(
       Layer.succeed(
