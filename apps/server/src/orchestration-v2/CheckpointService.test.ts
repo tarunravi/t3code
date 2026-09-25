@@ -105,3 +105,47 @@ it.effect.each([false, true, "interrupt"] as const)(
     }).pipe(Effect.provide(testLayer));
   },
 );
+
+it.effect.each([true, false])("keeps an existing turn ref only when asked, keep=%s", (keep) => {
+  const scope: OrchestrationV2CheckpointScope = {
+    id: CheckpointScopeId.make("checkpoint-scope:keep-existing-ref"),
+    threadId: ThreadId.make("thread:keep-existing-ref"),
+    runId: RunId.make("run:keep-existing-ref:1"),
+    nodeId: NodeId.make("node:keep-existing-ref:1"),
+    parentScopeId: null,
+    providerThreadId: ProviderThreadId.make("provider-thread:keep-existing-ref"),
+    kind: "root_run",
+    ordinalWithinParent: 0,
+    advancesAppRunCount: true,
+    cwd: "/repo",
+    createdAt: DateTime.makeUnsafe("2026-09-25T00:00:00.000Z"),
+  };
+  const captureCheckpoint = vi.fn(() => Effect.void);
+  const testLayer = checkpointServiceLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        idAllocatorLayer,
+        Layer.mock(CheckpointStore.CheckpointStore)({
+          isGitRepository: () => Effect.succeed(true),
+          hasCheckpointRef: () => Effect.succeed(true),
+          captureCheckpoint,
+          diffCheckpoints: () => Effect.succeed(""),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const checkpoints = yield* CheckpointServiceV2;
+    const checkpoint = yield* checkpoints.capture({
+      scope,
+      ordinalWithinScope: 1,
+      runId: scope.runId,
+      nodeId: scope.nodeId!,
+      appRunOrdinal: 1,
+      capturedAt: scope.createdAt,
+      keepExistingRef: keep,
+    });
+    assert.equal(checkpoint.status, "ready");
+    assert.equal(captureCheckpoint.mock.calls.length, keep ? 0 : 1);
+  }).pipe(Effect.provide(testLayer));
+});
