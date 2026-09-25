@@ -51,10 +51,12 @@ export function forkableSourceRunStatusError(
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
-    readonly sourceRun: OrchestrationV2Run;
+    /** Null only for a side chat opened before the parent completed any run. */
+    readonly sourceRun: OrchestrationV2Run | null;
     readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
     readonly sourceTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | undefined;
     readonly canonicalSourcePoint: OrchestrationV2ContextSourcePoint;
+    readonly relationshipToParent: "fork" | "side";
     readonly transferId: ContextTransferId;
     readonly targetThreadId: ThreadId;
     readonly title?: string;
@@ -73,11 +75,23 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
   ThreadForkServiceV2,
   ThreadForkServiceV2.of({
     plan: Effect.fn("ThreadForkService.plan")(function* (input) {
-      if (!isForkableSourceRunStatus(input.sourceRun.status)) {
+      const { sourceRun } = input;
+      const isSide = input.relationshipToParent === "side";
+      // A side chat can open before the parent finishes any run. Every other
+      // fork still needs a provider-finished source run.
+      if (sourceRun === null) {
+        if (!isSide) {
+          return yield* new ThreadForkPlanError({
+            sourceThreadId: input.sourceProjection.thread.id,
+            targetThreadId: input.targetThreadId,
+            cause: "Fork has no source run.",
+          });
+        }
+      } else if (!isForkableSourceRunStatus(sourceRun.status)) {
         return yield* new ThreadForkPlanError({
           sourceThreadId: input.sourceProjection.thread.id,
           targetThreadId: input.targetThreadId,
-          cause: forkableSourceRunStatusError(input.sourceRun),
+          cause: forkableSourceRunStatusError(sourceRun),
         });
       }
       const targetThread: OrchestrationV2AppThread = {
@@ -89,18 +103,20 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         createdBy: input.createdBy,
         creationSource: input.creationSource,
         id: input.targetThreadId,
-        title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+        title:
+          input.title ?? (isSide ? "Side chat" : `${input.sourceProjection.thread.title} fork`),
         activeProviderThreadId: null,
         lineage: {
           parentThreadId: input.sourceProjection.thread.id,
-          relationshipToParent: "fork",
+          relationshipToParent: input.relationshipToParent,
           rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
         },
-        forkedFrom: {
-          type: "run",
-          threadId: input.sourceProjection.thread.id,
-          runId: input.sourceRun.id,
-        },
+        // A side chat starts at its boundary; the parent's history reaches the
+        // provider through the fork transfer instead of the visible timeline.
+        forkedFrom:
+          isSide || sourceRun === null
+            ? null
+            : { type: "run", threadId: input.sourceProjection.thread.id, runId: sourceRun.id },
         createdAt: input.createdAt,
         updatedAt: input.createdAt,
         archivedAt: null,
@@ -122,10 +138,10 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         targetThreadId: input.targetThreadId,
         sourcePoint: input.canonicalSourcePoint,
         basePoint: null,
-        sourceProviderInstanceId: input.sourceRun.providerInstanceId,
+        sourceProviderInstanceId: sourceRun?.providerInstanceId ?? input.sourceProjection.thread.providerInstanceId,
         // Only native forks retain this context; portable handoffs rebuild it.
         sourceTokenUsage:
-          (input.sourceRun.status === "completed" || input.sourceRun.status === "waiting") &&
+          (sourceRun?.status === "completed" || sourceRun?.status === "waiting") &&
           input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
             ? input.sourceTokenUsage
             : undefined,

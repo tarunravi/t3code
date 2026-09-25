@@ -28,6 +28,7 @@ import {
   type MarkThreadUnreadInput,
   type ForkThreadFromRunInput,
   type MergeThreadBackInput,
+  type OpenSideChatInput,
   type PromoteQueuedRunInput,
   type ResumeThreadQueueInput,
   type LinkThreadPullRequestInput,
@@ -66,6 +67,7 @@ import {
   forkThreadFromRun,
   markThreadUnread,
   mergeThreadBack,
+  openSideChat,
   promoteQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
@@ -112,6 +114,7 @@ export type {
   MarkThreadUnreadInput,
   ForkThreadFromRunInput,
   MergeThreadBackInput,
+  OpenSideChatInput,
   PromoteQueuedRunInput,
   LinkThreadPullRequestInput,
   RespondToThreadApprovalInput,
@@ -377,6 +380,15 @@ export function createThreadEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sourceThreadId]),
+      },
+    }),
+    openSideChat: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:open-side-chat",
+      execute: (input: OpenSideChatInput) => openSideChat(input),
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.parentThreadId]),
       },
     }),
     mergeBack: createEnvironmentCommand(runtime, {
