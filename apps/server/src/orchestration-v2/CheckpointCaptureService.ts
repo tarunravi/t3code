@@ -107,6 +107,21 @@ export const layer: Layer.Layer<
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
         readyCheckpointOrdinals.includes(ordinalWithinScope);
+      if (stopped) {
+        // A stop can land before the run recorded its baseline. The provider
+        // has not touched the workspace then, so the current tree is the
+        // baseline; an existing baseline ref is left as is.
+        yield* checkpoints
+          .captureBaseline({ scope, ordinalWithinScope: baselineOrdinalWithinScope })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration V2 stopped run baseline capture failed", {
+                runId: run.id,
+                cause: String(cause),
+              }),
+            ),
+          );
+      }
       // A baseline re-materialized over a completed turn's checkpoint (for
       // example one left "missing" outside git) keeps that turn's identity, so
       // the turn stays addressable for rewrites.
@@ -135,6 +150,9 @@ export const layer: Layer.Layer<
         ordinalWithinScope: run.ordinal,
         appRunOrdinal: run.ordinal,
         capturedAt,
+        // A queued run that already started recorded this boundary as its own
+        // baseline; recapturing now could include that run's edits.
+        keepExistingRef: stopped,
       });
       // Match RunExecutionService: capture loaded the waiting run before
       // materializing baselines. Omit delegatedCompletion so a newer cohort
