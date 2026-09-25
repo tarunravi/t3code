@@ -124,6 +124,7 @@ import {
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
+import { MermaidFullscreenDialog } from "./MermaidFullscreenDialog";
 import { ContextChip } from "./ContextChip";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible";
 import { ScrollArea } from "./ui/scroll-area";
@@ -982,22 +983,21 @@ function MarkdownCodeBlockTitleContent({
 type MermaidRenderState =
   | { readonly status: "loading" }
   | { readonly status: "streaming" }
-  | { readonly status: "ready"; readonly svg: string }
+  | { readonly status: "ready"; readonly svg: string; readonly renderId: string }
   | { readonly status: "error"; readonly message: string };
 
-function MermaidDiagram({
-  code,
-  theme,
-  isStreaming,
-}: {
-  readonly code: string;
-  readonly theme: "light" | "dark";
-  readonly isStreaming: boolean;
-}) {
+/** Renders Mermaid source to SVG, keeping the last diagram visible while a re-render runs. */
+function useMermaidRender(
+  code: string,
+  theme: "light" | "dark",
+  isStreaming: boolean,
+): MermaidRenderState {
   const instanceId = useId().replaceAll(":", "");
+  // Mermaid removes any existing element with the render id before drawing, so the theme is
+  // part of the id: a theme switch must not delete the diagram that is still on screen.
   const renderId = useMemo(
-    () => `t3-mermaid-${instanceId}-${fnv1a32(code).toString(36)}`,
-    [code, instanceId],
+    () => `t3-mermaid-${instanceId}-${theme}-${fnv1a32(code).toString(36)}`,
+    [code, instanceId, theme],
   );
   const [state, setState] = useState<MermaidRenderState>({
     status: isStreaming ? "streaming" : "loading",
@@ -1012,19 +1012,21 @@ function MermaidDiagram({
       };
     }
 
-    setState({ status: "loading" });
+    setState((current) => (current.status === "ready" ? current : { status: "loading" }));
     void import("mermaid")
       .then(async ({ default: mermaid }) => {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
+          // Without this, a syntax error leaves Mermaid's error graphic appended to <body>.
+          suppressErrorRendering: true,
           theme: theme === "dark" ? "dark" : "default",
         });
         return mermaid.render(renderId, code);
       })
       .then(
         ({ svg }) => {
-          if (!cancelled) setState({ status: "ready", svg });
+          if (!cancelled) setState({ status: "ready", svg, renderId });
         },
         (error: unknown) => {
           if (!cancelled) {
@@ -1041,6 +1043,10 @@ function MermaidDiagram({
     };
   }, [code, isStreaming, renderId, theme]);
 
+  return state;
+}
+
+function MermaidDiagram({ state }: { readonly state: MermaidRenderState }) {
   if (state.status === "ready") {
     return (
       <div
@@ -1076,11 +1082,24 @@ function MarkdownMermaidBlock({
   readonly theme: "light" | "dark";
   readonly isStreaming: boolean;
 }) {
+  const renderState = useMermaidRender(code, theme, isStreaming);
   const [view, setView] = useState<"diagram" | "code">("diagram");
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleLabel = view === "diagram" ? "Show Mermaid code" : "Show Mermaid diagram";
   const copyLabel = copied ? "Copied" : "Copy Mermaid code";
+  const fullscreenLabel = "Open diagram fullscreen";
+  // Mermaid prefixes every internal id (styles, markers, clip paths) with the render id; a
+  // distinct prefix keeps the fullscreen copy from colliding with the inline diagram.
+  const fullscreenSvg = useMemo(
+    () =>
+      renderState.status === "ready"
+        ? renderState.svg.replaceAll(renderState.renderId, `${renderState.renderId}-fullscreen`)
+        : null,
+    [renderState],
+  );
 
   const handleCopy = useCallback(() => {
     void writeTextToClipboard(code, "Mermaid code").then(
@@ -1142,6 +1161,25 @@ function MarkdownMermaidBlock({
             </TooltipTrigger>
             <TooltipPopup side="top">{toggleLabel}</TooltipPopup>
           </Tooltip>
+          {renderState.status === "ready" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    ref={fullscreenButtonRef}
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={fullscreenLabel}
+                    onClick={() => setFullscreen(true)}
+                  />
+                }
+              >
+                <Maximize2Icon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">{fullscreenLabel}</TooltipPopup>
+            </Tooltip>
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={
@@ -1161,12 +1199,21 @@ function MarkdownMermaidBlock({
         </span>
       </div>
       {view === "diagram" ? (
-        <MermaidDiagram code={code} theme={theme} isStreaming={isStreaming} />
+        <MermaidDiagram state={renderState} />
       ) : (
         <pre className="chat-markdown-mermaid-code">
           <code>{code}</code>
         </pre>
       )}
+      {fullscreenSvg !== null ? (
+        <MermaidFullscreenDialog
+          svg={fullscreenSvg}
+          title={fenceTitle ?? "Mermaid diagram"}
+          open={fullscreen}
+          onOpenChange={setFullscreen}
+          returnFocusRef={fullscreenButtonRef}
+        />
+      ) : null}
     </div>
   );
 }
@@ -3519,7 +3566,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
           code={codeBlock.code}
           fenceTitle={fenceTitle}
           theme={resolvedTheme}
-          isStreaming={isStreaming}
+          // A closed fence is final, so render it without waiting for the rest of the message.
+          isStreaming={isStreaming && !isClosedCodeFence(node, text)}
         />
       );
     }
