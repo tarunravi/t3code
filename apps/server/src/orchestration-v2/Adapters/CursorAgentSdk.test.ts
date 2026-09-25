@@ -54,11 +54,27 @@ const cursorSdkMock = vi.hoisted(() => {
     send,
     close: agentClose,
   }));
+  const resume = vi.fn(async () => ({
+    agentId: "agent-cursor-agent-sdk-test",
+    send,
+    close: agentClose,
+  }));
+  const listRuns = vi.fn(async () => ({
+    items: [
+      { id: "run-stale", status: "running" },
+      { id: "run-queued", status: "queued" },
+      { id: "run-finished", status: "finished" },
+    ],
+  }));
+  const cancelRun = vi.fn(async () => {});
 
   return {
     agentClose,
+    cancelRun,
     closeExecutionOrder,
     create,
+    listRuns,
+    resume,
     runCancel,
     runWait,
     send,
@@ -71,7 +87,9 @@ const cursorSdkMock = vi.hoisted(() => {
 vi.mock("../../provider/cursorSdk.ts", () => ({
   Agent: {
     create: cursorSdkMock.create,
-    resume: vi.fn(),
+    resume: cursorSdkMock.resume,
+    listRuns: cursorSdkMock.listRuns,
+    cancelRun: cursorSdkMock.cancelRun,
     messages: {
       list: vi.fn(async () => []),
     },
@@ -210,6 +228,54 @@ describe("CursorAgentSdkRunner", () => {
       assert.equal(cursorSdkMock.create.mock.calls.length, 1);
       assert.equal(cursorSdkMock.send.mock.calls.length, 1);
       assert.equal(cursorSdkMock.runWait.mock.calls.length, 1);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("cancels a stale active run and retries when a resumed agent is busy", () =>
+    Effect.gen(function* () {
+      cursorSdkMock.resume.mockClear();
+      cursorSdkMock.send.mockClear();
+      cursorSdkMock.listRuns.mockClear();
+      cursorSdkMock.cancelRun.mockClear();
+      cursorSdkMock.send.mockRejectedValueOnce(
+        Object.assign(new Error("Agent agent-cursor-agent-sdk-test already has active run"), {
+          name: "UnknownAgentError",
+        }),
+      );
+
+      const runner = yield* CursorAgentSdkRunner;
+      const session = yield* runner.open({
+        operation: "resume",
+        agentId: "agent-cursor-agent-sdk-test",
+        options: {
+          model: { id: "default" },
+          mode: "agent",
+          local: {
+            cwd: "/tmp/cursor-resume",
+          },
+        },
+        threadId: ThreadId.make("thread-cursor-agent-sdk-stale-run-test"),
+        providerSessionId: ProviderSessionId.make(
+          "provider-session-cursor-agent-sdk-stale-run-test",
+        ),
+      });
+
+      const run = yield* session.send({ message: "continue" });
+
+      assert.equal(run.runId, "run-cursor-agent-sdk-test");
+      assert.equal(cursorSdkMock.send.mock.calls.length, 2);
+      assert.deepStrictEqual(cursorSdkMock.listRuns.mock.calls[0], [
+        "agent-cursor-agent-sdk-test",
+        { runtime: "local", cwd: "/tmp/cursor-resume" },
+      ]);
+      assert.deepStrictEqual(
+        cursorSdkMock.cancelRun.mock.calls.map((call) => call[0]),
+        ["run-stale", "run-queued"],
+      );
+      assert.deepStrictEqual(cursorSdkMock.cancelRun.mock.calls[0]?.[1], {
+        runtime: "local",
+        cwd: "/tmp/cursor-resume",
+      });
     }).pipe(Effect.provide(testLayer)),
   );
 });
