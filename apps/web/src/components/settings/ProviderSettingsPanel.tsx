@@ -356,6 +356,7 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
     } else if (
       !target.scoped &&
       (searchTargetId === searchableSetting("provider-health-check-interval").id ||
+        searchTargetId === searchableSetting("usage-model-prices").id ||
         searchTargetId === searchableSetting("usage-providers").id) &&
       !selectedEnvironmentCanRenderSettings &&
       searchableEnvironmentId !== undefined
@@ -894,6 +895,17 @@ export function EnvironmentProviderSettings({
     },
   );
 
+  const updateSubagentModelPreferences = useStableCallback(
+    (instanceId: ProviderInstanceId, nextHiddenModels: ReadonlyArray<string>) => {
+      const hiddenModels = [...new Set(nextHiddenModels.filter((slug) => slug.trim().length > 0))];
+      updateSettings({
+        subagentModelPreferences: {
+          [instanceId]: hiddenModels.length === 0 ? null : { hiddenModels },
+        },
+      });
+    },
+  );
+
   const stableUpdateModelPreferences = useStableCallback(updateModelPreferences);
   const stableToggleModelFavorite = useStableCallback(toggleModelFavorite);
   const actions: ProviderInstanceRowActions = {
@@ -905,6 +917,7 @@ export function EnvironmentProviderSettings({
     resetDefaultInstance,
     writeProjectOverride,
     updateModelPreferences: stableUpdateModelPreferences,
+    updateSubagentModelPreferences,
     toggleModelFavorite: stableToggleModelFavorite,
     selectInstance: setSelectedInstanceId,
   };
@@ -949,6 +962,7 @@ export function EnvironmentProviderSettings({
             : false
         }
         modelPreferences={settings.providerModelPreferences?.[row.instanceId]}
+        hiddenSubagentModels={settings.subagentModelPreferences?.[row.instanceId]?.hiddenModels}
         favorites={favorites}
         actions={actions}
       />
@@ -1196,6 +1210,10 @@ interface ProviderInstanceRowActions {
     next: boolean | undefined,
   ) => void;
   readonly updateModelPreferences: ReturnType<typeof useUpdateEnvironmentModelPreferences>;
+  readonly updateSubagentModelPreferences: (
+    instanceId: ProviderInstanceId,
+    hiddenModels: ReadonlyArray<string>,
+  ) => void;
   readonly toggleModelFavorite: ReturnType<typeof useToggleEnvironmentModelFavorite>;
   readonly selectInstance: (instanceId: ProviderInstanceId) => void;
 }
@@ -1221,6 +1239,7 @@ function ProviderInstanceRow({
   projectOverrideValue,
   projectOverrideEffectiveEnabled,
   modelPreferences,
+  hiddenSubagentModels = NO_MODELS,
   favorites,
   actions,
 }: {
@@ -1243,6 +1262,7 @@ function ProviderInstanceRow({
   readonly modelPreferences:
     | { readonly hiddenModels: ReadonlyArray<string>; readonly modelOrder: ReadonlyArray<string> }
     | undefined;
+  readonly hiddenSubagentModels: ReadonlyArray<string> | undefined;
   readonly favorites: UnifiedSettings["favorites"];
   readonly actions: ProviderInstanceRowActions;
 }) {
@@ -1381,6 +1401,7 @@ function ProviderInstanceRow({
         ) : null
       }
       hiddenModels={hiddenModels}
+      hiddenSubagentModels={hiddenSubagentModels}
       favoriteModels={favoriteModels}
       modelOrder={modelOrder}
       onHiddenModelsChange={(next, affectedModels) => {
@@ -1393,6 +1414,9 @@ function ProviderInstanceRow({
           })),
         });
       }}
+      onHiddenSubagentModelsChange={(next) =>
+        actions.updateSubagentModelPreferences(instanceId, next)
+      }
       onToggleFavorite={(model) => {
         void actions.toggleModelFavorite(instanceId, model);
       }}

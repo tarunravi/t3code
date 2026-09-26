@@ -71,7 +71,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List providers, models, options, and runtime modes for `delegate_task`. Short list. `search` finds others. Any catalog model works.",
+    "List the provider instances and models allowed for subagents, including custom models, runtime options, and constraints. This allowlist is independent of the composer picker. Use search to find more models.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
@@ -83,16 +83,23 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
-const DelegateTaskTool = Tool.make("delegate_task", {
+/**
+ * Dynamic so the published schema stays the contract's, while decoding happens
+ * in the service: a malformed call then gets a corrective error listing
+ * available targets instead of a bare schema failure.
+ */
+export const DelegateTaskTool = Tool.dynamic("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
-  parameters: OrchestratorMcpDelegateTaskInput,
+    'Needs an agent running inside a T3 thread. Delegate a subagent: run one self-contained task in a T3-owned child agent of THIS thread. The child sees only the task prompt, not this conversation. Call orchestrator_capabilities first: it lists each providerInstanceId with its models, and each model\'s options (such as reasoning effort and its allowed values). Pick a target from those values, e.g. {"task":"...","target":{"providerInstanceId":"claudeAgent","model":"claude-opus-5-5","options":{"effort":"medium"}},"mode":"async"}. Omit target to inherit this thread\'s provider, model, and options. A requested runtimeMode must be one the target provider lists in orchestrator_capabilities runtimeModes; an inherited one steps down to the broadest mode it offers. Set isolation to "worktree" for a separate checkout based on the parent local commit, with project setup completed before the child starts; uncommitted edits are not copied, and omitted isolation shares the parent checkout. Invalid calls return an error naming the problem, the available targets, and a corrected example. Prefer native subagent tools only for same-provider work they support. Prefer mode=\'async\'; the child\'s completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling, and use task_status only when the result is needed mid-turn. mode=\'wait\' blocks until completion, a blocking question, or timeoutMs, which is only the parent\'s wait budget: waitTimedOut means the child is still running, so keep that taskId. If hasPendingQuestion, pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task\'s completion still wakes this thread. For each review round, call delegate_task again with the original brief, prior findings, responses, and unresolved objections, using a distinct clientRequestId per round (stable across retries); the childThreadId is backing storage, not a target for t3_thread_send.',
+  parameters: Tool.getJsonSchemaFromSchema(OrchestratorMcpDelegateTaskInput),
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
 })
-  .annotate(Tool.Title, "Delegate a child task")
+  .addDependency(McpInvocationContext.McpInvocationContext)
+  .addDependency(ThreadManagementService.ThreadManagementService)
+  .addDependency(OrchestratorMcpService.OrchestratorMcpService)
+  .annotate(Tool.Title, "Delegate a subagent")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 

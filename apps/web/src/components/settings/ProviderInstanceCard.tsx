@@ -570,12 +570,14 @@ interface ProviderInstanceCardProps {
   readonly setup?: ReactNode;
   readonly runtime?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
+  readonly hiddenSubagentModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
   readonly onHiddenModelsChange: (
     next: ReadonlyArray<string>,
     affectedModels: ReadonlyArray<string>,
   ) => void;
+  readonly onHiddenSubagentModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onToggleFavorite: (model: string) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
@@ -615,9 +617,11 @@ export function ProviderInstanceCard({
   setup,
   runtime,
   hiddenModels,
+  hiddenSubagentModels,
   favoriteModels,
   modelOrder,
   onHiddenModelsChange,
+  onHiddenSubagentModelsChange,
   onFavoriteModelsChange,
   onToggleFavorite,
   onModelOrderChange,
@@ -1241,8 +1245,8 @@ export function ProviderInstanceCard({
         <SettingsSection title="Models">
           <div className="px-3 py-3 sm:px-4">
             <p className="mb-3 text-xs text-muted-foreground">
-              Model preferences and custom models are saved on the selected environment and shared
-              across connected devices.
+              Model preferences, subagent models, and custom models are saved on the selected
+              environment and shared across connected devices.
             </p>
             <ProviderModelsSection
               canManageCustomModels={!readOnly}
@@ -1252,10 +1256,12 @@ export function ProviderInstanceCard({
               models={modelsForDisplay}
               customModels={customModels}
               hiddenModels={hiddenModels}
+              hiddenSubagentModels={hiddenSubagentModels}
               favoriteModels={favoriteModels}
               modelOrder={modelOrder}
               onChange={updateCustomModels}
               onHiddenModelsChange={onHiddenModelsChange}
+              onHiddenSubagentModelsChange={onHiddenSubagentModelsChange}
               onFavoriteModelsChange={onFavoriteModelsChange}
               onToggleFavorite={onToggleFavorite}
               onModelOrderChange={onModelOrderChange}
