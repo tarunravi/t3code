@@ -20,7 +20,7 @@ import {
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
   type OrchestratorMcpCreatedThread,
-  type OrchestratorMcpDelegateTaskInput,
+  OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpInteractionMode,
   type OrchestratorMcpDeleteScheduledTaskInput,
@@ -63,6 +63,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerSettings,
   ThreadId,
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
@@ -104,13 +105,16 @@ import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingEr
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
-import * as ServerSettings from "../serverSettings.ts";
+import * as ServerSettingsService from "../serverSettings.ts";
+import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
+import { providerCapabilityUsage } from "../usage/providerCapabilityUsage.ts";
 import {
   clientRuntimeModeCeiling,
   type McpInvocationScope,
   type McpThreadInvocationScope,
   requireThreadScope,
 } from "./McpInvocationContext.ts";
+import { delegateTaskCorrection } from "./delegateTaskCorrection.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
@@ -144,9 +148,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input?: OrchestratorMcpCapabilitiesInput,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
+  /** Takes raw tool arguments so malformed calls get the same corrective error as invalid targets. */
   readonly delegateTask: (
     scope: McpInvocationScope,
-    input: OrchestratorMcpDelegateTaskInput,
+    input: unknown,
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
   readonly taskStatus: (
     scope: McpInvocationScope,
@@ -389,7 +394,43 @@ function providerConstraints(
   return constraints;
 }
 
-/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
+function hiddenSubagentModels(
+  settings: ServerSettings,
+  instanceId: ServerProvider["instanceId"],
+): ReadonlySet<string> {
+  return new Set(settings.subagentModelPreferences[instanceId]?.hiddenModels ?? []);
+}
+
+function modelsAllowedForSubagents(
+  provider: ServerProvider,
+  hidden: ReadonlySet<string>,
+): ReadonlyArray<ServerProvider["models"][number]> {
+  if (hidden.size === 0) return provider.models;
+  return provider.models.filter((model) => !hidden.has(model.slug));
+}
+
+const CORRECTABLE_DELEGATE_TASK_CODES: ReadonlySet<OrchestratorMcpFailure["code"]> = new Set([
+  "invalid_request",
+  "provider_unavailable",
+  "model_unavailable",
+  "runtime_mode_escalation_denied",
+  "interaction_mode_escalation_denied",
+]);
+
+const decodeDelegateTaskArguments = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
+const decodeDelegateTaskInput = (input: unknown) =>
+  decodeDelegateTaskArguments(input).pipe(
+    Effect.mapError((error) =>
+      failure("invalid_request", `Invalid delegate_task arguments: ${error.message}`),
+    ),
+  );
+
+const NO_SUBAGENT_MODELS = "No models are allowed for subagents.";
+/**
+ * Models without descriptors skip the descriptor checks (mirroring how model slugs are only
+ * validated when the provider advertises models), but duplicate ids always fail: downstream
+ * consumers disagree on whether the first or last value of a duplicated id wins.
+ */
 function invalidOptionSelections(
   selections: ReadonlyArray<ProviderOptionSelection>,
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
@@ -1058,10 +1099,18 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const serverSettings = yield* ServerSettingsService.ServerSettingsService;
+  const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
+
+  const loadSubagentSettings = serverSettings.getSettings.pipe(
+    Effect.mapError((error) =>
+      failure("orchestration_error", `Could not read subagent model settings: ${error.message}`),
+    ),
+  );
+
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
-  const serverSettings = yield* ServerSettings.ServerSettingsService;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -1331,6 +1380,7 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
+    readonly enforceSubagentAllowlist?: boolean;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
@@ -1433,6 +1483,10 @@ const make = Effect.gen(function* () {
       );
     }
 
+    if (input.enforceSubagentAllowlist === true) {
+      const settings = yield* loadSubagentSettings;
+      if (hiddenSubagentModels(settings, instanceId).has(model)) return yield* failure("model_unavailable", `Model ${model} is not allowed as a subagent on provider ${instanceId}.`);
+    }
     const requestedOptions = input.target?.options;
     if (requestedOptions !== undefined) {
       const descriptors = provider.models.find((candidate) => candidate.slug === model)
@@ -1791,6 +1845,105 @@ const make = Effect.gen(function* () {
     return task;
   });
 
+  const capabilities = Effect.fn("OrchestratorMcpService.capabilities")(function* (scope: McpInvocationScope, input: OrchestratorMcpCapabilitiesInput = {}) {
+      const { parent, limits } = yield* loadCaller(scope);
+      const providers = yield* loadProviders;
+      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+      );
+      const sources = yield* usageLimitSources.current;
+      const providerUsage = providerCapabilityUsage(providers, sources);
+      const inherited = parent?.thread.modelSelection;
+      const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
+      return {
+        parentThreadId: parent?.thread.id ?? null,
+        inheritedProviderInstanceId: inherited?.instanceId ?? null,
+        inheritedModel: inherited?.model ?? null,
+        inheritedOptions: inherited?.options ?? [],
+        runtimeMode: limits.runtimeMode,
+        interactionMode: limits.interactionMode,
+        providers: providers.map((provider) => {
+          const constraints = [...providerConstraints(
+            provider,
+            orchestrationCapableInstanceIds.has(provider.instanceId),
+          )];
+          const allowedModels = modelsAllowedForSubagents(provider, hiddenSubagentModels(settings, provider.instanceId));
+          if (constraints.length === 0 && provider.models.length > 0 && allowedModels.length === 0) constraints.push(NO_SUBAGENT_MODELS);
+          const { listed, omitted } = listCapabilityModels({
+            provider: { ...provider, models: allowedModels },
+            preferences: settings.subagentModelPreferences?.[provider.instanceId],
+            searchTerms,
+            isPinned: (model) =>
+              model.isCustom ||
+              (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
+              (settings.favorites ?? []).some(
+                (favorite) =>
+                  favorite.provider === provider.instanceId && favorite.model === model.slug,
+              ),
+          });
+          return {
+            providerInstanceId: provider.instanceId,
+            driverKind: provider.driver,
+            displayName: provider.displayName ?? null,
+            models: listed.map((model) => {
+              const options = model.capabilities?.optionDescriptors ?? [];
+              return {
+                id: model.slug,
+                ...(model.name.toLowerCase() === model.slug.toLowerCase()
+                  ? {}
+                  : { label: model.name }),
+                ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
+              };
+            }),
+            ...(omitted === 0 ? {} : { omittedModels: omitted }),
+            ...(provider.supportedRuntimeModes === undefined ||
+            provider.supportedRuntimeModes.length === 0
+              ? {}
+              : { runtimeModes: [...provider.supportedRuntimeModes] }),
+            canRunChildTask: constraints.length === 0,
+            canRunCrossProviderChildTask: constraints.length === 0,
+            constraints: [...constraints],
+          };
+        }),
+        ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
+        features: {
+          appOwnedSubagents: true,
+          asyncPolling: true,
+          cancellation: true,
+          batchThreadCreation: true,
+          threadManagement: true,
+          incrementalThreadRead: true,
+          scheduledTasks: true,
+          maxBatchThreads: 20,
+        },
+      };
+    });
+
+  /** Failures a caller can fix by changing its arguments, so they carry a corrected call. */
+  const withDelegateTaskCorrection = <A>(
+    scope: McpInvocationScope,
+    effect: Effect.Effect<A, OrchestratorMcpFailure>,
+  ) =>
+    effect.pipe(
+      Effect.catchIf(
+        (error) => CORRECTABLE_DELEGATE_TASK_CODES.has(error.code),
+        (error) =>
+          Effect.option(capabilities(scope)).pipe(
+            Effect.flatMap((current) =>
+              Effect.fail(
+                Option.isNone(current)
+                  ? error
+                  : failure(
+                      error.code,
+                      `${error.message}\n\n${delegateTaskCorrection(current.value)}`,
+                    ),
+              ),
+            ),
+          ),
+      ),
+    );
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
@@ -2064,77 +2217,10 @@ const make = Effect.gen(function* () {
       return { status, secretRef: secretRef.value };
     }),
 
-    capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
-      const { parent, limits } = yield* loadCaller(scope);
-      const providers = yield* loadProviders;
-      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-      const settings = yield* serverSettings.getSettings.pipe(
-        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
-      );
-      const inherited = parent?.thread.modelSelection;
-      const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
-      return {
-        parentThreadId: parent?.thread.id ?? null,
-        inheritedProviderInstanceId: inherited?.instanceId ?? null,
-        inheritedModel: inherited?.model ?? null,
-        inheritedOptions: inherited?.options ?? [],
-        runtimeMode: limits.runtimeMode,
-        interactionMode: limits.interactionMode,
-        providers: providers.map((provider) => {
-          const constraints = providerConstraints(
-            provider,
-            orchestrationCapableInstanceIds.has(provider.instanceId),
-          );
-          const { listed, omitted } = listCapabilityModels({
-            provider,
-            preferences: settings.providerModelPreferences?.[provider.instanceId],
-            searchTerms,
-            isPinned: (model) =>
-              model.isCustom ||
-              (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
-              (settings.favorites ?? []).some(
-                (favorite) =>
-                  favorite.provider === provider.instanceId && favorite.model === model.slug,
-              ),
-          });
-          return {
-            providerInstanceId: provider.instanceId,
-            driverKind: provider.driver,
-            displayName: provider.displayName ?? null,
-            models: listed.map((model) => {
-              const options = model.capabilities?.optionDescriptors ?? [];
-              return {
-                id: model.slug,
-                ...(model.name.toLowerCase() === model.slug.toLowerCase()
-                  ? {}
-                  : { label: model.name }),
-                ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
-              };
-            }),
-            ...(omitted === 0 ? {} : { omittedModels: omitted }),
-            ...(provider.supportedRuntimeModes === undefined ||
-            provider.supportedRuntimeModes.length === 0
-              ? {}
-              : { runtimeModes: [...provider.supportedRuntimeModes] }),
-            canRunChildTask: constraints.length === 0,
-            canRunCrossProviderChildTask: constraints.length === 0,
-            constraints: [...constraints],
-          };
-        }),
-        features: {
-          appOwnedSubagents: true,
-          asyncPolling: true,
-          cancellation: true,
-          batchThreadCreation: true,
-          threadManagement: true,
-          incrementalThreadRead: true,
-          scheduledTasks: true,
-          maxBatchThreads: 20,
-        },
-      };
-    }),
-    delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
+    capabilities,
+    delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, rawInput) {
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+      const input = yield* withDelegateTaskCorrection(scope, decodeDelegateTaskInput(rawInput));
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -2156,21 +2242,14 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
-        parent,
-        target: input.target,
-        providers,
+      const target = yield* withDelegateTaskCorrection(scope, resolveTargetRechecking({
+        parent, target: input.target, providers, enforceSubagentAllowlist: true,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      });
-      const runtimeMode = yield* resolveRuntimeMode(
-        parent.thread.runtimeMode,
-        input.runtimeMode,
-        target,
-      );
-      const interactionMode = yield* resolveInteractionMode(
-        parent.thread.interactionMode,
-        input.interactionMode,
-      );
+      }));
+      const { runtimeMode, interactionMode } = yield* withDelegateTaskCorrection(scope, Effect.all({
+        runtimeMode: resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target),
+        interactionMode: resolveInteractionMode(parent.thread.interactionMode, input.interactionMode),
+      }));
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
@@ -2213,7 +2292,7 @@ const make = Effect.gen(function* () {
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
-          task: taskPrompt(input),
+          task: input.task,
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
           runtimeMode,
@@ -2958,7 +3037,8 @@ export const layer: Layer.Layer<
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
+  | ServerSettingsService.ServerSettingsService
+  | UsageLimitSources.UsageLimitSources
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
-  | ServerSettings.ServerSettingsService
 > = Layer.effect(OrchestratorMcpService, make);
