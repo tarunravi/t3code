@@ -498,9 +498,11 @@ interface ProviderInstanceCardProps {
   readonly setup?: ReactNode;
   readonly runtime?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
+  readonly hiddenSubagentModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
+  readonly onHiddenSubagentModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
@@ -553,9 +555,11 @@ export function ProviderInstanceCard({
   setup,
   runtime,
   hiddenModels,
+  hiddenSubagentModels,
   favoriteModels,
   modelOrder,
   onHiddenModelsChange,
+  onHiddenSubagentModelsChange,
   onFavoriteModelsChange,
   onModelOrderChange,
   onRunUpdate,
@@ -1165,8 +1169,8 @@ export function ProviderInstanceCard({
         >
           <div className="px-3 py-3 sm:px-4">
             <p className="mb-3 text-xs text-muted-foreground">
-              Favorites, visibility, and ordering are saved on this device. Custom models are saved
-              on the selected environment.
+              Favorites, picker visibility, and ordering are saved on this device. Subagent models
+              and custom models are saved on the selected environment.
             </p>
             <ProviderModelsSection
               instanceId={instanceId}
@@ -1174,10 +1178,12 @@ export function ProviderInstanceCard({
               models={modelsForDisplay}
               customModels={customModels}
               hiddenModels={hiddenModels}
+              hiddenSubagentModels={hiddenSubagentModels}
               favoriteModels={favoriteModels}
               modelOrder={modelOrder}
               onChange={updateCustomModels}
               onHiddenModelsChange={onHiddenModelsChange}
+              onHiddenSubagentModelsChange={onHiddenSubagentModelsChange}
               onFavoriteModelsChange={onFavoriteModelsChange}
               onModelOrderChange={onModelOrderChange}
             />

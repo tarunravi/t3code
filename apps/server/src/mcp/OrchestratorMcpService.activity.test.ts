@@ -18,6 +18,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
@@ -138,6 +139,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -191,6 +193,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -302,6 +305,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -435,6 +439,7 @@ it("readThread reaches a thread the user attached as context, but not one an age
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
