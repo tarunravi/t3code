@@ -52,6 +52,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
   type ServerProvider,
+  type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -73,6 +74,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettingsService from "../serverSettings.ts";
 import {
   type McpInvocationScope,
   type McpThreadInvocationScope,
@@ -237,6 +239,23 @@ function providerConstraints(
   }
   return constraints;
 }
+
+function hiddenSubagentModels(
+  settings: ServerSettings,
+  instanceId: ServerProvider["instanceId"],
+): ReadonlySet<string> {
+  return new Set(settings.subagentModelPreferences[instanceId]?.hiddenModels ?? []);
+}
+
+function modelsAllowedForSubagents(
+  provider: ServerProvider,
+  hidden: ReadonlySet<string>,
+): ReadonlyArray<ServerProvider["models"][number]> {
+  if (hidden.size === 0) return provider.models;
+  return provider.models.filter((model) => !hidden.has(model.slug));
+}
+
+const NO_SUBAGENT_MODELS = "No models are allowed for subagents.";
 
 /**
  * Checks requested option selections for duplicates and, when the model
@@ -768,6 +787,14 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const serverSettings = yield* ServerSettingsService.ServerSettingsService;
+
+  const loadSubagentSettings = serverSettings.getSettings.pipe(
+    Effect.mapError((error) =>
+      failure("orchestration_error", `Could not read subagent model settings: ${error.message}`),
+    ),
+  );
+
   const projects = yield* ProjectService.ProjectService;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
@@ -999,6 +1026,8 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
+    /** Subagent allowlist. Top-level thread creation leaves this unset. */
+    readonly enforceSubagentAllowlist?: boolean;
   }): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const requestedInstanceId = input.target?.providerInstanceId;
@@ -1086,6 +1115,15 @@ const make = Effect.gen(function* () {
           "model_unavailable",
           `Model ${requestedModel} is not advertised by provider ${instanceId}.`,
         );
+      }
+      if (input.enforceSubagentAllowlist === true) {
+        const settings = yield* loadSubagentSettings;
+        if (hiddenSubagentModels(settings, instanceId).has(model)) {
+          return yield* failure(
+            "model_unavailable",
+            `Model ${model} is not allowed as a subagent on provider ${instanceId}.`,
+          );
+        }
       }
 
       const requestedOptions = input.target?.options;
@@ -1460,6 +1498,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const providers = yield* loadProviders;
+        const settings = yield* loadSubagentSettings;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
         return {
           parentThreadId: parent?.thread.id ?? null,
@@ -1468,22 +1507,32 @@ const make = Effect.gen(function* () {
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
           providers: providers.map((provider) => {
-            const constraints = providerConstraints(
-              provider,
-              orchestrationCapableInstanceIds.has(provider.instanceId),
-            );
+            const hidden = hiddenSubagentModels(settings, provider.instanceId);
+            const allowedModels = modelsAllowedForSubagents(provider, hidden);
+            const constraints = [
+              ...providerConstraints(
+                provider,
+                orchestrationCapableInstanceIds.has(provider.instanceId),
+              ),
+            ];
+            if (
+              constraints.length === 0 &&
+              provider.models.length > 0 &&
+              allowedModels.length === 0
+            ) {
+              constraints.push(NO_SUBAGENT_MODELS);
+            }
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
               displayName: provider?.displayName ?? null,
-              models:
-                provider?.models.map((model) => ({
-                  id: model.slug,
-                  label: model.name ?? null,
-                  ...(model.capabilities?.optionDescriptors === undefined
-                    ? {}
-                    : { options: model.capabilities.optionDescriptors }),
-                })) ?? [],
+              models: allowedModels.map((model) => ({
+                id: model.slug,
+                label: model.name ?? null,
+                ...(model.capabilities?.optionDescriptors === undefined
+                  ? {}
+                  : { options: model.capabilities.optionDescriptors }),
+              })),
               canRunChildTask: constraints.length === 0,
               canRunCrossProviderChildTask: constraints.length === 0,
               constraints: [...constraints],
@@ -1522,6 +1571,7 @@ const make = Effect.gen(function* () {
           parent,
           target: input.target,
           providers,
+          enforceSubagentAllowlist: true,
         });
         const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         const interactionMode = yield* resolveInteractionMode(
@@ -2116,5 +2166,6 @@ export const layer: Layer.Layer<
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
+  | ServerSettingsService.ServerSettingsService
   | ProjectService.ProjectService
 > = Layer.effect(OrchestratorMcpService, make);

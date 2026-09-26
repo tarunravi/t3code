@@ -347,6 +347,28 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(settingsState.updateSettings).not.toHaveBeenCalled();
   });
 
+  it("saves the subagent model list on the server, separate from the picker", () => {
+    atoms.providers = [provider()];
+    const panel = renderPanel();
+    const editor = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "editor",
+    );
+    expect(editor).not.toBeNull();
+    if (!editor) throw new Error("Provider editor was not rendered");
+    (editor.props.onHiddenSubagentModelsChange as (models: string[]) => void)(["gpt-5.4"]);
+    expect(settingsState.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["gpt-5.4"] } },
+    });
+    expect(settingsState.updateClientSettings).not.toHaveBeenCalled();
+
+    settingsState.updateSettings.mockClear();
+    (editor.props.onHiddenSubagentModelsChange as (models: string[]) => void)([]);
+    expect(settingsState.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      subagentModelPreferences: { [codexId]: null },
+    });
+  });
+
   it("does not substitute another account when the requested instance was removed", () => {
     atoms.providers = [provider()];
     const panel = renderPanel({ targetInstanceId: customId });
