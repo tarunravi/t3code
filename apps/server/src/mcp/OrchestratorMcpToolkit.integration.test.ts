@@ -73,6 +73,7 @@ import {
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
@@ -632,6 +633,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(registryLayer),
             Layer.provide(providerRegistryLayer),
             Layer.provide(scheduledTaskStubLayer),
+            Layer.provide(ServerSettings.layerTest()),
             Layer.provide(
               Layer.mock(ProjectService.ProjectService)({
                 getById: (id) =>
@@ -3570,6 +3572,7 @@ describe("orchestrator MCP toolkit", () => {
           ),
           Layer.provide(providerRegistryLayer),
           Layer.provide(unusedScheduledTaskStubLayer),
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(NodeServices.layer),
         );
