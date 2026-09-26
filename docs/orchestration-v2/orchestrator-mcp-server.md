@@ -191,7 +191,7 @@ Returns:
 
 - the inherited provider instance and model;
 - the parent runtime and interaction modes;
-- registered provider instances and advertised models;
+- registered provider instances and the models allowed for subagents (independent of the composer picker);
 - whether each provider can run a child task; and
 - feature flags for polling, cancellation, and batch thread creation.
 

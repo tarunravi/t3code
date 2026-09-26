@@ -24,6 +24,7 @@ import { ThreadManagementService } from "../orchestration-v2/ThreadManagementSer
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
@@ -63,6 +64,7 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -166,6 +168,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -232,6 +235,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -301,6 +305,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -491,6 +496,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           forkShadow,
         ];
         const dependencies = Layer.mergeAll(
+          ServerSettings.layerTest(),
           NodeServices.layer,
           Layer.mock(ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -605,6 +611,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const dependencies = Layer.mergeAll(
+          ServerSettings.layerTest(),
           NodeServices.layer,
           Layer.mock(ThreadManagementService)({
             getThreadRecords: (threadId) =>
@@ -698,6 +705,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       };
       let delegated = false;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -773,6 +781,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         checkedAt: "2026-09-13T00:00:00.000Z",
       });
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -907,6 +916,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
           let delegated = false;
           const dependencies = Layer.mergeAll(
+            ServerSettings.layerTest(),
             NodeServices.layer,
             Layer.mock(ThreadManagementService)({
               getThreadRecords: (threadId) =>
@@ -1026,5 +1036,69 @@ describe("OrchestratorMcpService provider resolution", () => {
           }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
         }
       }),
+  );
+
+  it.effect("advertises and accepts only models allowed for subagents", () =>
+    Effect.gen(function* () {
+      const codex = providerSnapshot({
+        instanceId: codexInstanceId,
+        driver: ProviderDriverKind.make("codex"),
+        model: "gpt-5.4",
+      });
+      const codexModels = [
+        { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null },
+        { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol", isCustom: false, capabilities: null },
+      ];
+      const antigravity = providerSnapshot({
+        instanceId: antigravityInstanceId,
+        driver: ProviderDriverKind.make("antigravity"),
+        model: "ant-model",
+      });
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest({
+          subagentModelPreferences: {
+            [codexInstanceId]: { hiddenModels: ["gpt-5.4"] },
+            [antigravityInstanceId]: { hiddenModels: ["ant-model"] },
+          },
+        }),
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(parentProjection([])),
+        }),
+        Layer.mock(ProviderRegistry)({
+          getProviders: Effect.succeed([{ ...codex, models: codexModels }, antigravity]),
+        }),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+        Layer.mock(ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const capabilities = yield* service.capabilities(scope);
+        const byId = new Map(
+          capabilities.providers.map((provider) => [provider.providerInstanceId, provider]),
+        );
+        assert.deepEqual(
+          byId.get(codexInstanceId)?.models.map((model) => model.id),
+          ["gpt-5.6-sol"],
+        );
+        assert.isTrue(byId.get(codexInstanceId)?.canRunChildTask);
+        assert.deepEqual(byId.get(antigravityInstanceId)?.models, []);
+        assert.isFalse(byId.get(antigravityInstanceId)?.canRunChildTask);
+        assert.deepEqual(byId.get(antigravityInstanceId)?.constraints, [
+          "No models are allowed for subagents.",
+        ]);
+
+        const denied = yield* service
+          .delegateTask(scope, {
+            task: "Look at the diff.",
+            target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" },
+            mode: "async",
+          })
+          .pipe(Effect.flip);
+        assert.equal(denied.code, "model_unavailable");
+        assert.isTrue(denied.message.includes("not allowed as a subagent"));
+      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+    }),
   );
 });
