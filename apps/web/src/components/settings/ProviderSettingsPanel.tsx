@@ -961,6 +961,18 @@ export function EnvironmentProviderSettings({
     });
   };
 
+  const updateSubagentModelPreferences = (
+    instanceId: ProviderInstanceId,
+    nextHiddenModels: ReadonlyArray<string>,
+  ) => {
+    const hiddenModels = [...new Set(nextHiddenModels.filter((slug) => slug.trim().length > 0))];
+    updateSettings({
+      subagentModelPreferences: {
+        [instanceId]: hiddenModels.length === 0 ? null : { hiddenModels },
+      },
+    });
+  };
+
   const updateProviderFavoriteModels = (
     instanceId: ProviderInstanceId,
     nextFavoriteModels: ReadonlyArray<string>,
@@ -1024,6 +1036,8 @@ export function EnvironmentProviderSettings({
       hiddenModels: [],
       modelOrder: [],
     };
+    const hiddenSubagentModels =
+      settings.subagentModelPreferences?.[row.instanceId]?.hiddenModels ?? [];
     const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
       favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
     );
@@ -1108,6 +1122,7 @@ export function EnvironmentProviderSettings({
           ) : null
         }
         hiddenModels={modelPreferences.hiddenModels}
+        hiddenSubagentModels={hiddenSubagentModels}
         favoriteModels={favoriteModels}
         modelOrder={modelPreferences.modelOrder}
         onHiddenModelsChange={(hiddenModels) =>
@@ -1115,6 +1130,9 @@ export function EnvironmentProviderSettings({
             ...modelPreferences,
             hiddenModels,
           })
+        }
+        onHiddenSubagentModelsChange={(hiddenModels) =>
+          updateSubagentModelPreferences(row.instanceId, hiddenModels)
         }
         onFavoriteModelsChange={(next) => updateProviderFavoriteModels(row.instanceId, next)}
         onModelOrderChange={(modelOrder) =>
