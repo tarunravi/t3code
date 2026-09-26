@@ -894,6 +894,18 @@ export function EnvironmentProviderSettings({
     }
   };
 
+  const updateSubagentModelPreferences = (
+    instanceId: ProviderInstanceId,
+    nextHiddenModels: ReadonlyArray<string>,
+  ) => {
+    const hiddenModels = [...new Set(nextHiddenModels.filter((slug) => slug.trim().length > 0))];
+    updateSettings({
+      subagentModelPreferences: {
+        [instanceId]: hiddenModels.length === 0 ? null : { hiddenModels },
+      },
+    });
+  };
+
   const resetDefaultInstance = async (driverKind: ProviderDriverKind) => {
     const result = await persistProviderInstance({
       operation: "remove",
@@ -924,6 +936,8 @@ export function EnvironmentProviderSettings({
       hiddenModels: [],
       modelOrder: [],
     };
+    const hiddenSubagentModels =
+      settings.subagentModelPreferences?.[row.instanceId]?.hiddenModels ?? [];
     const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
       favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
     );
@@ -1075,6 +1089,7 @@ export function EnvironmentProviderSettings({
           ) : null
         }
         hiddenModels={modelPreferences.hiddenModels}
+        hiddenSubagentModels={hiddenSubagentModels}
         favoriteModels={favoriteModels}
         modelOrder={modelPreferences.modelOrder}
         onHiddenModelsChange={(next, affectedModels) => {
@@ -1090,6 +1105,9 @@ export function EnvironmentProviderSettings({
             })),
           });
         }}
+        onHiddenSubagentModelsChange={(hiddenModels) =>
+          updateSubagentModelPreferences(row.instanceId, hiddenModels)
+        }
         onToggleFavorite={(model) => {
           void toggleModelFavorite(row.instanceId, model);
         }}

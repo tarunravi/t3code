@@ -20,6 +20,19 @@ describe("groupModelsForDisplay", () => {
     // A custom model is never hidden, even if its slug is in the hidden set.
     expect(display.map((entry) => entry.slug)).toEqual(["c", "d", "b", "custom", "a"]);
   });
+
+  it("hides a custom model when the subagent list asks for it", () => {
+    const models = [model("a"), model("custom", true)];
+
+    const display = groupModelsForDisplay(models, {
+      favoriteModels: new Set(),
+      hiddenModels: new Set(["custom"]),
+      modelOrder: [],
+      hideCustomModels: true,
+    });
+
+    expect(display.map((entry) => entry.slug)).toEqual(["a", "custom"]);
+  });
 });
 
 describe("nextHiddenModelsForBulkToggle", () => {
@@ -27,6 +40,18 @@ describe("nextHiddenModelsForBulkToggle", () => {
     const models = [model("a"), model("b"), model("custom", true)];
 
     expect(nextHiddenModelsForBulkToggle(models, ["a"])).toEqual(["a", "b"]);
+  });
+
+  it("hides custom models when the subagent bulk action includes them", () => {
+    const models = [model("a"), model("custom", true)];
+
+    expect(nextHiddenModelsForBulkToggle(models, [], { includeCustom: true })).toEqual([
+      "a",
+      "custom",
+    ]);
+    expect(
+      nextHiddenModelsForBulkToggle(models, ["a", "custom", "legacy"], { includeCustom: true }),
+    ).toEqual(["legacy"]);
   });
 
   it("shows every built-in model while preserving unrelated hidden entries", () => {

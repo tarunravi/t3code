@@ -1287,6 +1287,20 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   /**
+   * Models withheld from subagent delegation, per provider instance.
+   * Independent of the device-local composer picker. An absent entry allows
+   * every model that provider advertises. Agents read this list from
+   * `orchestrator_capabilities`.
+   */
+  subagentModelPreferences: Schema.Record(
+    ProviderInstanceId,
+    Schema.Struct({
+      hiddenModels: Schema.Array(Schema.String).pipe(
+        Schema.withDecodingDefault(Effect.succeed([])),
+      ),
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /**
    * Beta: review guides on this server. Off hides the Guide tab in every client and refuses to
    * write guides, for people and agents alike.
    */
@@ -1609,6 +1623,17 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   sideChatModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  /** Per-instance replacement. `null` removes that instance's entry. */
+  subagentModelPreferences: Schema.optionalKey(
+    Schema.Record(
+      ProviderInstanceId,
+      Schema.NullOr(
+        Schema.Struct({
+          hiddenModels: Schema.Array(Schema.String),
+        }),
+      ),
+    ),
+  ),
   reviewGuidesEnabled: Schema.optionalKey(Schema.Boolean),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
