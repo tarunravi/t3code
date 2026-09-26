@@ -280,6 +280,9 @@ export function applyServerSettingsPatch(
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
+    // Per-instance replacement. `null` removes an entry; deepMerge would keep
+    // hidden slugs the client meant to clear.
+    subagentModelPreferences: subagentModelPreferencesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     // Already translated into `projectSettingsOverrides` above; the legacy
@@ -399,6 +402,14 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.sideChatModelSelection !== undefined
       ? { sideChatModelSelection: patch.sideChatModelSelection }
+      : {}),
+    ...(subagentModelPreferencesPatch !== undefined
+      ? {
+          subagentModelPreferences: mergeSettingsEntries(
+            current.subagentModelPreferences,
+            subagentModelPreferencesPatch,
+          ),
+        }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
     ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),

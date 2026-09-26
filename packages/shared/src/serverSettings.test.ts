@@ -558,6 +558,34 @@ describe("serverSettings helpers", () => {
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
   });
 
+  it("replaces one provider's subagent model list without clobbering another", () => {
+    const codexId = ProviderInstanceId.make("codex");
+    const cursorId = ProviderInstanceId.make("cursor");
+    const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["gpt-5.4"] } },
+    });
+    const added = applyServerSettingsPatch(current, {
+      subagentModelPreferences: { [cursorId]: { hiddenModels: ["grok-4.6"] } },
+    });
+    expect(added.subagentModelPreferences).toEqual({
+      [codexId]: { hiddenModels: ["gpt-5.4"] },
+      [cursorId]: { hiddenModels: ["grok-4.6"] },
+    });
+
+    const replaced = applyServerSettingsPatch(added, {
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["gpt-5.5"] } },
+    });
+    expect(replaced.subagentModelPreferences[codexId]).toEqual({ hiddenModels: ["gpt-5.5"] });
+    expect(replaced.subagentModelPreferences[cursorId]).toEqual({ hiddenModels: ["grok-4.6"] });
+
+    const cleared = applyServerSettingsPatch(replaced, {
+      subagentModelPreferences: { [codexId]: null },
+    });
+    expect(cleared.subagentModelPreferences).toEqual({
+      [cursorId]: { hiddenModels: ["grok-4.6"] },
+    });
+  });
+
   it("replaces and removes individual usage prices without clobbering other models", () => {
     const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
     const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

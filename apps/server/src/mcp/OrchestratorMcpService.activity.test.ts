@@ -17,6 +17,7 @@ import { expect, it } from "vite-plus/test";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   ThreadManagementService,
   ThreadManagementThreadNotFoundError,
@@ -144,6 +145,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -197,6 +199,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -308,6 +311,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -441,6 +445,7 @@ it("readThread reaches a thread the user attached as context, but not one an age
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
