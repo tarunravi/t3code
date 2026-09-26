@@ -28,6 +28,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
@@ -182,6 +183,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -401,6 +403,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );
@@ -539,6 +542,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
           list: () => Effect.succeed([]),
         } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
         NodeCrypto.layer,
+        ServerSettings.layerTest(),
       ),
     ),
   );

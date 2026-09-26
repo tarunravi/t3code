@@ -93,6 +93,45 @@ describe("serverSettings helpers", () => {
     expect([on.idleCompaction, on.compactIdleThreads]).toEqual(["beforeCacheExpires", true]);
   });
 
+  it("sets and clears the provider fallback as a pair", () => {
+    const configured = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      fallbackProviderInstanceId: ProviderInstanceId.make("claude"),
+      fallbackModel: "claude-sonnet-4-5",
+    });
+    expect(configured.fallbackProviderInstanceId).toBe("claude");
+    expect(configured.fallbackModel).toBe("claude-sonnet-4-5");
+    expect(
+      applyServerSettingsPatch(configured, {
+        fallbackProviderInstanceId: null,
+        fallbackModel: null,
+      }),
+    ).toMatchObject({ fallbackProviderInstanceId: null, fallbackModel: null });
+  });
+
+  it("turns live thinking on and off without touching other settings", () => {
+    const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { liveThinking: true });
+    const normalizedDefaults = { ...DEFAULT_SERVER_SETTINGS, idleCompaction: "onReturn" };
+    expect(on).toEqual({ ...normalizedDefaults, liveThinking: true });
+    expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(normalizedDefaults);
+    expect(applyServerSettingsPatch(on, { enableProviderUpdateChecks: false }).liveThinking).toBe(
+      true,
+    );
+  });
+
+  it("preserves explicit idle compaction modes and customized settings when toggling live thinking", () => {
+    for (const idleCompaction of ["off", "onReturn", "beforeCacheExpires"] as const) {
+      const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+        idleCompaction,
+        enableProviderUpdateChecks: false,
+        fallbackProviderInstanceId: ProviderInstanceId.make("claude"),
+        fallbackModel: "claude-sonnet-4-5",
+      });
+      const on = applyServerSettingsPatch(current, { liveThinking: true });
+      expect(on).toEqual({ ...current, liveThinking: true });
+      expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(current);
+    }
+  });
+
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
@@ -587,6 +626,34 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { usageLimitSources: { [hubA]: null } });
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
+  });
+
+  it("replaces one provider's subagent model list without clobbering another", () => {
+    const codexId = ProviderInstanceId.make("codex");
+    const cursorId = ProviderInstanceId.make("cursor");
+    const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["gpt-5.4"] } },
+    });
+    const added = applyServerSettingsPatch(current, {
+      subagentModelPreferences: { [cursorId]: { hiddenModels: ["grok-4.6"] } },
+    });
+    expect(added.subagentModelPreferences).toEqual({
+      [codexId]: { hiddenModels: ["gpt-5.4"] },
+      [cursorId]: { hiddenModels: ["grok-4.6"] },
+    });
+
+    const replaced = applyServerSettingsPatch(added, {
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["gpt-5.5"] } },
+    });
+    expect(replaced.subagentModelPreferences[codexId]).toEqual({ hiddenModels: ["gpt-5.5"] });
+    expect(replaced.subagentModelPreferences[cursorId]).toEqual({ hiddenModels: ["grok-4.6"] });
+
+    const cleared = applyServerSettingsPatch(replaced, {
+      subagentModelPreferences: { [codexId]: null },
+    });
+    expect(cleared.subagentModelPreferences).toEqual({
+      [cursorId]: { hiddenModels: ["grok-4.6"] },
+    });
   });
 
   it("upserts and removes secretProviders per entry so concurrent edits cannot clobber", () => {
