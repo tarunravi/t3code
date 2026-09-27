@@ -28,6 +28,7 @@ import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import {
   cursorMcpServers,
+  cursorModelContextWindowTokens,
   cursorRuntimeAgentPolicy,
   cursorSdkModelSelection,
   makeCursorAgentOptions,
@@ -694,6 +695,36 @@ describe("CursorAdapterV2", () => {
         ],
       },
     );
+  });
+
+  it("uses the selected Cursor context window, and Grok 4.7's 500k default", () => {
+    const instanceId = ProviderInstanceId.make("cursor");
+    assert.equal(
+      cursorModelContextWindowTokens({
+        instanceId,
+        model: "grok-4.7",
+        options: [{ id: "contextWindow", value: "500k" }],
+      }),
+      500_000,
+    );
+    assert.equal(cursorModelContextWindowTokens({ instanceId, model: "grok-4.7" }), 500_000);
+    assert.equal(
+      cursorModelContextWindowTokens({
+        instanceId,
+        model: "grok-4.7",
+        options: [{ id: "contextWindow", value: "1m" }],
+      }),
+      1_000_000,
+    );
+    assert.equal(
+      cursorModelContextWindowTokens({
+        instanceId,
+        model: "claude-opus-4-8",
+        options: [{ id: "contextWindow", value: "300k" }],
+      }),
+      300_000,
+    );
+    assert.isUndefined(cursorModelContextWindowTokens({ instanceId, model: "claude-opus-4-8" }));
   });
 
   it("omits Cursor's rejected explicit Grok 4.7 500k context parameter", () => {

@@ -46,7 +46,10 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { CursorTransportFailure } from "../../provider/acp/CursorTransportFailure.ts";
-import { cursorSdkModelSelection } from "../../provider/cursorSdkModel.ts";
+import {
+  cursorModelContextWindowTokens,
+  cursorSdkModelSelection,
+} from "../../provider/cursorSdkModel.ts";
 import {
   discoverCursorSkills,
   hasCursorSkillMention,
@@ -101,7 +104,10 @@ import {
   type CursorAgentSdkRunnerShape,
   type CursorAgentSdkSession,
 } from "./CursorAgentSdk.ts";
-export { cursorSdkModelSelection } from "../../provider/cursorSdkModel.ts";
+export {
+  cursorModelContextWindowTokens,
+  cursorSdkModelSelection,
+} from "../../provider/cursorSdkModel.ts";
 
 export const CURSOR_DRIVER_KIND = CURSOR_PROVIDER;
 export const CURSOR_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CURSOR_DRIVER_KIND);
@@ -2378,6 +2384,7 @@ export function makeCursorAdapterV2(
           driver: CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          getModelContextWindow: cursorModelContextWindowTokens,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ensureThread: Effect.fn("CursorAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapterV2EnsureThreadInput) {
