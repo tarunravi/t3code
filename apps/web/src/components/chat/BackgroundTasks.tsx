@@ -333,7 +333,7 @@ export function BackgroundTasksBannerPopover(props: {
         sideOffset={8}
         padding="compact"
         anchor={() => triggerRef.current?.closest('[data-slot="composer-banner"]') ?? null}
-        className="w-(--anchor-width) max-w-[calc(100vw-2rem)]"
+        width="anchor"
         data-background-tasks-popover
       >
         <div className="flex min-w-0 flex-col gap-2">
