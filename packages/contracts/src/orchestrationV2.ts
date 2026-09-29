@@ -689,6 +689,8 @@ export const OrchestrationV2Run = Schema.Struct({
   checkpointId: Schema.NullOr(CheckpointId),
   contextHandoffId: Schema.NullOr(ContextHandoffId),
   restartContinuationOfRunId: Schema.optional(RunId),
+  /** A one-time provider fallback retry of the failed run. */
+  automaticFallbackOfRunId: Schema.optional(RunId),
   delegatedTaskId: Schema.optional(NodeId),
   workStartedAt: Schema.optional(Schema.DateTimeUtc),
   restartCancelledBackgroundWork: Schema.optional(
@@ -991,6 +993,13 @@ const PendingBackgroundTaskFields = {
    * subagent. Only the agent knows whether a command is a wait or a dev server it left running.
    */
   awaited: Schema.optional(Schema.Literal(true)),
+  /** Provider tool call that started the task (Claude Bash `tool_use_id`). */
+  toolUseId: Schema.optional(TrimmedNonEmptyString),
+  /** Shell command line from that tool call, when the task runs a command. */
+  command: Schema.optional(TrimmedNonEmptyString),
+  /** Host path the provider streams the task's output to. Only the server reads it. */
+  outputFile: Schema.optional(TrimmedNonEmptyString),
+  startedAt: Schema.optional(IsoDateTime),
 };
 
 export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
@@ -1007,12 +1016,7 @@ export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
     Schema.Struct({ ...PendingBackgroundTaskFields, kind: Schema.Literal("background_task") }),
   ],
   (kind) => Schema.Struct({ ...PendingBackgroundTaskFields, kind }),
-  ({ taskId, description, parentTaskId }) => ({
-    taskId,
-    ...(description === undefined ? {} : { description }),
-    ...(parentTaskId === undefined ? {} : { parentTaskId }),
-    kind: "background_task",
-  }),
+  ({ kind: _kind, ...fields }) => ({ ...fields, kind: "background_task" }),
 );
 export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2PendingBackgroundTask.Type;
 
@@ -3106,6 +3110,8 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: Schema.optional(ModelSelection),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
+    /** Internal marker for the one automatic retry after consecutive provider failures. */
+    automaticFallbackOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
@@ -3515,6 +3521,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getOlderSettledThreads: "orchestration.getOlderSettledThreads",
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
+  getBackgroundTaskOutput: "orchestration.getBackgroundTaskOutput",
+  stopBackgroundTask: "orchestration.stopBackgroundTask",
   stopWorkflow: "orchestration.stopWorkflow",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
@@ -3994,6 +4002,50 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedError<Orch
   }
 }
 
+export const OrchestrationV2GetBackgroundTaskOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: TrimmedNonEmptyString,
+});
+export type OrchestrationV2GetBackgroundTaskOutputInput =
+  typeof OrchestrationV2GetBackgroundTaskOutputInput.Type;
+
+export const OrchestrationV2GetBackgroundTaskOutputResult = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  /** The last lines of the task's output, bounded by line count and bytes. */
+  text: Schema.String,
+  /** True when earlier output was left out. */
+  truncated: Schema.Boolean,
+});
+export type OrchestrationV2GetBackgroundTaskOutputResult =
+  typeof OrchestrationV2GetBackgroundTaskOutputResult.Type;
+
+const BACKGROUND_TASK_ERROR_MESSAGES = {
+  "task-not-found": "This background task is no longer running.",
+  "output-unavailable": "This background task has no readable output yet.",
+  "read-failed": "Background task output could not be read.",
+  "stop-unsupported": "This provider cannot stop a single background task.",
+  "stop-failed": "The background task could not be stopped.",
+} as const;
+
+export class OrchestrationBackgroundTaskError extends Schema.TaggedError<OrchestrationBackgroundTaskError>()(
+  "OrchestrationBackgroundTaskError",
+  {
+    reason: Schema.Literals([
+      "task-not-found",
+      "output-unavailable",
+      "read-failed",
+      "stop-unsupported",
+      "stop-failed",
+    ]),
+    taskId: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return BACKGROUND_TASK_ERROR_MESSAGES[this.reason];
+  }
+}
+
 export const OrchestrationV2SearchThreadInput = Schema.Struct({
   threadId: ThreadId,
   skills: Schema.optionalKey(
@@ -4090,6 +4142,14 @@ export const OrchestrationV2RpcSchemas = {
   getWorkflowScript: {
     input: OrchestrationV2GetWorkflowScriptInput,
     output: OrchestrationV2GetWorkflowScriptResult,
+  },
+  getBackgroundTaskOutput: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: OrchestrationV2GetBackgroundTaskOutputResult,
+  },
+  stopBackgroundTask: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: Schema.Struct({}),
   },
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,

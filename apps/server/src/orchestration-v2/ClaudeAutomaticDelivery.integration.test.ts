@@ -170,6 +170,7 @@ it.effect.each(deliveries)(
                 backgroundTasks: () => Effect.succeed(false),
                 stopTask: () => Effect.void,
                 interrupt: Effect.die("automatic delivery must never interrupt"),
+                stopTask: () => Effect.void,
                 close: Effect.void,
               }),
             forkSession: () => Effect.die("unused"),
