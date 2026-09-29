@@ -324,6 +324,35 @@ describe("ProviderContinuationService", () => {
     });
   });
 
+  it.effect("releases an adapter wake request whose dispatch fails", () => {
+    return Effect.gen(function* () {
+      const released = yield* Deferred.make<void>();
+      const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(projection),
+        dispatch: () => Effect.fail(new Error("simulated dispatch failure") as never),
+      });
+      const worker = ProviderContinuationService.workerLive.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, threads),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        // Adapter wakes are never retried, so the adapter's sticky request
+        // must be released or every later wake on the thread is dropped.
+        yield* requests.offer({
+          ...request(),
+          clearIfCurrent: () => Deferred.succeed(released, undefined).pipe(Effect.asVoid),
+        });
+        yield* Deferred.await(released);
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, worker)),
+        Effect.scoped,
+      );
+    });
+  });
+
   it.effect("backs off repeated delegated completion dispatch failures", () => {
     return Effect.gen(function* () {
       const attempts = yield* Ref.make(0);
