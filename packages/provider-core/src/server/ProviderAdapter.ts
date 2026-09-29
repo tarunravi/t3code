@@ -616,6 +616,16 @@ export interface ProviderAdapterV2SessionRuntime {
     /** A delayed Stop must not interrupt a task resumed after this request. */
     readonly requestedAt?: NonNullable<OrchestrationV2Subagent["startedAt"]>;
   }) => Effect.Effect<void | ProviderAdapterV2SubagentOutcome, ProviderAdapterV2Error>;
+  /**
+   * Stops one task on the provider thread's background roster without
+   * interrupting the thread. Absent when the provider cannot target a task.
+   */
+  readonly stopBackgroundTask?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskId: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   */
   readonly unloadThread?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
