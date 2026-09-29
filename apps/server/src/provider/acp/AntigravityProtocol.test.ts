@@ -8,7 +8,9 @@ import {
   isAntigravityOpenCommand,
   antigravityApprovalOptions,
   antigravitySubagentOutput,
+  extractAntigravitySubagentDetails,
   isAntigravitySubagentReplayStart,
+  isAntigravitySubagentTitle,
   classifyAntigravitySubagentToolCall,
   isAntigravityUserInputRequest,
   makeAntigravityUserInputResponse,
@@ -80,6 +82,130 @@ describe("native Antigravity subagent tools", () => {
     expect(
       antigravitySubagentOutput({ toolCallId: "trajectory:4", data: { rawOutput: {} } }),
     ).toBeUndefined();
+    expect(
+      antigravitySubagentOutput({
+        toolCallId: "trajectory:4",
+        data: {
+          rawOutput: {
+            content: [
+              { type: "text", text: "Subagent completed work." },
+              { type: "image", data: "discarded" },
+            ],
+          },
+        },
+      }),
+    ).toBe("Subagent completed work.");
+  });
+
+  it("extracts subagent prompt, title, and model from rawInput object and json string", () => {
+    const singleSubagent = {
+      toolCallId: "subagent:1",
+      status: "inProgress" as const,
+      title: "Running start_subagent",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Model: "inherit",
+              Prompt: "You are the Music Generation Specialist for the video edit.",
+              Role: "Music Generator",
+              TypeName: "self",
+            },
+          ],
+          toolAction: "Launching music generation subagent",
+          toolSummary: "Spawn subagent for upbeat music generation",
+        },
+      },
+    };
+
+    const details = extractAntigravitySubagentDetails(singleSubagent);
+    expect(details.title).toBe("Music Generator");
+    expect(details.prompt).toBe("You are the Music Generation Specialist for the video edit.");
+    expect(details.model).toBeUndefined();
+
+    // Works with JSON string rawInput and explicit model
+    const jsonSubagent = {
+      toolCallId: "subagent:2",
+      status: "inProgress" as const,
+      title: "Running start_subagent",
+      data: {
+        rawInput: JSON.stringify({
+          Subagents: [
+            {
+              Model: "gemini-2.5-pro",
+              Prompt: "Refactor the database queries.",
+              Role: "Database Optimizer",
+            },
+          ],
+        }),
+      },
+    };
+    const jsonDetails = extractAntigravitySubagentDetails(jsonSubagent);
+    expect(jsonDetails.title).toBe("Database Optimizer");
+    expect(jsonDetails.prompt).toBe("Refactor the database queries.");
+    expect(jsonDetails.model).toBe("gemini-2.5-pro");
+  });
+
+  it("extracts multiple subagents formatting a multi-subagent title and prompt", () => {
+    const multiSubagents = {
+      toolCallId: "subagent:3",
+      status: "inProgress" as const,
+      title: "Running start_subagent",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Prompt: "Research the API endpoints.",
+              Role: "Researcher",
+              Model: "gemini-2.5-flash",
+            },
+            {
+              Prompt: "Write integration tests.",
+              Role: "Test Engineer",
+              Model: "gemini-2.5-flash",
+            },
+          ],
+        },
+      },
+    };
+
+    const details = extractAntigravitySubagentDetails(multiSubagents);
+    expect(details.title).toBe("Researcher, Test Engineer");
+    expect(details.prompt).toContain("### Subagent 1: Researcher");
+    expect(details.prompt).toContain("Research the API endpoints.");
+    expect(details.prompt).toContain("### Subagent 2: Test Engineer");
+    expect(details.prompt).toContain("Write integration tests.");
+    expect(details.model).toBe("gemini-2.5-flash");
+  });
+
+  it("handles flat input objects and prevents generic placeholder prompts", () => {
+    const flatSubagent = {
+      toolCallId: "subagent:4",
+      status: "inProgress" as const,
+      title: "Running start_subagent",
+      data: {
+        rawInput: {
+          prompt: "Analyze benchmark results",
+          role: "Benchmarker",
+        },
+      },
+    };
+    const flatDetails = extractAntigravitySubagentDetails(flatSubagent);
+    expect(flatDetails.title).toBe("Benchmarker");
+    expect(flatDetails.prompt).toBe("Analyze benchmark results");
+
+    // Generic title fallback
+    const emptySubagent = {
+      toolCallId: "subagent:5",
+      status: "inProgress" as const,
+      title: "Running start_subagent",
+      detail: "Running start_subagent",
+      data: {},
+    };
+    const emptyDetails = extractAntigravitySubagentDetails(emptySubagent);
+    expect(emptyDetails.title).toBe("Antigravity subagent");
+    expect(emptyDetails.prompt).toBe("Antigravity subagent");
+    expect(emptyDetails.prompt).not.toContain("Running start_subagent");
   });
 });
 
