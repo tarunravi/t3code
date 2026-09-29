@@ -356,13 +356,20 @@ export function isAntigravityOpenCommand(toolCall: AcpToolCallState): boolean {
  * or models. Reads the update's `_meta` from `data.meta`, or from the raw
  * notification when given.
  */
+const ANTIGRAVITY_SUBAGENT_TITLE_RE =
+  /^(?:Running\s+(?:start|invoke)_subagent|Run\s+(?:start|invoke)_subagent\?)$/;
+
+export function isAntigravitySubagentTitle(title: string | undefined): boolean {
+  return typeof title === "string" && ANTIGRAVITY_SUBAGENT_TITLE_RE.test(title);
+}
+
 export function classifyAntigravitySubagentToolCall(
   toolCall: AcpToolCallState,
   rawPayload?: unknown,
 ): "subagent" | "mcp" | undefined {
   if (
     (toolCall.kind !== undefined && toolCall.kind !== "other") ||
-    (toolCall.title !== "Running start_subagent" && toolCall.title !== "Run start_subagent?")
+    !isAntigravitySubagentTitle(toolCall.title)
   )
     return undefined;
   const update = Predicate.isObject(rawPayload) ? rawPayload.update : undefined;
@@ -383,5 +390,179 @@ export function isAntigravitySubagentReplayStart(rawPayload: unknown): boolean {
 
 export function antigravitySubagentOutput(toolCall: AcpToolCallState): string | undefined {
   const output = toolCall.data.rawOutput;
-  return typeof output === "string" && output.trim() ? boundText(output.trim()) : undefined;
+  if (typeof output === "string" && output.trim()) {
+    return boundText(output.trim());
+  }
+  if (Predicate.isObject(output) && Array.isArray((output as Record<string, unknown>).content)) {
+    const texts = ((output as Record<string, unknown>).content as unknown[])
+      .map((item) =>
+        Predicate.isObject(item) && typeof item.text === "string" ? item.text.trim() : "",
+      )
+      .filter((t) => t.length > 0);
+    if (texts.length > 0) {
+      return boundText(texts.join("\n"));
+    }
+  }
+  return undefined;
+}
+
+export interface AntigravitySubagentDetails {
+  readonly title?: string | undefined;
+  readonly prompt?: string | undefined;
+  readonly model?: string | undefined;
+}
+
+interface ExtractedSubagentItem {
+  readonly prompt?: string | undefined;
+  readonly role?: string | undefined;
+  readonly typeName?: string | undefined;
+  readonly description?: string | undefined;
+  readonly model?: string | undefined;
+}
+
+function parseSubagentRawInput(raw: unknown): Record<string, unknown> | undefined {
+  if (Predicate.isObject(raw) && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Predicate.isObject(parsed) && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isGenericSubagentText(text: string | undefined): boolean {
+  if (!text) return true;
+  const trimmed = text.trim();
+  return (
+    trimmed === "" ||
+    /^(?:Run(?:ning)?\s+)?(?:start|invoke)_subagent(?:\?)?$/i.test(trimmed) ||
+    /^Antigravity subagent(?: batch)?$/i.test(trimmed)
+  );
+}
+
+function cleanString(val: unknown): string | undefined {
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return undefined;
+}
+
+function extractItem(record: Record<string, unknown>): ExtractedSubagentItem {
+  const prompt =
+    cleanString(record.Prompt) ??
+    cleanString(record.prompt) ??
+    cleanString(record.Task) ??
+    cleanString(record.task) ??
+    cleanString(record.instructions) ??
+    cleanString(record.Instructions);
+
+  const role = cleanString(record.Role) ?? cleanString(record.role);
+
+  const typeName = cleanString(record.TypeName) ?? cleanString(record.typeName);
+
+  const description = cleanString(record.Description) ?? cleanString(record.description);
+
+  const rawModel = cleanString(record.Model) ?? cleanString(record.model);
+  const model = rawModel && rawModel.toLowerCase() !== "inherit" ? rawModel : undefined;
+
+  return { prompt, role, typeName, description, model };
+}
+
+export function extractAntigravitySubagentDetails(
+  toolCall: AcpToolCallState,
+): AntigravitySubagentDetails {
+  const rawInput = parseSubagentRawInput(toolCall.data.rawInput);
+  const toolSummary = cleanString(rawInput?.toolSummary) ?? cleanString(rawInput?.toolAction);
+
+  const subagentsRaw = Array.isArray(rawInput?.Subagents)
+    ? rawInput.Subagents
+    : Array.isArray(rawInput?.subagents)
+      ? rawInput.subagents
+      : undefined;
+
+  const items: ExtractedSubagentItem[] = [];
+  if (subagentsRaw && subagentsRaw.length > 0) {
+    for (const entry of subagentsRaw) {
+      if (Predicate.isObject(entry) && !Array.isArray(entry)) {
+        items.push(extractItem(entry as Record<string, unknown>));
+      }
+    }
+  } else if (rawInput) {
+    const single = extractItem(rawInput);
+    if (single.prompt || single.role || single.typeName || single.description || single.model) {
+      items.push(single);
+    }
+  }
+
+  let title: string | undefined;
+  let prompt: string | undefined;
+  let model: string | undefined;
+
+  if (items.length === 1) {
+    const item = items[0]!;
+    title =
+      item.role ??
+      item.description ??
+      (!isGenericSubagentText(toolSummary) ? toolSummary : undefined) ??
+      item.typeName ??
+      "Antigravity subagent";
+    prompt = item.prompt;
+    model = item.model;
+  } else if (items.length > 1) {
+    const roles = items
+      .map((item, idx) => item.role ?? item.typeName ?? `Subagent ${idx + 1}`)
+      .filter((r) => r.length > 0);
+    const joinedRoles = roles.join(", ");
+    if (joinedRoles.length <= 60) {
+      title = joinedRoles;
+    } else {
+      const firstRole = items[0]?.role ?? items[0]?.typeName ?? "Subagent 1";
+      title = `${firstRole} (+${items.length - 1} more)`;
+    }
+
+    const promptBlocks = items
+      .map((item, idx) => {
+        const header = item.role ?? item.typeName ?? `Subagent ${idx + 1}`;
+        const body = item.prompt ?? "(no instructions)";
+        return `### Subagent ${idx + 1}: ${header}\n${body}`;
+      })
+      .join("\n\n");
+    prompt = promptBlocks;
+
+    const firstModel = items[0]?.model;
+    if (firstModel && items.every((i) => i.model === firstModel)) {
+      model = firstModel;
+    }
+  } else {
+    if (!isGenericSubagentText(toolSummary)) {
+      title = toolSummary;
+    }
+  }
+
+  if (isGenericSubagentText(title)) {
+    title = items.length > 1 ? `Antigravity subagents (${items.length})` : "Antigravity subagent";
+  }
+
+  if (!prompt) {
+    prompt =
+      antigravitySubagentOutput(toolCall) ??
+      (!isGenericSubagentText(toolCall.detail) ? toolCall.detail : undefined);
+  }
+
+  if (isGenericSubagentText(prompt)) {
+    prompt = title ?? "Delegated subagent task";
+  }
+
+  return { title, prompt, model };
 }
