@@ -14,6 +14,8 @@ import type {
   AnyProviderDriver,
   ProviderUsageReaderEnv,
 } from "@t3tools/provider-core/server/driver";
+import { OmpDriver, type OmpDriverEnv } from "./Drivers/OmpDriver.ts";
+import { ZCodeDriver, type ZCodeDriverEnv } from "./Drivers/ZCodeDriver.ts";
 
 export type BuiltInDriversEnv =
   | AcpRegistryDriverEnv
@@ -22,10 +24,11 @@ export type BuiltInDriversEnv =
   | CodexDriverEnv
   | CursorDriverEnv
   | GrokDriverEnv
+  | OmpDriverEnv
   | OpenCodeDriverEnv
   | PiDriverEnv
+  | ZCodeDriverEnv
   | MuseDriverEnv;
-
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
   ClaudeDriver,
@@ -34,6 +37,8 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   OpenCodeDriver,
   AntigravityDriver,
   PiDriver,
+  ZCodeDriver,
+  OmpDriver,
   MuseDriver,
   AcpRegistryDriver,
 ];
