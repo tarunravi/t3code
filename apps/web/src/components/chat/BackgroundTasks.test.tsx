@@ -14,9 +14,15 @@ vi.mock("../ui/tooltip", () => ({
 import { BackgroundTaskList } from "./BackgroundTasks";
 
 const entries = [
-  { task: { taskId: "b1", command: "npm run dev" }, inspectable: true },
-  { task: { taskId: "b2", command: "python3 -m http.server 8765" }, inspectable: true },
-  { task: { taskId: "item", description: "Watching tests" }, inspectable: false },
+  { task: { kind: "command" as const, taskId: "b1", command: "npm run dev" }, inspectable: true },
+  {
+    task: { kind: "command" as const, taskId: "b2", command: "python3 -m http.server 8765" },
+    inspectable: true,
+  },
+  {
+    task: { kind: "command" as const, taskId: "item", description: "Watching tests" },
+    inspectable: false,
+  },
 ];
 
 describe("BackgroundTaskList", () => {

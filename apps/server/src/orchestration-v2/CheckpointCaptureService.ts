@@ -64,19 +64,29 @@ export const layer: Layer.Layer<
     }) {
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals, turnCheckpoints } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
+      // A stopped run is already terminal. Its checkpoint is the rollback point
+      // for the message after it, so capture leaves its status alone.
+      const stopped = run?.status === "interrupted" || run?.status === "cancelled";
 
       // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.
       if (
-        (run?.status === "completed" || run?.status === "interrupted") &&
-        run.checkpointId !== null
+        run !== undefined &&
+        run.checkpointId !== null &&
+        (run.status === "completed" || stopped)
       ) {
+        return;
+      }
+      // Rollback shares this effect lane, so it can only land before a capture
+      // runs, e.g. while a failed capture waits to retry. The workspace now
+      // holds the rollback target, and the run must stay discarded.
+      if (run?.status === "rolled_back") {
         return;
       }
 
       if (
         run === undefined ||
-        (run.status !== "waiting" && run.status !== "interrupted") ||
+        (run.status !== "waiting" && !stopped) ||
         rootNode === undefined ||
         scope === undefined ||
         rootNode.checkpointScopeId !== scope.id ||
@@ -89,15 +99,12 @@ export const layer: Layer.Layer<
           cause: "The persisted checkpoint capture target is incomplete or no longer waiting.",
         });
       }
-      // An interrupted run is already terminal, so it keeps its status and the
-      // next queued run may start while this capture is pending.
-      const interrupted = run.status === "interrupted";
 
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
         readyCheckpointOrdinals.includes(ordinalWithinScope);
-      if (interrupted) {
+      if (stopped) {
         // A stop can land before the run recorded its baseline. The provider
         // has not touched the workspace then, so the current tree is the
         // baseline; an existing baseline ref is left as is.
@@ -105,7 +112,7 @@ export const layer: Layer.Layer<
           .captureBaseline({ scope, ordinalWithinScope: baselineOrdinalWithinScope })
           .pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("orchestration V2 interrupted run baseline capture failed", {
+              Effect.logWarning("orchestration V2 stopped run baseline capture failed", {
                 runId: run.id,
                 cause: String(cause),
               }),
@@ -142,7 +149,7 @@ export const layer: Layer.Layer<
         capturedAt,
         // A queued run that already started recorded this boundary as its own
         // baseline; recapturing now could include that run's edits.
-        keepExistingRef: interrupted,
+        keepExistingRef: stopped,
       });
       // Match RunExecutionService: capture loaded the waiting run before
       // materializing baselines. Omit delegatedCompletion so a newer cohort
@@ -222,26 +229,34 @@ export const layer: Layer.Layer<
             nodeId: rootNode.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: capturedAt,
-            payload: {
-              ...runWithoutDelegatedCompletion,
-              ...(interrupted ? {} : { status: "completed" as const, completedAt: capturedAt }),
-              checkpointId: checkpoint.id,
-            },
+            payload: stopped
+              ? { ...runWithoutDelegatedCompletion, checkpointId: checkpoint.id }
+              : {
+                  ...runWithoutDelegatedCompletion,
+                  status: "completed",
+                  completedAt: capturedAt,
+                  checkpointId: checkpoint.id,
+                },
           },
-          {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
-            type: "node.updated",
-            threadId: input.threadId,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: capturedAt,
-            payload: {
-              ...rootNode,
-              ...(interrupted ? {} : { status: "completed" as const, completedAt: capturedAt }),
-              checkpointScopeId: scope.id,
-            },
-          },
+          ...(stopped
+            ? []
+            : [
+                {
+                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  type: "node.updated" as const,
+                  threadId: input.threadId,
+                  runId: run.id,
+                  nodeId: rootNode.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: capturedAt,
+                  payload: {
+                    ...rootNode,
+                    status: "completed" as const,
+                    completedAt: capturedAt,
+                    checkpointScopeId: scope.id,
+                  },
+                },
+              ]),
         ],
       });
     });

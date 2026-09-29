@@ -1,6 +1,7 @@
 import type {
   EventId,
   OrchestrationV2DomainEvent,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
@@ -8,11 +9,11 @@ import * as Effect from "effect/Effect";
 
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
-function isBackgroundCapableTurnItemType(type: string): boolean {
+export function isBackgroundCapableTurnItemType(type: string): boolean {
   return type === "command_execution" || type === "dynamic_tool" || type === "subagent";
 }
 
-function isNonterminalTurnItemStatus(status: string): boolean {
+export function isNonterminalTurnItemStatus(status: string): boolean {
   return status === "pending" || status === "running" || status === "waiting";
 }
 
@@ -62,12 +63,14 @@ function resolveStaleBackgroundItemProviderInstanceId(
  *
  * Items owned by `skipRunIds` are left alone: the caller either settles those
  * runs itself or they are still live. `alreadyCancelledItemIds` lists items
- * the caller already cancelled in the same commit.
+ * the caller already cancelled in the same commit. `onCancelledItem` sees each
+ * cancelled background-capable item.
  */
 export const orphanedBackgroundWorkEvents = <E>(input: {
   readonly projection: ProjectionRuntimeRecoveryState;
   readonly skipRunIds: ReadonlySet<string>;
   readonly alreadyCancelledItemIds?: ReadonlySet<string>;
+  readonly onCancelledItem?: (item: OrchestrationV2ThreadProjection["turnItems"][number]) => void;
   readonly now: DateTime.Utc;
   readonly allocateEventId: () => Effect.Effect<EventId, E>;
 }): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> =>
@@ -87,6 +90,7 @@ export const orphanedBackgroundWorkEvents = <E>(input: {
         continue;
       }
       const providerInstanceId = resolveStaleBackgroundItemProviderInstanceId(item, projection);
+      input.onCancelledItem?.(item);
       cancelledStaleItemIds.add(item.id);
       events.push({
         id: yield* allocateEventId(),
@@ -217,10 +221,15 @@ export const orphanedBackgroundWorkEvents = <E>(input: {
  * Clears the persisted Waiting roster and idles active provider threads whose
  * provider process is gone, without resurrecting active status. Scoped to one
  * provider session's threads when `providerSessionId` is given.
+ * `onClearedRosterTask` sees each task cleared from a root provider thread's roster.
  */
 export const staleProviderThreadEvents = <E>(input: {
   readonly projection: ProjectionRuntimeRecoveryState;
   readonly providerSessionId?: string;
+  readonly onClearedRosterTask?: (
+    providerThread: ProjectionRuntimeRecoveryState["providerThreads"][number],
+    task: OrchestrationV2PendingBackgroundTask,
+  ) => void;
   readonly now: DateTime.Utc;
   readonly allocateEventId: () => Effect.Effect<EventId, E>;
 }): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> =>
@@ -238,6 +247,11 @@ export const staleProviderThreadEvents = <E>(input: {
       const needsRosterClear = (providerThread.pendingBackgroundTasks?.length ?? 0) > 0;
       if (!needsIdle && !needsRosterClear) {
         continue;
+      }
+      if (input.onClearedRosterTask !== undefined && providerThread.ownerNodeId === null) {
+        for (const task of providerThread.pendingBackgroundTasks ?? []) {
+          input.onClearedRosterTask(providerThread, task);
+        }
       }
       events.push({
         id: yield* input.allocateEventId(),
