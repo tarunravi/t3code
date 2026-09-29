@@ -243,6 +243,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     const fullAccessOptions = (input: {
       readonly mcpServers?: typeof T3_MCP_SERVERS;
       readonly settings?: ClaudeSettings;
+      readonly disallowedTools?: ReadonlyArray<string>;
     }) =>
       ClaudeAdapterV2.makeClaudeQueryOptions({
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -305,16 +306,32 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       }
     });
 
-    it("installs no hook without the T3 MCP server", () => {
-      assert.isUndefined(fullAccessOptions({}).hooks);
+    it("removes the native subagent tools, keeping existing disallowed tools", () => {
+      assert.deepEqual(fullAccessOptions({ mcpServers: T3_MCP_SERVERS }).disallowedTools, [
+        "Agent",
+        "Task",
+        "Workflow",
+      ]);
+      assert.deepEqual(
+        fullAccessOptions({ mcpServers: T3_MCP_SERVERS, disallowedTools: ["WebFetch", "Agent"] })
+          .disallowedTools,
+        ["WebFetch", "Agent", "Task", "Workflow"],
+      );
     });
 
-    it("installs no hook when the setting is off", () => {
+    it("blocks nothing without the T3 MCP server", () => {
+      const options = fullAccessOptions({ disallowedTools: ["WebFetch"] });
+      assert.isUndefined(options.hooks);
+      assert.deepEqual(options.disallowedTools, ["WebFetch"]);
+    });
+
+    it("blocks nothing when the setting is off", () => {
       const options = fullAccessOptions({
         mcpServers: T3_MCP_SERVERS,
         settings: { ...DEFAULT_CLAUDE_SETTINGS, blockNativeSubagents: false },
       });
       assert.isUndefined(options.hooks);
+      assert.isUndefined(options.disallowedTools);
     });
   });
 
