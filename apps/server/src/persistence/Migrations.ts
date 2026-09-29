@@ -208,7 +208,10 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     readonly migration_id: number;
     readonly name: string;
   }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const manifestEntries = new Map(migrationEntries.map((entry) => [entry[0], entry] as const));
+  const manifestEntries = new Map<
+    number,
+    readonly [number, string, Effect.Effect<void, unknown, SqlClient.SqlClient>]
+  >(migrationEntries.map((entry) => [entry[0], entry]));
   const divergent = recorded.flatMap((row) => {
     const expected = manifestEntries.get(row.migration_id)?.[1];
     if (expected === undefined) {
@@ -236,7 +239,20 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       : [];
   });
   if (replayable.length > 0) {
-    yield* sql.withTransaction(Effect.forEach(replayable, ([, , migration]) => migration));
+    yield* sql.withTransaction(
+      Effect.forEach(replayable, ([id, name, migration]) =>
+        migration.pipe(
+          Effect.mapError(
+            (cause) =>
+              new Migrator.MigrationError({
+                kind: "Failed",
+                message: `Replaying migration ${id}_${name} failed`,
+                cause,
+              }),
+          ),
+        ),
+      ),
+    );
     yield* Effect.log("Replayed idempotent migrations skipped by divergent history").pipe(
       Effect.annotateLogs({ migrations: replayable.map(([id, name]) => `${id}_${name}`) }),
     );
