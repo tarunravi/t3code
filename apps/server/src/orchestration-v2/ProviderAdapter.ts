@@ -551,6 +551,14 @@ export interface ProviderAdapterV2SessionRuntime {
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   /**
+   * Stops one task on the provider thread's background roster without
+   * interrupting the thread. Absent when the provider cannot target a task.
+   */
+  readonly stopBackgroundTask?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskId: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
    * Lets a runtime shared by several app threads unload one provider thread's
    * native state (and its MCP servers) when that app thread detaches, while
    * the runtime keeps serving the others. A later resume reloads it.
