@@ -147,6 +147,31 @@ describe("rightPanelStore", () => {
     expect(persistedThread?.activeSurfaceId).toBe("files");
   });
 
+  it("opens one tab per background task and never persists them", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "files");
+    store.openBackgroundTask(refA, "b1");
+    store.openBackgroundTask(refA, "b2");
+    store.openBackgroundTask(refA, "b1");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "files",
+      "background-task:b1",
+      "background-task:b2",
+    ]);
+    expect(state.activeSurfaceId).toBe("background-task:b1");
+    expect(state.isOpen).toBe(true);
+
+    const persisted = useRightPanelStore.persist
+      .getOptions()
+      .partialize?.(useRightPanelStore.getState()) as {
+      byThreadKey: Record<string, { surfaces: { id: string }[]; activeSurfaceId: string | null }>;
+    };
+    const persistedThread = Object.values(persisted.byThreadKey)[0];
+    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual(["files"]);
+    expect(persistedThread?.activeSurfaceId).toBe("files");
+  });
+
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {

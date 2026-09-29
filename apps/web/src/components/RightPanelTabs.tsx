@@ -604,6 +604,8 @@ function surfaceTitle(
       return "Pull requests";
     case "side-chat":
       return "Side chat";
+    case "background-task":
+      return "Background task";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -689,6 +691,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "side-chat":
       return <MessagesSquare className="size-3 shrink-0" />;
+    case "background-task":
+      return <TerminalSquare className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
