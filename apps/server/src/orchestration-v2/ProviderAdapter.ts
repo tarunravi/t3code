@@ -541,6 +541,14 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Stops one task on the provider thread's background roster without
+   * interrupting the thread. Absent when the provider cannot target a task.
+   */
+  readonly stopBackgroundTask?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskId: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

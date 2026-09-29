@@ -122,6 +122,7 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import {
+  Fragment,
   lazy,
   memo,
   type SetStateAction,
@@ -391,6 +392,8 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
+import { BackgroundTaskPanel } from "./chat/BackgroundTasks";
+import { backgroundTaskLabel, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -6774,6 +6777,10 @@ export default function ChatView(props: ChatViewProps) {
   // banner is the only visible stop affordance. The interrupt path also
   // accepts a completed run while its provider still has background work.
   const activeBackgroundTasks = !isWorking && activeThread ? pendingBackgroundTasks : [];
+  const rosterBackgroundTasks = useMemo(
+    () => selectThreadBackgroundTasks(serverProjection),
+    [serverProjection],
+  );
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork =
     stoppingBackgroundWorkKey === `${environmentId}:${activeThreadId}`;
@@ -6814,7 +6821,36 @@ export default function ChatView(props: ChatViewProps) {
         />
       ),
       title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
-      description: activeBackgroundTasks.map((task) => task.description || task.taskId).join(", "),
+      description: (
+        <>
+          {activeBackgroundTasks.map((task, index) => {
+            const rosterTask = rosterBackgroundTasks.find(
+              (candidate) => candidate.taskId === task.taskId,
+            );
+            const label = backgroundTaskLabel(rosterTask ?? task);
+            // Only roster tasks have an output tail; turn-item work stays plain text.
+            return (
+              <Fragment key={task.taskId}>
+                {index > 0 ? ", " : null}
+                {rosterTask === undefined || !activeThreadRef ? (
+                  label
+                ) : (
+                  <button
+                    type="button"
+                    className="cursor-pointer font-mono underline-offset-2 hover:text-foreground hover:underline"
+                    aria-label={`Show output of ${label}`}
+                    onClick={() =>
+                      useRightPanelStore.getState().openBackgroundTask(activeThreadRef, task.taskId)
+                    }
+                  >
+                    {label}
+                  </button>
+                )}
+              </Fragment>
+            );
+          })}
+        </>
+      ),
       actions: (
         <Button
           size="xs"
@@ -6826,7 +6862,14 @@ export default function ChatView(props: ChatViewProps) {
         </Button>
       ),
     };
-  }, [activeBackgroundTasks, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
+  }, [
+    activeBackgroundTasks,
+    activeThread,
+    activeThreadRef,
+    handleStopBackgroundWork,
+    isStoppingBackgroundWork,
+    rosterBackgroundTasks,
+  ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
   // pill); sending a message clears it as a side effect of the send path.
@@ -10212,6 +10255,13 @@ export default function ChatView(props: ChatViewProps) {
         sideThreadId={renderedRightPanelSurface.threadId}
         markdownCwd={gitCwd ?? undefined}
         workspaceRoot={activeWorkspaceRoot}
+      />
+    ) : renderedRightPanelSurface?.kind === "background-task" ? (
+      <BackgroundTaskPanel
+        key={renderedRightPanelSurface.taskId}
+        environmentId={activeThread.environmentId}
+        threadId={activeThread.id}
+        taskId={renderedRightPanelSurface.taskId}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
