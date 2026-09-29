@@ -44,6 +44,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 300_000,
       idleTtlMs: 300_000,
     }),
+    backgroundTaskOutput: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:background-task-output",
+      tag: ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput,
+      // A live tail: re-read while the view is mounted, drop it once closed.
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+      refreshIntervalMs: 2_000,
+    }),
+    stopBackgroundTask: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:stop-background-task",
+      tag: ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask,
+    }),
     // Keyed by the item revision, so a live row refetches as its output grows.
     turnItem: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:turn-item",
