@@ -11,7 +11,7 @@ import {
 
 const providerThread = (id: string, taskIds: ReadonlyArray<string>) => ({
   id: ProviderThreadId.make(id),
-  pendingBackgroundTasks: taskIds.map((taskId) => ({ taskId })),
+  pendingBackgroundTasks: taskIds.map((taskId) => ({ kind: "command" as const, taskId })),
 });
 
 describe("selectThreadBackgroundTasks", () => {
@@ -53,25 +53,40 @@ describe("backgroundTaskEntries", () => {
   it("uses the roster's command and marks only roster tasks inspectable", () => {
     const entries = backgroundTaskEntries(
       [
-        { taskId: "b1", description: "Dev server" },
-        { taskId: "item-1", description: "npm test" },
+        { kind: "command" as const, taskId: "b1", description: "Dev server" },
+        { kind: "command" as const, taskId: "item-1", description: "npm test" },
       ],
-      [{ taskId: "b1", command: "npm run dev", outputFile: "/tmp/tasks/b1.output" }],
+      [
+        {
+          kind: "command" as const,
+          taskId: "b1",
+          command: "npm run dev",
+          outputFile: "/tmp/tasks/b1.output",
+        },
+      ],
     );
     expect(entries).toEqual([
       {
-        task: { taskId: "b1", command: "npm run dev", outputFile: "/tmp/tasks/b1.output" },
+        task: {
+          kind: "command" as const,
+          taskId: "b1",
+          command: "npm run dev",
+          outputFile: "/tmp/tasks/b1.output",
+        },
         inspectable: true,
       },
-      { task: { taskId: "item-1", description: "npm test" }, inspectable: false },
+      {
+        task: { kind: "command" as const, taskId: "item-1", description: "npm test" },
+        inspectable: false,
+      },
     ]);
   });
 });
 
 describe("resolveSelectedBackgroundTaskId", () => {
-  const one = { task: { taskId: "b1" }, inspectable: true };
-  const two = { task: { taskId: "b2" }, inspectable: true };
-  const plain = { task: { taskId: "item" }, inspectable: false };
+  const one = { task: { kind: "command" as const, taskId: "b1" }, inspectable: true };
+  const two = { task: { kind: "command" as const, taskId: "b2" }, inspectable: true };
+  const plain = { task: { kind: "command" as const, taskId: "item" }, inspectable: false };
 
   it("shows the only inspectable task without a choice", () => {
     expect(resolveSelectedBackgroundTaskId([one, plain], null)).toBe("b1");

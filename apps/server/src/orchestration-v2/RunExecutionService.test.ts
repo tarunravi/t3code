@@ -1521,7 +1521,7 @@ it.effect(
                     ...providerThreadBase,
                     status: "active" as const,
                     pendingBackgroundTasks: [
-                      { taskId: "bg-1", description: "sleep 20", taskType: "local_bash" },
+                      { taskId: "bg-1", description: "sleep 20", kind: "command" },
                     ],
                     updatedAt: now,
                   },
@@ -1732,7 +1732,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
                   ...providerThreadBase,
                   status: "active" as const,
                   pendingBackgroundTasks: [
-                    { taskId: "bg-stale", description: "sleep 20", taskType: "local_bash" },
+                    { taskId: "bg-stale", description: "sleep 20", kind: "command" },
                   ],
                   updatedAt: now,
                 },
@@ -1748,7 +1748,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
                   status: "idle" as const,
                   lastRunOrdinal: 1,
                   pendingBackgroundTasks: [
-                    { taskId: "bg-stale", description: "sleep 20", taskType: "local_bash" },
+                    { taskId: "bg-stale", description: "sleep 20", kind: "command" },
                   ],
                   updatedAt: now,
                 },
@@ -1926,7 +1926,7 @@ it.effect(
                     status: "idle" as const,
                     lastRunOrdinal: 1,
                     pendingBackgroundTasks: [
-                      { taskId: "bg-stale", description: "sleep 20", taskType: "local_bash" },
+                      { taskId: "bg-stale", description: "sleep 20", kind: "command" },
                     ],
                     updatedAt: now,
                   },
@@ -2096,7 +2096,9 @@ it.effect(
                       nativeId: "native-sibling",
                       strength: "strong" as const,
                     },
-                    pendingBackgroundTasks: [{ taskId: "sibling-bg", description: "other thread" }],
+                    pendingBackgroundTasks: [
+                      { taskId: "sibling-bg", description: "other thread", kind: "command" },
+                    ],
                     updatedAt: now,
                   },
                 } as ProviderAdapterV2Event,
