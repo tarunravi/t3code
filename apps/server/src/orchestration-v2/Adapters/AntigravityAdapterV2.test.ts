@@ -64,6 +64,51 @@ function permissionRequest(
 }
 
 describe("AntigravityAdapterV2 flavor", () => {
+  it("extracts subagent title, prompt, and model from raw input", () => {
+    const update = flavor.extractSubagentUpdate?.({
+      toolCallId: "trajectory:5",
+      title: "Running start_subagent",
+      kind: "other",
+      status: "inProgress",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Model: "inherit",
+              Prompt: "Generate upbeat background music tracks.",
+              Role: "Music Generator",
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(update?.status, "running");
+    assert.equal(update?.title, "Music Generator");
+    assert.equal(update?.prompt, "Generate upbeat background music tracks.");
+    assert.isNull(update?.model);
+
+    const explicitModelUpdate = flavor.extractSubagentUpdate?.({
+      toolCallId: "trajectory:6",
+      title: "Running start_subagent",
+      kind: "other",
+      status: "inProgress",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Model: "gemini-2.5-pro",
+              Prompt: "Investigate performance issue.",
+              Role: "Performance Analyst",
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(explicitModelUpdate?.title, "Performance Analyst");
+    assert.equal(explicitModelUpdate?.model, "gemini-2.5-pro");
+  });
+
+
   it("keeps a successful subagent launch running until the parent turn becomes idle", () => {
     const batch = flavor.extractSubagentUpdate?.({
       toolCallId: "trajectory:4",
