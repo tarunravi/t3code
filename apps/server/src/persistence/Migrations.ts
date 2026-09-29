@@ -142,6 +142,10 @@ export const migrationEntries = [
   [56, "RemoveRedundantProjectionIndexes", Migration0056],
 ] as const;
 
+// Safe to replay over an unknown schema: every change is guarded by a
+// schema check, IF NOT EXISTS, or IF EXISTS, and none backfills rows.
+const replayableMigrationIds: ReadonlySet<number> = new Set([33, 51, 53, 54, 56]);
+
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
 const makeMigrationLoader = (throughId?: number) =>
@@ -198,9 +202,9 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     readonly migration_id: number;
     readonly name: string;
   }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
+  const manifestEntries = new Map(migrationEntries.map((entry) => [entry[0], entry] as const));
   const divergent = recorded.flatMap((row) => {
-    const expected = manifestNames.get(row.migration_id);
+    const expected = manifestEntries.get(row.migration_id)?.[1];
     if (expected === undefined) {
       return [`${row.migration_id}:${row.name} (unknown to this build)`];
     }
@@ -212,6 +216,24 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     yield* Effect.logWarning(
       "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
     ).pipe(Effect.annotateLogs({ divergent }));
+  }
+
+  // Replay skipped migrations that check the schema before changing it. The
+  // ledger stays untouched, so they replay on every start until it matches.
+  const replayable = recorded.flatMap((row) => {
+    const entry = manifestEntries.get(row.migration_id);
+    return entry !== undefined &&
+      entry[1] !== row.name &&
+      replayableMigrationIds.has(entry[0]) &&
+      (toMigrationInclusive === undefined || entry[0] <= toMigrationInclusive)
+      ? [entry]
+      : [];
+  });
+  if (replayable.length > 0) {
+    yield* sql.withTransaction(Effect.forEach(replayable, ([, , migration]) => migration));
+    yield* Effect.log("Replayed idempotent migrations skipped by divergent history").pipe(
+      Effect.annotateLogs({ migrations: replayable.map(([id, name]) => `${id}_${name}`) }),
+    );
   }
   return executedMigrations;
 });
