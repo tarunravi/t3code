@@ -95,6 +95,7 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "autoCompactWindow",
       "launchArgs",
+      "blockNativeSubagents",
     ]);
   });
 
