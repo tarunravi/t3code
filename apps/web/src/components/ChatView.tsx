@@ -96,7 +96,6 @@ import {
   deriveThreadActivityRun,
   deriveLatestThreadRun,
   deriveThreadRuntime,
-  presentPendingBackgroundWork,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import {
@@ -422,6 +421,8 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
+import { BackgroundTaskPanel } from "./chat/BackgroundTasks";
+import { backgroundTaskLabel, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -559,7 +560,7 @@ import { assetEnvironment } from "../state/assets";
 import { readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
-import { Button, InlineButton } from "./ui/button";
+import { Button } from "./ui/button";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -7115,6 +7116,10 @@ export default function ChatView(props: ChatViewProps) {
   // banner is the only visible stop affordance. The interrupt path also
   // accepts a completed run while its provider still has background work.
   const activeBackgroundTasks = !isWorking && activeThread ? pendingBackgroundTasks : [];
+  const rosterBackgroundTasks = useMemo(
+    () => selectThreadBackgroundTasks(serverProjection),
+    [serverProjection],
+  );
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork =
     stoppingBackgroundWorkKey === `${environmentId}:${activeThreadId}`;
@@ -7150,10 +7155,10 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
-    if (presentation === null || !activeThread) {
+    if (activeBackgroundTasks.length === 0 || !activeThread) {
       return null;
     }
+    const count = activeBackgroundTasks.length;
     return {
       id: `background-work:${activeThread.id}`,
       variant: "default",
@@ -7169,30 +7174,37 @@ export default function ChatView(props: ChatViewProps) {
           aria-hidden="true"
         />
       ),
-      title: presentation.title,
-      // A single named item is already in the title.
-      description:
-        presentation.items.length === 1 && presentation.items[0]?.childThreadId === undefined
-          ? undefined
-          : presentation.items.map((item, index) => {
-              const childThreadId = item.childThreadId;
-              return (
-                <Fragment key={item.taskId}>
-                  {index > 0 ? ", " : null}
-                  {childThreadId === undefined ? (
-                    item.label
-                  ) : (
-                    <InlineButton
-                      tone="muted"
-                      aria-label={`Open subagent ${item.label}`}
-                      onClick={() => onOpenRelatedThread(childThreadId)}
-                    >
-                      {item.label}
-                    </InlineButton>
-                  )}
-                </Fragment>
-              );
-            }),
+      title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
+      description: (
+        <>
+          {activeBackgroundTasks.map((task, index) => {
+            const rosterTask = rosterBackgroundTasks.find(
+              (candidate) => candidate.taskId === task.taskId,
+            );
+            const label = backgroundTaskLabel(rosterTask ?? task);
+            // Only roster tasks have an output tail; turn-item work stays plain text.
+            return (
+              <Fragment key={task.taskId}>
+                {index > 0 ? ", " : null}
+                {rosterTask === undefined || !activeThreadRef ? (
+                  label
+                ) : (
+                  <button
+                    type="button"
+                    className="cursor-pointer font-mono underline-offset-2 hover:text-foreground hover:underline"
+                    aria-label={`Show output of ${label}`}
+                    onClick={() =>
+                      useRightPanelStore.getState().openBackgroundTask(activeThreadRef, task.taskId)
+                    }
+                  >
+                    {label}
+                  </button>
+                )}
+              </Fragment>
+            );
+          })}
+        </>
+      ),
       actions: (
         <Button
           size="xs"
@@ -7207,9 +7219,10 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeBackgroundTasks,
     activeThread,
+    activeThreadRef,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
-    onOpenRelatedThread,
+    rosterBackgroundTasks,
   ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
@@ -10704,6 +10717,13 @@ export default function ChatView(props: ChatViewProps) {
         sideThreadId={renderedRightPanelSurface.threadId}
         markdownCwd={gitCwd ?? undefined}
         workspaceRoot={activeWorkspaceRoot}
+      />
+    ) : renderedRightPanelSurface?.kind === "background-task" ? (
+      <BackgroundTaskPanel
+        key={renderedRightPanelSurface.taskId}
+        environmentId={activeThread.environmentId}
+        threadId={activeThread.id}
+        taskId={renderedRightPanelSurface.taskId}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>

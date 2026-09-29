@@ -83,7 +83,10 @@ export function assertClaudeBackgroundTaskWakeOutput(
       event.type === "provider-thread.updated" ? (event.payload.pendingBackgroundTasks ?? []) : [],
     )
     .find((task) => task.taskId === BACKGROUND_TASK_ID);
-  assert.deepEqual(rosterTask, {
+  assert.isDefined(rosterTask);
+  // The roster also records when the task started; that time is not under test.
+  const { startedAt: _startedAt, ...rosterTaskIdentity } = rosterTask;
+  assert.deepEqual(rosterTaskIdentity, {
     taskId: BACKGROUND_TASK_ID,
     description: "Background sleep test",
     kind: "command",
