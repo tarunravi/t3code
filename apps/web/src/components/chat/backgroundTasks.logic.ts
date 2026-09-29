@@ -38,3 +38,44 @@ export function backgroundTaskLabel(
 ): string {
   return task.command ?? task.description ?? task.taskId;
 }
+
+export interface BackgroundTaskEntry {
+  readonly task: OrchestrationV2PendingBackgroundTask;
+  /** Only roster tasks have an output file to tail and a per-task stop. */
+  readonly inspectable: boolean;
+}
+
+/**
+ * Banner work (roster tasks plus still-active background turn items) joined
+ * with the roster, which carries the command, start time, and output file.
+ */
+export function backgroundTaskEntries(
+  pending: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+  roster: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+): ReadonlyArray<BackgroundTaskEntry> {
+  return pending.map((task) => {
+    const rosterTask = roster.find((candidate) => candidate.taskId === task.taskId);
+    return rosterTask === undefined
+      ? { task, inspectable: false }
+      : { task: rosterTask, inspectable: true };
+  });
+}
+
+/** The task whose output shows: the chosen one while it runs, else the only inspectable one. */
+export function resolveSelectedBackgroundTaskId(
+  entries: ReadonlyArray<BackgroundTaskEntry>,
+  selectedTaskId: string | null,
+): string | null {
+  const inspectable = entries.filter((entry) => entry.inspectable);
+  if (inspectable.some((entry) => entry.task.taskId === selectedTaskId)) return selectedTaskId;
+  return inspectable.length === 1 ? inspectable[0]!.task.taskId : null;
+}
+
+export function backgroundTasksBannerTitle(count: number): {
+  readonly full: string;
+  readonly compact: string;
+} {
+  return count === 1
+    ? { full: "Waiting on background task", compact: "Background task" }
+    : { full: `Waiting on ${count} background tasks`, compact: `${count} background tasks` };
+}
