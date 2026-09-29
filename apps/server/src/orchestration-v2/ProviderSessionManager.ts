@@ -44,6 +44,10 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import {
+  orphanedBackgroundWorkEvents,
+  staleProviderThreadEvents,
+} from "./OrphanedBackgroundWork.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   ProviderAdapterEventStreamError,
@@ -233,6 +237,16 @@ export interface ProviderSessionManagerV2LayerOptions {
   readonly maxIdlePinMs?: number;
   /** Test replay harnesses can omit T3's MCP server from provider protocol fixtures. */
   readonly configureMcp?: boolean;
+}
+
+function isLiveRunStatus(status: string): boolean {
+  return (
+    status === "queued" ||
+    status === "preparing" ||
+    status === "starting" ||
+    status === "running" ||
+    status === "waiting"
+  );
 }
 
 function releaseStatusFor(
@@ -742,6 +756,77 @@ export const layerWithOptions = (
           }
         });
 
+      // Background work (a Claude subagent that outlived its turn, a
+      // backgrounded command) can only be settled by the provider process that
+      // ran it. Once that process is released, cancel what it left running on
+      // its threads so nothing reads as live forever. Threads a live
+      // replacement session took over, and items of runs that are still
+      // active, stay with their current owner.
+      const settleOrphanedBackgroundWork = (
+        entry: LiveSessionEntry,
+        threadIds: Iterable<ThreadId>,
+      ) =>
+        Effect.gen(function* () {
+          const providerSessionId = entry.runtime.providerSessionId;
+          const liveThreadIds = new Set(
+            Array.from((yield* Ref.get(sessions)).values()).flatMap((other) =>
+              Array.from(other.attachedThreadIds),
+            ),
+          );
+          const now = yield* DateTime.now;
+          const pending = Array.from(threadIds);
+          const visited = new Set<ThreadId>();
+          for (let threadId = pending.shift(); threadId !== undefined; threadId = pending.shift()) {
+            if (visited.has(threadId) || liveThreadIds.has(threadId)) continue;
+            visited.add(threadId);
+            const settledThreadId = threadId;
+            const events = yield* Effect.gen(function* () {
+              const projection =
+                yield* projectionStore.getRuntimeRecoveryProjection(settledThreadId);
+              const liveRunIds = new Set(
+                projection.runs.filter((run) => isLiveRunStatus(run.status)).map((run) => run.id),
+              );
+              const allocateEventId = () =>
+                idAllocator.allocate.event({ threadId: settledThreadId, providerSessionId });
+              const events = [
+                ...(yield* orphanedBackgroundWorkEvents({
+                  projection,
+                  skipRunIds: liveRunIds,
+                  now,
+                  allocateEventId,
+                })),
+                // A live run still owns its provider thread and settles its roster.
+                ...(liveRunIds.size > 0
+                  ? []
+                  : yield* staleProviderThreadEvents({
+                      projection,
+                      providerSessionId,
+                      now,
+                      allocateEventId,
+                    })),
+              ];
+              if (events.length > 0) {
+                yield* eventSink.write({ events });
+              }
+              return events;
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("orchestration-v2.provider-session-orphan-settle-failed", {
+                  providerSessionId,
+                  threadId: settledThreadId,
+                  cause,
+                }).pipe(Effect.as([] as ReadonlyArray<OrchestrationV2DomainEvent>)),
+              ),
+            );
+            // A cancelled native subagent's child thread holds its runless root turn.
+            for (const event of events) {
+              if (event.type === "subagent.updated" && event.payload.childThreadId !== null) {
+                pending.push(event.payload.childThreadId);
+              }
+            }
+          }
+        });
+
       // Records a released session as stopped and resolves the live runtime
       // requests it left. Each write runs even if the other fails. Once a
       // replacement session opens with the same id, it owns the session status,
@@ -868,6 +953,8 @@ export const layerWithOptions = (
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
         readonly gracefulSubscribers?: boolean;
+        /** A thread that detached just before this release; its work is orphaned too. */
+        readonly detachedThreadId?: ThreadId;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -944,6 +1031,13 @@ export const layerWithOptions = (
                   if (Exit.isFailure(recorded)) {
                     yield* retryReleaseRecords(records);
                     return yield* recorded;
+                  }
+                  // Server shutdown leaves this to process-loss recovery.
+                  if (input.reason !== "server_shutdown") {
+                    yield* settleOrphanedBackgroundWork(entry, [
+                      ...entry.attachedThreadIds,
+                      ...(input.detachedThreadId === undefined ? [] : [input.detachedThreadId]),
+                    ]);
                   }
                   if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
                     return yield* Effect.failCause(closeExit.value.cause);
@@ -2051,6 +2145,7 @@ export const layerWithOptions = (
               yield* releaseEntry({
                 providerSessionId: input.providerSessionId,
                 reason: "manual_shutdown",
+                detachedThreadId: input.threadId,
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
               });
               return;

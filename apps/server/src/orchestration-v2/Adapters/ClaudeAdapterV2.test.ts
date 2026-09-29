@@ -6899,6 +6899,86 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("offers the next wake after a dropped continuation releases its request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const taskIds = ["task-wake-dropped-a", "task-wake-dropped-b", "task-wake-dropped-c"];
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const subagentEvents = () =>
+          harness.events.filter((event) => event.type === "subagent.updated");
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-dropped"),
+            text: "Spawn three background subagents.",
+            attachments: [],
+          }),
+        );
+        for (const [index, taskId] of taskIds.entries()) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: taskId,
+              tool_use_id: `toolu-${taskId}`,
+              description: `Background research ${index}`,
+              subagent_type: "general-purpose",
+              task_type: "local_agent",
+              prompt: "Investigate.",
+              uuid: `00000000-0000-4000-8000-00000000041${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        }
+        yield* awaitUntil(() => subagentEvents().length >= taskIds.length, "subagents created");
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000420",
+            result: "Spawned the subagents in the background.",
+          }),
+        );
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "first turn terminal");
+
+        const notify = (index: number) =>
+          Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_notification",
+              task_id: taskIds[index]!,
+              tool_use_id: `toolu-${taskIds[index]!}`,
+              status: "completed",
+              output_file: `/tmp/${taskIds[index]!}.output`,
+              summary: `Subagent ${index} finished.`,
+              uuid: `00000000-0000-4000-8000-00000000043${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+
+        yield* notify(0);
+        yield* awaitUntil(() => harness.continuationRequests.length === 1, "first wake offered");
+        // The continuation for the first wake never ran (its dispatch failed).
+        yield* harness.continuationRequests[0]!.clearIfCurrent!();
+
+        yield* notify(1);
+        yield* awaitUntil(() => harness.continuationRequests.length === 2, "second wake offered");
+
+        // A late release from the dropped offer must not free the live one.
+        yield* harness.continuationRequests[0]!.clearIfCurrent!();
+        yield* notify(2);
+        let quietYields = 0;
+        yield* awaitUntil(() => quietYields++ >= 50, "third wake stays with the live request");
+        assert.lengthOf(harness.continuationRequests, 2);
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("re-opens a resumed subagent whose task_started races past settle", () =>
     Effect.scoped(
       Effect.gen(function* () {
