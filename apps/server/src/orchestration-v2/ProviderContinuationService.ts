@@ -190,6 +190,14 @@ export const workerLive = Layer.effectDiscard(
                 providerThreadId: request.providerThreadId,
                 cause,
               });
+              // Adapter wakes are not retried: release the adapter's sticky
+              // request so its next wake can offer again.
+              if (
+                request.delegatedCompletion === undefined &&
+                request.clearIfCurrent !== undefined
+              ) {
+                yield* request.clearIfCurrent();
+              }
               if (request.delegatedCompletion !== undefined) {
                 const completion = request.delegatedCompletion;
                 const retryKey = delegatedCompletionRetryKey(request, completion);
