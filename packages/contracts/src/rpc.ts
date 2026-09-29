@@ -188,6 +188,7 @@ import {
 } from "./relayClient.ts";
 import {
   ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationBackgroundTaskError,
   OrchestrationGetWorkflowScriptError,
   OrchestrationV2DispatchCommandError,
   OrchestrationV2GetShellSnapshotError,
@@ -1563,6 +1564,23 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetBackgroundTaskOutputRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput,
+  {
+    payload: OrchestrationV2RpcSchemas.getBackgroundTaskOutput.input,
+    success: OrchestrationV2RpcSchemas.getBackgroundTaskOutput.output,
+    error: Schema.Union([OrchestrationBackgroundTaskError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2StopBackgroundTaskRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask,
+  {
+    payload: OrchestrationV2RpcSchemas.stopBackgroundTask.input,
+    success: OrchestrationV2RpcSchemas.stopBackgroundTask.output,
+    error: Schema.Union([OrchestrationBackgroundTaskError, EnvironmentAuthorizationError]),
+  },
+);
 const WsOrchestrationV2GetTurnItemRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnItem, {
   payload: OrchestrationV2RpcSchemas.getTurnItem.input,
   success: OrchestrationV2RpcSchemas.getTurnItem.output,
@@ -1914,6 +1932,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
+  WsOrchestrationV2GetBackgroundTaskOutputRpc,
+  WsOrchestrationV2StopBackgroundTaskRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,
   WsOrchestrationV2GetFullThreadDiffRpc,
