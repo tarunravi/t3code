@@ -30,6 +30,7 @@ import {
   antigravityApprovalOptions,
   antigravitySubagentOutput,
   classifyAntigravitySubagentToolCall,
+  extractAntigravitySubagentDetails,
   extractAntigravityUserInputQuestion,
   makeAntigravityUserInputResponse,
   normalizeAntigravityToolCall,
@@ -97,15 +98,12 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
   }
   const status =
     toolCall.status === "failed" ? "failed" : toolCall.status === "pending" ? "pending" : "running";
+  const details = extractAntigravitySubagentDetails(toolCall);
   return {
     nativeTaskId: toolCall.toolCallId,
-    prompt:
-      antigravitySubagentOutput(toolCall) ??
-      toolCall.detail ??
-      toolCall.title ??
-      "Antigravity subagent batch",
-    title: "Antigravity subagent batch",
-    model: null,
+    prompt: details.prompt ?? "Delegated subagent task",
+    title: details.title ?? "Antigravity subagent",
+    model: details.model ?? null,
     status,
     childSessionId: null,
     result: status === "failed" ? (antigravitySubagentOutput(toolCall) ?? null) : null,
