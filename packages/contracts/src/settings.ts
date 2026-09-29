@@ -866,6 +866,26 @@ export const PiSettings = makeProviderSettingsSchema(
 );
 export type PiSettings = typeof PiSettings.Type;
 
+export const ZCodeSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("zcode").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the ZCode CLI, or a wrapper script that launches it.",
+        providerSettingsForm: { placeholder: "zcode", clearWhenEmpty: "omit" },
+      }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type ZCodeSettings = typeof ZCodeSettings.Type;
+
 export const AcpRegistryDistributionPreference = Schema.Literals(["auto", "binary", "npx", "uvx"]);
 export type AcpRegistryDistributionPreference = typeof AcpRegistryDistributionPreference.Type;
 
