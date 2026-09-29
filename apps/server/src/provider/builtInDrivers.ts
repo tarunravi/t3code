@@ -10,11 +10,14 @@ import { FxDriver, type FxDriverEnv } from "@t3tools/provider-fx/server";
 import { GrokDriver, type GrokDriverEnv } from "@t3tools/provider-grok/server";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "@t3tools/provider-opencode/server";
 import { MuseDriver, type MuseDriverEnv } from "@t3tools/provider-muse/server";
+import { DshDriver, type DshDriverEnv } from "@t3tools/provider-dsh/server";
 import { PiDriver, type PiDriverEnv } from "@t3tools/provider-pi/server";
 import type {
   AnyProviderDriver,
   ProviderUsageReaderEnv,
 } from "@t3tools/provider-core/server/driver";
+import { OmpDriver, type OmpDriverEnv } from "./Drivers/OmpDriver.ts";
+import { ZCodeDriver, type ZCodeDriverEnv } from "./Drivers/ZCodeDriver.ts";
 import { KiroDriver, type KiroDriverEnv } from "@t3tools/provider-kiro/server";
 
 export type BuiltInDriversEnv =
@@ -25,11 +28,13 @@ export type BuiltInDriversEnv =
   | CursorDriverEnv
   | FxDriverEnv
   | GrokDriverEnv
+  | OmpDriverEnv
   | KiroDriverEnv
   | OpenCodeDriverEnv
+  | DshDriverEnv
   | PiDriverEnv
+  | ZCodeDriverEnv
   | MuseDriverEnv;
-
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
   ClaudeDriver,
@@ -40,6 +45,9 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   AntigravityDriver,
   KiroDriver,
   PiDriver,
+  DshDriver,
+  ZCodeDriver,
+  OmpDriver,
   MuseDriver,
   AcpRegistryDriver,
 ];
@@ -52,7 +60,8 @@ export type BuiltInUsageReadersEnv =
   | ProviderUsageReaderEnv<typeof AntigravityDriver>
   | ProviderUsageReaderEnv<typeof CursorDriver>
   | ProviderUsageReaderEnv<typeof PiDriver>
-  | ProviderUsageReaderEnv<typeof MuseDriver>;
+  | ProviderUsageReaderEnv<typeof MuseDriver>
+  | ProviderUsageReaderEnv<typeof OmpDriver>;
 
 /** Order matters: aggregation keeps the first duplicate record. */
 export const BUILT_IN_USAGE_DRIVERS: ReadonlyArray<
@@ -62,6 +71,7 @@ export const BUILT_IN_USAGE_DRIVERS: ReadonlyArray<
   CodexDriver,
   GrokDriver,
   PiDriver,
+  OmpDriver,
   OpenCodeDriver,
   MuseDriver,
   AntigravityDriver,
