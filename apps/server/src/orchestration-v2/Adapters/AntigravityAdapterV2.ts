@@ -5,6 +5,7 @@ import {
   type OrchestrationV2ProviderCapabilities,
   type ProviderSetupError,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -18,6 +19,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import type { AntigravityAuth } from "../../provider/AntigravityAuth.ts";
+import { ANTIGRAVITY_EFFORT_OPTION_ID } from "../../provider/antigravityModels.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   antigravityAppendsSystemPrompt,
@@ -38,6 +40,7 @@ import {
   antigravityApprovalOptions,
   antigravitySubagentOutput,
   classifyAntigravitySubagentToolCall,
+  extractAntigravitySubagentDetails,
   extractAntigravityUserInputQuestion,
   makeAntigravityReadRepair,
   makeAntigravityUserInputResponse,
@@ -105,18 +108,20 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
   }
   const status =
     toolCall.status === "failed" ? "failed" : toolCall.status === "pending" ? "pending" : "running";
+  const details = extractAntigravitySubagentDetails(toolCall);
   const launches = antigravitySubagentLaunches(toolCall.data.rawInput);
   const launch = launches === undefined ? undefined : describeAntigravitySubagentLaunches(launches);
   return {
     nativeTaskId: toolCall.toolCallId,
     prompt:
+      details.prompt ??
       launch?.prompt ??
       antigravitySubagentOutput(toolCall) ??
       toolCall.detail ??
       toolCall.title ??
       ANTIGRAVITY_SUBAGENT_BATCH_TITLE,
-    title: launch?.title ?? ANTIGRAVITY_SUBAGENT_BATCH_TITLE,
-    model: null,
+    title: details.title ?? launch?.title ?? ANTIGRAVITY_SUBAGENT_BATCH_TITLE,
+    model: details.model ?? null,
     status,
     childSessionId: null,
     result: status === "failed" ? (antigravitySubagentOutput(toolCall) ?? null) : null,
@@ -243,6 +248,7 @@ export function makeAntigravityAcpAdapterFlavor(
         runtime,
         model:
           modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : modelSelection.model,
+        effort: getModelSelectionStringOptionValue(modelSelection, ANTIGRAVITY_EFFORT_OPTION_ID),
         defaultModel,
         mapError: (cause) => cause,
       });
