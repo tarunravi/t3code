@@ -176,17 +176,30 @@ export const layer: Layer.Layer<
             ? loaded.session
             : yield* sessions.get(input.providerSessionId);
           if (Option.isNone(session)) return;
+          const runtime = session.value;
+          const turnSettled = loaded.providerTurn.status !== "running";
           if (
-            loaded.providerTurn.status !== "running" &&
-            (session.value.hasPendingBackgroundWorkForThread === undefined ||
-              !(yield* session.value.hasPendingBackgroundWorkForThread(loaded.providerThread)))
-          )
-            return;
-          yield* session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-            requestRuntimeRestart: true,
-          });
+            !turnSettled ||
+            (runtime.hasPendingBackgroundWorkForThread !== undefined &&
+              (yield* runtime.hasPendingBackgroundWorkForThread(loaded.providerThread)))
+          ) {
+            yield* runtime.interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              requestRuntimeRestart: true,
+            });
+          }
+          // Stopping a settled turn stops its background work. Work outside
+          // the thread's roster, such as Claude's background subagents,
+          // survives interruptTurn; releasing the session kills it and
+          // settles what it orphaned.
+          if (
+            turnSettled &&
+            runtime.hasPendingBackgroundWork !== undefined &&
+            (yield* runtime.hasPendingBackgroundWork)
+          ) {
+            yield* sessions.close(input.providerSessionId);
+          }
         }).pipe(
           Effect.mapError((cause) =>
             isProviderTurnControlError(cause)
