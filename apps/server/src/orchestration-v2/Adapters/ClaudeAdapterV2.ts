@@ -816,17 +816,19 @@ export const CLAUDE_NATIVE_SUBAGENT_DENY_REASON =
 
 // Task is the pre-rename name of Agent that some SDK paths still report;
 // Workflow spawns native agents too.
-const CLAUDE_NATIVE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "Workflow"]);
+const CLAUDE_NATIVE_SUBAGENT_TOOLS: ReadonlyArray<string> = ["Agent", "Task", "Workflow"];
 
 // Native subagents run outside T3's task model, so T3 cannot show or cancel
-// them. A PreToolUse hook is used instead of canUseTool because the SDK skips
-// canUseTool under bypassPermissions (full-access threads).
+// them. disallowedTools removes their definitions from the model's context;
+// this PreToolUse hook is the backstop if a resumed transcript or settings
+// drift brings one back. A hook is used instead of canUseTool because the SDK
+// skips canUseTool under bypassPermissions (full-access threads).
 const CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS: HookCallbackMatcher = {
-  matcher: "Agent|Task|Workflow",
+  matcher: CLAUDE_NATIVE_SUBAGENT_TOOLS.join("|"),
   hooks: [
     async (hookInput) =>
       hookInput.hook_event_name === "PreToolUse" &&
-      CLAUDE_NATIVE_SUBAGENT_TOOLS.has(hookInput.tool_name)
+      CLAUDE_NATIVE_SUBAGENT_TOOLS.includes(hookInput.tool_name)
         ? {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
@@ -880,6 +882,11 @@ export function makeClaudeQueryOptions(input: {
     ? { resume: input.nativeThreadId }
     : { sessionId: input.nativeThreadId };
   const selectedTools = input.tools ?? CLAUDE_CODE_PRESET_TOOLS;
+  const blockNativeSubagents =
+    input.mcpServers !== undefined && input.settings?.blockNativeSubagents !== false;
+  const disallowedTools = blockNativeSubagents
+    ? Array.from(new Set([...(input.disallowedTools ?? []), ...CLAUDE_NATIVE_SUBAGENT_TOOLS]))
+    : input.disallowedTools;
   const selectionSettings =
     Object.keys(compiledSelection.settings).length === 0
       ? undefined
@@ -914,7 +921,7 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
-    ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...(disallowedTools === undefined ? {} : { disallowedTools: [...disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -942,9 +949,7 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
-    ...(input.mcpServers === undefined || input.settings?.blockNativeSubagents === false
-      ? {}
-      : { hooks: { PreToolUse: [CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS] } }),
+    ...(blockNativeSubagents ? { hooks: { PreToolUse: [CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS] } } : {}),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
