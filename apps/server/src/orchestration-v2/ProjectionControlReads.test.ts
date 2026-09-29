@@ -274,10 +274,17 @@ for (const storage of ["sqlite", "memory"] as const) {
 
       const calls: string[] = [];
       let hasBackgroundWork = false;
+      let hasSessionBackgroundWork = false;
       const sessions = Layer.mock(ProviderSessionManagerV2)({
+        close: (target) =>
+          Effect.sync(() => {
+            assert.equal(target, providerSessionId);
+            calls.push("close");
+          }),
         get: () =>
           Effect.succeed(
             Option.some({
+              hasPendingBackgroundWork: Effect.sync(() => hasSessionBackgroundWork),
               hasPendingBackgroundWorkForThread: (target: { id: ProviderThreadId }) =>
                 Effect.sync(() => {
                   assert.equal(target.id, providerThreadId);
@@ -349,6 +356,12 @@ for (const storage of ["sqlite", "memory"] as const) {
         hasBackgroundWork = true;
         yield* control.interrupt({ threadId, providerThreadId, providerTurnId, providerSessionId });
         assert.deepEqual(calls, ["interrupt", "Use the smaller fix.", "reply", "interrupt"]);
+        // Session-level work off the thread roster (a Claude background
+        // subagent) is stopped and settled by releasing the session.
+        hasBackgroundWork = false;
+        hasSessionBackgroundWork = true;
+        yield* control.interrupt({ threadId, providerThreadId, providerTurnId, providerSessionId });
+        assert.deepEqual(calls.slice(4), ["close"]);
       }).pipe(Effect.provide(Layer.merge(controlLayer, replyLayer).pipe(Layer.provide(sessions))));
     }).pipe(Effect.provide(Layer.merge(storeLayer, SqlitePersistenceMemory))),
   );

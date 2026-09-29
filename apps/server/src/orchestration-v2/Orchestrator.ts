@@ -7594,12 +7594,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         run?.providerThreadId === null
           ? undefined
           : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
+      // Background work can outlive the run that started it, so the check
+      // reads the thread's active background items from every run, as the
+      // UI's Waiting banner does, not only this run's items.
       const hasBackgroundWork =
         run?.id === projection.runs.at(-1)?.id &&
         derivePendingBackgroundWork({
           latestRun: run,
           providerThreads: projection.providerThreads,
-          turnItems: projection.turnItems,
+          turnItems: (yield* projectionStore
+            .getRuntimeRecoveryProjection(command.threadId)
+            .pipe(
+              Effect.mapError(
+                () => new OrchestratorProjectionError({ threadId: command.threadId }),
+              ),
+            )).turnItems,
           activeProviderThreadId: projection.thread.activeProviderThreadId,
           runs: projection.runs,
         }).length > 0;
