@@ -14,6 +14,7 @@ import {
   type ForkSessionOptions,
   type ForkSessionResult,
   getSubagentMessages,
+  type HookCallbackMatcher,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -827,6 +828,35 @@ export const layerQueryRunner: Layer.Layer<
   }),
 );
 
+// Every deny carries the full redirect: a resumed transcript drops earlier
+// deny reasons, and only permissionDecisionReason reaches the model.
+export const CLAUDE_NATIVE_SUBAGENT_DENY_REASON =
+  "Native subagents are disabled in T3 Code. Call mcp__t3-code__delegate_task with the same prompt; check mcp__t3-code__orchestrator_capabilities for allowed provider/model IDs.";
+
+// Task is the pre-rename name of Agent that some SDK paths still report;
+// Workflow spawns native agents too.
+const CLAUDE_NATIVE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "Workflow"]);
+
+// Native subagents run outside T3's task model, so T3 cannot show or cancel
+// them. A PreToolUse hook is used instead of canUseTool because the SDK skips
+// canUseTool under bypassPermissions (full-access threads).
+const CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS: HookCallbackMatcher = {
+  matcher: "Agent|Task|Workflow",
+  hooks: [
+    async (hookInput) =>
+      hookInput.hook_event_name === "PreToolUse" &&
+      CLAUDE_NATIVE_SUBAGENT_TOOLS.has(hookInput.tool_name)
+        ? {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+            },
+          }
+        : {},
+  ],
+};
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
@@ -931,6 +961,9 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(input.mcpServers === undefined || input.settings?.blockNativeSubagents === false
+      ? {}
+      : { hooks: { PreToolUse: [CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS] } }),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
