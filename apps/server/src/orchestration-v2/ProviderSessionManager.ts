@@ -48,6 +48,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { orphanedBackgroundWorkEvents } from "./OrphanedBackgroundWork.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -224,6 +225,16 @@ export interface ProviderSessionManagerV2LayerOptions {
   readonly idleTimeoutMs?: number;
   readonly maxIdlePinMs?: number;
   readonly configureMcp?: boolean;
+}
+
+function isLiveRunStatus(status: string): boolean {
+  return (
+    status === "queued" ||
+    status === "preparing" ||
+    status === "starting" ||
+    status === "running" ||
+    status === "waiting"
+  );
 }
 
 function releaseStatusFor(
@@ -448,18 +459,35 @@ export const layerWithOptions = (
                         ),
                       ),
                     );
-                  if (
+                  const capabilitiesMatch =
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
-                    resolved.thread.providerInstanceId === providerInstanceId &&
+                    // A flipped browser or device setting must not survive
+                    // through credential reuse: rotate so the new scope reflects it.
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable &&
-                    // A credential issued while the lineage read failed is replaced once it works.
-                    (resolved.thread.subagent === true) === subagent
-                  ) {
-                    return { mcpCredentialId: existing.providerSessionId, issued: false };
+                    (resolved.thread.subagent === true) === subagent;
+                  if (capabilitiesMatch && resolved !== undefined) {
+                    if (resolved.thread.providerInstanceId !== providerInstanceId) {
+                      const rebound = yield* mcpSessionRegistry.rebindProvider({
+                        rawToken,
+                        providerInstanceId,
+                      });
+                      if (rebound === undefined) {
+                        dropMcpCredentialReservation(threadId, existing.providerSessionId);
+                      } else {
+                        yield* mcpSessions.set({
+                          ...existing,
+                          providerInstanceId,
+                        });
+                        return { mcpCredentialId: existing.providerSessionId, issued: false };
+                      }
+                    } else {
+                      return { mcpCredentialId: existing.providerSessionId, issued: false };
+                    }
+                  } else {
+                    dropMcpCredentialReservation(threadId, existing.providerSessionId);
                   }
-                  dropMcpCredentialReservation(threadId, existing.providerSessionId);
                 }
                 yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({
@@ -713,8 +741,74 @@ export const layerWithOptions = (
         }
       });
 
-      // Read tasks as soon as the session leaves the live map, before a replacement reports its own.
-      // Keep OpenCode's roster: its background subagents share a server and can outlive the session.
+      // Background work (a Claude subagent that outlived its turn, a
+      // backgrounded command) can only be settled by the provider process that
+      // ran it. Once that process is released, cancel what it left running on
+      // its threads so nothing reads as live forever. Threads a live
+      // replacement session took over, and items of runs that are still
+      // active, stay with their current owner.
+      const settleOrphanedBackgroundWork = (
+        entry: LiveSessionEntry,
+        threadIds: Iterable<ThreadId>,
+      ) =>
+        Effect.gen(function* () {
+          const providerSessionId = entry.runtime.providerSessionId;
+          const liveThreadIds = new Set(
+            Array.from((yield* Ref.get(sessions)).values()).flatMap((other) =>
+              Array.from(other.attachedThreadIds),
+            ),
+          );
+          const now = yield* DateTime.now;
+          const pending = Array.from(threadIds);
+          const visited = new Set<ThreadId>();
+          for (let threadId = pending.shift(); threadId !== undefined; threadId = pending.shift()) {
+            if (visited.has(threadId) || liveThreadIds.has(threadId)) continue;
+            visited.add(threadId);
+            const settledThreadId = threadId;
+            const events = yield* Effect.gen(function* () {
+              const projection =
+                yield* projectionStore.getRuntimeRecoveryProjection(settledThreadId);
+              const liveRunIds = new Set(
+                projection.runs.filter((run) => isLiveRunStatus(run.status)).map((run) => run.id),
+              );
+              const allocateEventId = () =>
+                idAllocator.allocate.event({ threadId: settledThreadId, providerSessionId });
+              // The roster itself is cleared by writeReleasedBackgroundWorkEvents,
+              // which keeps tasks a replacement session reported meanwhile.
+              const events = yield* orphanedBackgroundWorkEvents({
+                projection,
+                skipRunIds: liveRunIds,
+                // A delegated child outlives this session and settles itself.
+                settleAppOwnedSubagents: false,
+                now,
+                allocateEventId,
+              });
+              if (events.length > 0) {
+                yield* eventSink.write({ events });
+              }
+              return events;
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("orchestration-v2.provider-session-orphan-settle-failed", {
+                  providerSessionId,
+                  threadId: settledThreadId,
+                  cause,
+                }).pipe(Effect.as([] as ReadonlyArray<OrchestrationV2DomainEvent>)),
+              ),
+            );
+            // A cancelled native subagent's child thread holds its runless root turn.
+            for (const event of events) {
+              if (event.type === "subagent.updated" && event.payload.childThreadId !== null) {
+                pending.push(event.payload.childThreadId);
+              }
+            }
+          }
+        });
+      // Read as soon as the session leaves the live map: after that, a
+      // replacement session with the same id can open and report tasks of its
+      // own on the same provider threads. OpenCode's background subagents run
+      // on a server shared by its sessions and can outlive this one, so their
+      // roster stays.
       const readReleasedBackgroundTasks = Effect.fn(
         "ProviderSessionManager.readReleasedBackgroundTasks",
       )(
@@ -972,6 +1066,8 @@ export const layerWithOptions = (
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
         readonly gracefulSubscribers?: boolean;
+        /** A thread that detached just before this release; its work is orphaned too. */
+        readonly detachedThreadId?: ThreadId;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -1018,6 +1114,13 @@ export const layerWithOptions = (
                     yield* retryReleaseRecords(records);
                     return yield* recorded;
                   }
+                  // Server shutdown leaves this to process-loss recovery.
+                  if (input.reason !== "server_shutdown") {
+                    yield* settleOrphanedBackgroundWork(entry, [
+                      ...entry.attachedThreadIds,
+                      ...(input.detachedThreadId === undefined ? [] : [input.detachedThreadId]),
+                    ]);
+                  }
                   if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
                     return yield* Effect.failCause(closeExit.value.cause);
                   }
@@ -1041,20 +1144,28 @@ export const layerWithOptions = (
                   Effect.flatMap((current) =>
                     Effect.forEach(
                       entry.mcpCredentialIdByThread,
-                      ([threadId, mcpCredentialId]) => {
-                        // Only holders of this credential may prevent its revocation; stale credentials must not leak it.
-                        const heldElsewhere =
-                          isMcpCredentialReserved(threadId, mcpCredentialId) ||
-                          Array.from(current.values()).some(
-                            (other) =>
-                              other !== entry &&
-                              (other.attachedThreadIds.has(threadId) ||
-                                other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
-                          );
-                        return heldElsewhere
-                          ? Effect.void
-                          : clearMcpSession(threadId, mcpCredentialId);
-                      },
+                      ([threadId, mcpCredentialId]) =>
+                        Effect.gen(function* () {
+                          // Id-sensitive: a stale record for the same thread but
+                          // a DIFFERENT credential (left behind by an old session
+                          // the thread rotated away from) must not veto revoking
+                          // this session's own credential, or it leaks forever.
+                          const stillCurrent =
+                            (yield* mcpSessions.read(threadId))?.providerSessionId ===
+                            mcpCredentialId;
+                          const heldElsewhere =
+                            stillCurrent ||
+                            isMcpCredentialReserved(threadId, mcpCredentialId) ||
+                            Array.from(current.values()).some(
+                              (other) =>
+                                other !== entry &&
+                                (other.attachedThreadIds.has(threadId) ||
+                                  other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
+                            );
+                          return yield* heldElsewhere
+                            ? Effect.void
+                            : clearMcpSession(threadId, mcpCredentialId);
+                        }),
                       { discard: true },
                     ),
                   ),
@@ -2378,6 +2489,7 @@ export const layerWithOptions = (
               yield* releaseEntry({
                 providerSessionId: input.providerSessionId,
                 reason: "manual_shutdown",
+                detachedThreadId: input.threadId,
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
                 detachedThreadId: input.threadId,
               });
