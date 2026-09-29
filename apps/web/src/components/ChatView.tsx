@@ -133,7 +133,6 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import {
-  Fragment,
   lazy,
   memo,
   type SetStateAction,
@@ -403,8 +402,8 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
-import { BackgroundTaskPanel } from "./chat/BackgroundTasks";
-import { backgroundTaskLabel, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
+import { BackgroundTaskPanel, BackgroundTasksBannerPopover } from "./chat/BackgroundTasks";
+import { backgroundTaskEntries, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -6907,7 +6906,6 @@ export default function ChatView(props: ChatViewProps) {
     if (activeBackgroundTasks.length === 0 || !activeThread) {
       return null;
     }
-    const count = activeBackgroundTasks.length;
     return {
       id: `background-work:${activeThread.id}`,
       variant: "default",
@@ -6918,42 +6916,20 @@ export default function ChatView(props: ChatViewProps) {
           aria-hidden="true"
         />
       ),
-      title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
-      description: (
-        <>
-          {activeBackgroundTasks.map((task, index) => {
-            const rosterTask = rosterBackgroundTasks.find(
-              (candidate) => candidate.taskId === task.taskId,
-            );
-            const label = backgroundTaskLabel(rosterTask ?? task);
-            // Only roster tasks have an output tail; turn-item work stays plain text.
-            return (
-              <Fragment key={task.taskId}>
-                {index > 0 ? ", " : null}
-                {rosterTask === undefined || !activeThreadRef ? (
-                  label
-                ) : (
-                  <button
-                    type="button"
-                    className="cursor-pointer font-mono underline-offset-2 hover:text-foreground hover:underline"
-                    aria-label={`Show output of ${label}`}
-                    onClick={() =>
-                      useRightPanelStore.getState().openBackgroundTask(activeThreadRef, task.taskId)
-                    }
-                  >
-                    {label}
-                  </button>
-                )}
-              </Fragment>
-            );
-          })}
-        </>
+      // The whole summary opens the task list; the Stop action stays thread-wide.
+      title: (
+        <BackgroundTasksBannerPopover
+          environmentId={environmentId}
+          threadId={activeThread.id}
+          entries={backgroundTaskEntries(activeBackgroundTasks, rosterBackgroundTasks)}
+        />
       ),
       actions: (
         <Button
           size="xs"
           variant="ghost"
           disabled={isStoppingBackgroundWork}
+          aria-label="Stop all background work"
           onClick={() => void handleStopBackgroundWork()}
         >
           {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
@@ -6963,7 +6939,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeBackgroundTasks,
     activeThread,
-    activeThreadRef,
+    environmentId,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
     rosterBackgroundTasks,
