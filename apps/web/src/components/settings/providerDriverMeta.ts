@@ -8,6 +8,7 @@ import {
   OpenCodeSettings,
   PiSettings,
   ProviderDriverKind,
+  ZCodeSettings,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
 
@@ -90,6 +91,27 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     value: ProviderDriverKind.make("pi"),
     label: "Pi",
     settingsSchema: PiSettings,
+  },
+  {
+    value: ProviderDriverKind.make("zcode"),
+    label: "ZCode",
+    badgeLabel: "Early Access",
+    settingsSchema: ZCodeSettings,
+    hasDefaultInstance: false,
+    environmentFields: [
+      {
+        name: "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE",
+        label: "Personal provider config",
+        description:
+          "Optional. Absolute path to the ZCode provider_config.json this instance uses.",
+        placeholder: "/path/to/provider_config.json",
+      },
+      {
+        name: "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+        label: "Built-in provider config",
+        description: "Optional. Overrides ZCode's bundled provider catalog.",
+      },
+    ],
   },
   {
     value: ProviderDriverKind.make("acpRegistry"),
