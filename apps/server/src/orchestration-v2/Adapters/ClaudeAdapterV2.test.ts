@@ -290,6 +290,105 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.deepEqual(options.supportedDialogKinds, ["resume_return"]);
   });
 
+  describe("native subagent blocking", () => {
+    const T3_MCP_SERVERS = {
+      "t3-code": { type: "http" as const, url: "http://127.0.0.1:43123/mcp" },
+    };
+    const fullAccessOptions = (input: {
+      readonly mcpServers?: typeof T3_MCP_SERVERS;
+      readonly settings?: ClaudeSettings;
+      readonly disallowedTools?: ReadonlyArray<string>;
+    }) =>
+      ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        nativeThreadId: "native-thread-subagents",
+        resume: false,
+        cwd: "/workspace",
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        ...input,
+      });
+    const runPreToolUseHooks = (
+      options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+      toolName: string,
+    ) =>
+      Promise.all(
+        (options.hooks?.PreToolUse ?? []).flatMap((matcher) =>
+          matcher.hooks.map((hook) =>
+            hook(
+              {
+                hook_event_name: "PreToolUse",
+                session_id: "native-thread-subagents",
+                transcript_path: "/tmp/transcript.jsonl",
+                cwd: "/workspace",
+                tool_name: toolName,
+                tool_input: { prompt: "list files" },
+                tool_use_id: "toolu_1",
+              },
+              "toolu_1",
+              { signal: new AbortController().signal },
+            ),
+          ),
+        ),
+      );
+
+    it.each(["Agent", "Task", "Workflow"])(
+      "denies native %s with a delegate_task hint in full-access mode",
+      async (toolName) => {
+        const options = fullAccessOptions({ mcpServers: T3_MCP_SERVERS });
+        assert.equal(options.permissionMode, "bypassPermissions");
+        assert.deepEqual(await runPreToolUseHooks(options, toolName), [
+          {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: ClaudeAdapterV2.CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+            },
+          },
+        ]);
+        assert.include(
+          ClaudeAdapterV2.CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+          "mcp__t3-code__delegate_task",
+        );
+      },
+    );
+
+    it("leaves other tools alone", async () => {
+      const options = fullAccessOptions({ mcpServers: T3_MCP_SERVERS });
+      for (const toolName of ["TaskStop", "Monitor", "SendMessage", "ListAgents", "Bash"]) {
+        assert.deepEqual(await runPreToolUseHooks(options, toolName), [{}]);
+      }
+    });
+
+    it("removes the native subagent tools, keeping existing disallowed tools", () => {
+      assert.deepEqual(fullAccessOptions({ mcpServers: T3_MCP_SERVERS }).disallowedTools, [
+        "Agent",
+        "Task",
+        "Workflow",
+      ]);
+      assert.deepEqual(
+        fullAccessOptions({ mcpServers: T3_MCP_SERVERS, disallowedTools: ["WebFetch", "Agent"] })
+          .disallowedTools,
+        ["WebFetch", "Agent", "Task", "Workflow"],
+      );
+    });
+
+    it("blocks nothing without the T3 MCP server", () => {
+      const options = fullAccessOptions({ disallowedTools: ["WebFetch"] });
+      assert.isUndefined(options.hooks);
+      assert.deepEqual(options.disallowedTools, ["WebFetch"]);
+    });
+
+    it("blocks nothing when the setting is off", () => {
+      const options = fullAccessOptions({
+        mcpServers: T3_MCP_SERVERS,
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, blockNativeSubagents: false },
+      });
+      assert.isUndefined(options.hooks);
+      assert.isUndefined(options.disallowedTools);
+    });
+  });
+
   it("projects AskUserQuestion input with question text as the answer key", () => {
     assert.deepEqual(
       ClaudeAdapterV2.claudeUserInputQuestions({
@@ -1028,8 +1127,8 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -1188,8 +1287,8 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
             offer: () => Effect.void,
             setModel: () => Effect.void,
             setPermissionMode: () => Effect.void,
-            stopTask: () => Effect.void,
             interrupt: Effect.void,
+            stopTask: () => Effect.void,
             close: Effect.void,
           };
         }),
@@ -1308,8 +1407,8 @@ describe("ClaudeAdapterV2 resume compaction", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -1534,8 +1633,8 @@ describe("ClaudeAdapterV2 attachments", () => {
                   }),
                 setModel: () => Effect.void,
                 setPermissionMode: () => Effect.void,
-                stopTask: () => Effect.void,
                 interrupt: Effect.void,
+                stopTask: () => Effect.void,
                 close: Effect.void,
               }),
             forkSession: () => Effect.die("unused forkSession"),
@@ -1679,8 +1778,8 @@ describe("ClaudeAdapterV2 attachments", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -1774,8 +1873,8 @@ describe("ClaudeAdapterV2 native fork", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -2066,8 +2165,8 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Effect.void,
                 };
               }),
@@ -2350,6 +2449,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       const offeredMessages: Array<SDKUserMessage> = [];
       const permissionModeChanges: Array<string> = [];
+      const stoppedTaskIds: Array<string> = [];
       const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
         [];
       const continuationReceipts =
@@ -2398,8 +2498,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     }),
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: options?.stopTask ?? (() => Effect.void),
                   interrupt: Effect.void,
+                  stopTask:
+                    options?.stopTask ??
+                    ((taskId: string) =>
+                      Effect.sync(() => {
+                        stoppedTaskIds.push(taskId);
+                      })),
                   close: Queue.shutdown(processMessages),
                 };
               }
@@ -2431,8 +2536,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   Effect.sync(() => {
                     permissionModeChanges.push(mode);
                   }),
-                stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
+                stopTask:
+                  options?.stopTask ??
+                  ((taskId) =>
+                    Effect.sync(() => {
+                      stoppedTaskIds.push(taskId);
+                    })),
                 close: options?.close?.(sdkMessages) ?? Effect.void,
               };
             }),
@@ -2497,6 +2607,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           return uuid;
         },
         permissionModeChanges,
+        stoppedTaskIds,
         continuationRequests,
         continuationReceipts,
         events,
@@ -4716,7 +4827,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const roster = providerThreadRosterEvents(harness.events).at(-1)?.providerThread
           .pendingBackgroundTasks;
         assert.deepEqual(roster, [
-          { taskId: longRunning.taskId, kind: "monitor", description: "Monitor 0" },
+          {
+            taskId: longRunning.taskId,
+            kind: "monitor",
+            description: "Monitor 0",
+            toolUseId: "toolu_monitor_0",
+            startedAt: "1970-01-01T00:00:00.000Z",
+          },
         ]);
       }).pipe(
         Effect.provide(
@@ -4829,6 +4946,109 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  const WAKE_COMMAND = "python3 -m http.server 8765";
+  const WAKE_OUTPUT_FILE = `/tmp/claude-replay/tasks/${WAKE_TASK_ID}.output`;
+  const wakeBashToolUse = claudeSdkFrame({
+    type: "assistant",
+    message: {
+      model: "claude-sonnet-4-6",
+      id: "msg_background_bash",
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: WAKE_TOOL_USE_ID,
+          name: "Bash",
+          input: {
+            command: WAKE_COMMAND,
+            description: WAKE_TASK_DESCRIPTION,
+            run_in_background: true,
+          },
+        },
+      ],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+    parent_tool_use_id: null,
+    uuid: "00000000-0000-4000-8000-000000000301",
+    session_id: WAKE_NATIVE_SESSION,
+  });
+  const wakeLevelRoster = claudeSdkFrame({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: [{ task_id: WAKE_TASK_ID, task_type: "local_bash", description: WAKE_TASK_DESCRIPTION }],
+    uuid: "00000000-0000-4000-8000-000000000302",
+    session_id: WAKE_NATIVE_SESSION,
+  });
+  const wakeBashAck = claudeSdkFrame({
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          tool_use_id: WAKE_TOOL_USE_ID,
+          type: "tool_result",
+          content: `Command running in background with ID: ${WAKE_TASK_ID}. Output is being written to: ${WAKE_OUTPUT_FILE}. You will be notified when it completes.`,
+          is_error: false,
+        },
+      ],
+    },
+    parent_tool_use_id: null,
+    uuid: "00000000-0000-4000-8000-000000000303",
+    session_id: WAKE_NATIVE_SESSION,
+    tool_use_result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: WAKE_TASK_ID },
+  });
+  const startBackgroundBashTurn = (harness: Effect.Success<typeof makeWakeHarness>) =>
+    Effect.gen(function* () {
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-claude-roster-enrichment"),
+          text: "Start the dev server in the background.",
+          attachments: [],
+        }),
+      );
+      // Recorded CLI order: tool_use, task_started, level snapshot, then the ack.
+      for (const frame of [wakeBashToolUse, wakeTaskStarted, wakeLevelRoster, wakeBashAck]) {
+        yield* Queue.offer(harness.sdkMessages, frame);
+      }
+    });
+
+  it.effect("records the command, tool use, and output file on a background task", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startBackgroundBashTurn(harness);
+        const latestTask = () =>
+          providerThreadRosterEvents(harness.events).at(-1)?.providerThread
+            .pendingBackgroundTasks?.[0];
+        yield* awaitUntil(() => latestTask()?.outputFile !== undefined, "output file recorded");
+
+        const task = latestTask();
+        assert.deepInclude(task, {
+          taskId: WAKE_TASK_ID,
+          toolUseId: WAKE_TOOL_USE_ID,
+          command: WAKE_COMMAND,
+          outputFile: WAKE_OUTPUT_FILE,
+        });
+        assert.isString(task?.startedAt);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("a settled Stop leaves a turn that replaced the closing process alone", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -4869,8 +5089,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   // The first CLI process keeps streaming until the test ends
                   // it, so Stop stays parked waiting for it to exit.
                   close: isFirstProcess
@@ -5016,6 +5236,34 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("stops one background task through the live query", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        if (harness.runtime.stopBackgroundTask === undefined) {
+          throw new Error("Claude adapter runtime must expose stopBackgroundTask.");
+        }
+        const stopBackgroundTask = harness.runtime.stopBackgroundTask;
+        yield* startBackgroundBashTurn(harness);
+        yield* awaitUntil(
+          () => providerThreadRosterEvents(harness.events).length > 0,
+          "background task on roster",
+        );
+
+        const unknown = yield* Effect.exit(
+          stopBackgroundTask({ providerThread: harness.providerThread, taskId: "not-a-task" }),
+        );
+        assert.equal(unknown._tag, "Failure");
+        yield* stopBackgroundTask({ providerThread: harness.providerThread, taskId: WAKE_TASK_ID });
+        assert.deepEqual(harness.stoppedTaskIds, [WAKE_TASK_ID]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("clears the roster when a turn fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -5129,8 +5377,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
-                    stopTask: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(queue),
                   };
                 }),
@@ -5232,7 +5480,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) => event.providerThread.id === providerThreadA.id,
           )?.providerThread.pendingBackgroundTasks;
           assert.deepEqual(rosterAAfterSettle ?? [], [
-            { taskId: taskA, description: "work on A", kind: "command" },
+            {
+              taskId: taskA,
+              description: "work on A",
+              kind: "command",
+              toolUseId: "toolu-roster-a",
+              startedAt: "1970-01-01T00:00:00.000Z",
+            },
           ]);
           assert.isTrue(yield* hasPendingBackgroundWork);
           assert.isTrue(yield* hasPendingBackgroundWorkForThread(providerThreadA));
@@ -9892,6 +10146,90 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("offers the next wake after a dropped continuation releases its request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const taskIds = ["task-wake-dropped-a", "task-wake-dropped-b", "task-wake-dropped-c"];
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const subagentEvents = () =>
+          harness.events.filter((event) => event.type === "subagent.updated");
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-dropped"),
+            text: "Spawn three background subagents.",
+            attachments: [],
+          }),
+        );
+        for (const [index, taskId] of taskIds.entries()) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: taskId,
+              tool_use_id: `toolu-${taskId}`,
+              description: `Background research ${index}`,
+              subagent_type: "general-purpose",
+              task_type: "local_agent",
+              prompt: "Investigate.",
+              uuid: `00000000-0000-4000-8000-00000000041${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        }
+        yield* awaitUntil(() => subagentEvents().length >= taskIds.length, "subagents created");
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000420",
+            result: "Spawned the subagents in the background.",
+          }),
+        );
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "first turn terminal");
+
+        const notify = (index: number) =>
+          Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_notification",
+              task_id: taskIds[index]!,
+              tool_use_id: `toolu-${taskIds[index]!}`,
+              status: "completed",
+              output_file: `/tmp/${taskIds[index]!}.output`,
+              summary: `Subagent ${index} finished.`,
+              uuid: `00000000-0000-4000-8000-00000000043${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+
+        yield* notify(0);
+        yield* awaitUntil(() => harness.continuationRequests.length === 1, "first wake offered");
+        // The continuation for the first wake never ran (its dispatch failed).
+        yield* harness.continuationRequests[0]!.clearIfCurrent!();
+
+        yield* notify(1);
+        yield* awaitUntil(() => harness.continuationRequests.length === 2, "second wake offered");
+
+        // A late release from the dropped offer must not free the live one.
+        yield* harness.continuationRequests[0]!.clearIfCurrent!();
+        yield* notify(2);
+        let quietYields = 0;
+        yield* awaitUntil(() => quietYields++ >= 50, "third wake stays with the live request");
+        assert.lengthOf(harness.continuationRequests, 2);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("re-opens a resumed subagent whose task_started races past settle", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -10220,8 +10558,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   // End this process stream so openQuery can replace it.
                   close: Queue.shutdown(sdkMessages),
                 };
@@ -10410,8 +10748,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
-                    stopTask: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 }),
@@ -10652,8 +10990,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
-                    stopTask: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 }),
@@ -10853,8 +11191,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
-                  stopTask: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   close: Queue.shutdown(sdkMessages),
                 };
               }),
@@ -11036,8 +11374,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
-                    stopTask: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 });
@@ -11175,8 +11513,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
-                    stopTask: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 });

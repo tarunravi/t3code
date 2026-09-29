@@ -162,6 +162,7 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
                 setPermissionMode: () => Effect.void,
                 stopTask: () => Effect.void,
                 interrupt: Effect.die("automatic delivery must never interrupt"),
+                stopTask: () => Effect.void,
                 close: Effect.void,
               }),
             forkSession: () => Effect.die("unused"),

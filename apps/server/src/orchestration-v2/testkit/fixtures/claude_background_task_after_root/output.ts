@@ -56,6 +56,20 @@ export function assertClaudeBackgroundTaskAfterRootOutput(
   );
 
   assert.isAtLeast(pendingRosterIndex, 0, "replay must project the live background task roster");
+  const enrichedTask = result.domainEvents
+    .flatMap((event) =>
+      event.type === "provider-thread.updated" ? (event.payload.pendingBackgroundTasks ?? []) : [],
+    )
+    .findLast((task) => task.taskId === BACKGROUND_TASK_ID);
+  assert.deepInclude(
+    enrichedTask,
+    {
+      toolUseId: "toolu_01DAnwwvVvLM1cTfzrm6kkor",
+      command: "sleep 25 && echo L2_BG_DONE",
+      outputFile: `/tmp/claude-replay-claude_background_task_after_root/tasks/${BACKGROUND_TASK_ID}.output`,
+    },
+    "the roster must carry the Bash command and its output file before the task settles",
+  );
   assert.isAbove(
     waitingRunIndex,
     pendingRosterIndex,
