@@ -3353,7 +3353,9 @@ export function makeClaudeAdapterV2(
               return { kind: "command", label, outcome };
           }
         });
-        const requestedContinuations = yield* Ref.make(new Set<string>());
+        // Native thread -> the offer that owns its sticky continuation request.
+        // A dropped offer clears only its own entry, never a newer one.
+        const requestedContinuations = yield* Ref.make(new Map<string, symbol>());
         // ExitPlanMode plans whose permission callback fired while the tool's
         // root frames were held for a prompt echo. Each projects when its
         // tool_use frame is handled, in whichever run that frame is routed
@@ -3726,7 +3728,7 @@ export function makeClaudeAdapterV2(
               if (!current.has(nativeThreadId)) {
                 return current;
               }
-              const updated = new Set(current);
+              const updated = new Map(current);
               updated.delete(nativeThreadId);
               return updated;
             });
@@ -5566,12 +5568,13 @@ export function makeClaudeAdapterV2(
             });
             return;
           }
+          const offerToken = Symbol("claude-continuation-offer");
           const shouldOffer = yield* Ref.modify(requestedContinuations, (current) => {
             if (current.has(wakeInput.nativeThreadId)) {
               return [false, current] as const;
             }
-            const updated = new Set(current);
-            updated.add(wakeInput.nativeThreadId);
+            const updated = new Map(current);
+            updated.set(wakeInput.nativeThreadId, offerToken);
             return [true, updated] as const;
           });
           if (!shouldOffer) {
@@ -5594,6 +5597,17 @@ export function makeClaudeAdapterV2(
             driver: CLAUDE_PROVIDER,
             detail,
             ...(notification === null ? {} : { notification }),
+            // Only a drained continuation turn clears the request; an offer
+            // that never becomes one must release it or later wakes are lost.
+            clearIfCurrent: () =>
+              Ref.update(requestedContinuations, (current) => {
+                if (current.get(wakeInput.nativeThreadId) !== offerToken) {
+                  return current;
+                }
+                const updated = new Map(current);
+                updated.delete(wakeInput.nativeThreadId);
+                return updated;
+              }),
           });
         });
 
@@ -7693,7 +7707,7 @@ export function makeClaudeAdapterV2(
               return [entry.messages, updated] as const;
             });
             yield* Ref.update(requestedContinuations, (current) => {
-              const updated = new Set(current);
+              const updated = new Map(current);
               updated.delete(nativeThreadId);
               return updated;
             });
