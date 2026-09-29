@@ -2,6 +2,8 @@ import {
   AntigravitySettings,
   ClaudeSettings,
   CodexSettings,
+  OmpSettings,
+  ZCodeSettings,
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -41,6 +43,18 @@ export const providerClients = makeProviderClientRegistry([
     acpRegistryAgentIds: ["antigravity-acp"],
     settingsSchema: AntigravitySettings,
   },
+  {
+    driverKind: ProviderDriverKind.make("zcode"),
+    label: "ZCode",
+    badgeLabel: "Early Access",
+    settingsSchema: ZCodeSettings,
+    hasDefaultInstance: false,
+    environmentFields: [
+      { name: "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", label: "Personal provider config", description: "Optional. Absolute path to provider_config.json.", placeholder: "/path/to/provider_config.json" },
+      { name: "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", label: "Built-in provider config", description: "Optional. Overrides the bundled provider catalog." },
+    ],
+  },
+  { driverKind: ProviderDriverKind.make("omp"), label: "oh-my-pi", settingsSchema: OmpSettings, hasDefaultInstance: false },
   museClient,
   piClient,
   acpRegistryClient,
