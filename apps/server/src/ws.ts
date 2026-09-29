@@ -49,6 +49,7 @@ import {
   type AcpRegistryListProvidersInput,
   type AcpRegistryListSessionsInput,
   type AcpRegistrySetProviderInput,
+  OrchestrationBackgroundTaskError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationSearchThreadsError,
   OrchestrationV2SearchThreadError,
@@ -203,6 +204,10 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import {
+  findBackgroundTaskOutputFile,
+  readBackgroundTaskOutput,
+} from "./orchestration-v2/backgroundTaskOutputQuery.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -1948,6 +1953,16 @@ export const layerWsRpc = (
         return yield* mutateProjectWithClone(projectService, projectCloneTracker, mutation);
       });
 
+      const taskNotFoundWithCause = (taskId: string, cause: unknown) =>
+        new OrchestrationBackgroundTaskError({ reason: "task-not-found", taskId, cause });
+      const loadBackgroundTaskProviderThreads = (input: {
+        readonly threadId: ThreadId;
+        readonly taskId: string;
+      }) =>
+        threadManagement
+          .getThreadRecords(input.threadId, ["providerThreads"])
+          .pipe(Effect.mapError((cause) => taskNotFoundWithCause(input.taskId, cause)));
+
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
@@ -2004,6 +2019,53 @@ export const layerWsRpc = (
           threadManagement.forceStopThread(input),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
+        [ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput]: (input) => {
+          const operation = Effect.fn("ws.getBackgroundTaskOutput")(function* () {
+            const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
+            return yield* readBackgroundTaskOutput({
+              taskId: input.taskId,
+              outputFile: findBackgroundTaskOutputFile(providerThreads, input.taskId),
+            });
+          });
+          return operation();
+        },
+        [ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask]: (input) => {
+          const operation = Effect.fn("ws.stopBackgroundTask")(function* () {
+            const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
+            const providerThread = providerThreads.find((candidate) =>
+              candidate.pendingBackgroundTasks?.some((task) => task.taskId === input.taskId),
+            );
+            const taskNotFound = new OrchestrationBackgroundTaskError({
+              reason: "task-not-found",
+              taskId: input.taskId,
+            });
+            if (providerThread?.providerSessionId == null) return yield* taskNotFound;
+            const runtime = Option.getOrNull(
+              yield* providerSessionsV2
+                .get(providerThread.providerSessionId)
+                .pipe(Effect.mapError((cause) => taskNotFoundWithCause(input.taskId, cause))),
+            );
+            if (runtime === null) return yield* taskNotFound;
+            if (runtime.stopBackgroundTask === undefined) {
+              return yield* new OrchestrationBackgroundTaskError({
+                reason: "stop-unsupported",
+                taskId: input.taskId,
+              });
+            }
+            yield* runtime.stopBackgroundTask({ providerThread, taskId: input.taskId }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationBackgroundTaskError({
+                    reason: "stop-failed",
+                    taskId: input.taskId,
+                    cause,
+                  }),
+              ),
+            );
+            return {};
+          });
+          return operation();
+        },
         [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: (input) =>
           nativeChildWork.getNativeChildWork(input),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
@@ -2608,6 +2670,7 @@ export const layerWsRpc = (
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverGetUsageSpeed]: (input) => usage.readSpeed(input),
+        [WS_METHODS.serverGetUsageModelRates]: (input) => usage.readModelRates(input),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),
         [WS_METHODS.serverPrepareTriage]: (input) => triage.prepare(input),
