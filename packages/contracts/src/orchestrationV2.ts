@@ -755,6 +755,13 @@ const PendingBackgroundTaskFields = {
   taskId: TrimmedNonEmptyString,
   /** The work's name: a subagent's title, a command's description, a monitor's. */
   description: Schema.optional(TrimmedNonEmptyString),
+  /** Provider tool call that started the task (Claude Bash `tool_use_id`). */
+  toolUseId: Schema.optional(TrimmedNonEmptyString),
+  /** Shell command line from that tool call, when the task runs a command. */
+  command: Schema.optional(TrimmedNonEmptyString),
+  /** Host path the provider streams the task's output to. Only the server reads it. */
+  outputFile: Schema.optional(TrimmedNonEmptyString),
+  startedAt: Schema.optional(IsoDateTime),
 };
 
 /**
@@ -777,11 +784,7 @@ export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
     Schema.Struct({ ...PendingBackgroundTaskFields, kind: Schema.Literal("background_task") }),
   ],
   (kind) => Schema.Struct({ ...PendingBackgroundTaskFields, kind }),
-  ({ taskId, description }) => ({
-    taskId,
-    ...(description === undefined ? {} : { description }),
-    kind: "background_task",
-  }),
+  ({ kind: _kind, ...fields }) => ({ ...fields, kind: "background_task" }),
 );
 export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2PendingBackgroundTask.Type;
 
@@ -2884,6 +2887,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
+  getBackgroundTaskOutput: "orchestration.getBackgroundTaskOutput",
+  stopBackgroundTask: "orchestration.stopBackgroundTask",
   launchThread: "orchestration.launchThread",
   subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
@@ -3223,6 +3228,50 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedError<Orch
   }
 }
 
+export const OrchestrationV2GetBackgroundTaskOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: TrimmedNonEmptyString,
+});
+export type OrchestrationV2GetBackgroundTaskOutputInput =
+  typeof OrchestrationV2GetBackgroundTaskOutputInput.Type;
+
+export const OrchestrationV2GetBackgroundTaskOutputResult = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  /** The last lines of the task's output, bounded by line count and bytes. */
+  text: Schema.String,
+  /** True when earlier output was left out. */
+  truncated: Schema.Boolean,
+});
+export type OrchestrationV2GetBackgroundTaskOutputResult =
+  typeof OrchestrationV2GetBackgroundTaskOutputResult.Type;
+
+const BACKGROUND_TASK_ERROR_MESSAGES = {
+  "task-not-found": "This background task is no longer running.",
+  "output-unavailable": "This background task has no readable output yet.",
+  "read-failed": "Background task output could not be read.",
+  "stop-unsupported": "This provider cannot stop a single background task.",
+  "stop-failed": "The background task could not be stopped.",
+} as const;
+
+export class OrchestrationBackgroundTaskError extends Schema.TaggedError<OrchestrationBackgroundTaskError>()(
+  "OrchestrationBackgroundTaskError",
+  {
+    reason: Schema.Literals([
+      "task-not-found",
+      "output-unavailable",
+      "read-failed",
+      "stop-unsupported",
+      "stop-failed",
+    ]),
+    taskId: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return BACKGROUND_TASK_ERROR_MESSAGES[this.reason];
+  }
+}
+
 export const OrchestrationV2RpcSchemas = {
   dispatchCommand: {
     input: OrchestrationV2Command,
@@ -3247,6 +3296,14 @@ export const OrchestrationV2RpcSchemas = {
   getWorkflowScript: {
     input: OrchestrationV2GetWorkflowScriptInput,
     output: OrchestrationV2GetWorkflowScriptResult,
+  },
+  getBackgroundTaskOutput: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: OrchestrationV2GetBackgroundTaskOutputResult,
+  },
+  stopBackgroundTask: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: Schema.Struct({}),
   },
   launchThread: {
     input: OrchestrationV2ThreadLaunchInput,
