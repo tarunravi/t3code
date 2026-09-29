@@ -71,6 +71,50 @@ describe("AntigravityAdapterV2 flavor", () => {
     assert.isTrue(flavor.subagentsIdleOnTurnCompletion);
   });
 
+  it("extracts subagent title, prompt, and model from raw input", () => {
+    const update = flavor.extractSubagentUpdate?.({
+      toolCallId: "trajectory:5",
+      title: "Running start_subagent",
+      kind: "other",
+      status: "inProgress",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Model: "inherit",
+              Prompt: "Generate upbeat background music tracks.",
+              Role: "Music Generator",
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(update?.status, "running");
+    assert.equal(update?.title, "Music Generator");
+    assert.equal(update?.prompt, "Generate upbeat background music tracks.");
+    assert.isNull(update?.model);
+
+    const explicitModelUpdate = flavor.extractSubagentUpdate?.({
+      toolCallId: "trajectory:6",
+      title: "Running start_subagent",
+      kind: "other",
+      status: "inProgress",
+      data: {
+        rawInput: {
+          Subagents: [
+            {
+              Model: "gemini-2.5-pro",
+              Prompt: "Investigate performance issue.",
+              Role: "Performance Analyst",
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(explicitModelUpdate?.title, "Performance Analyst");
+    assert.equal(explicitModelUpdate?.model, "gemini-2.5-pro");
+  });
+
   it("maps runtime modes to the agent's native permission modes", () => {
     const mode = (runtimeMode: "approval-required" | "auto-accept-edits" | "full-access") =>
       flavor.sessionModeForPolicy?.(
