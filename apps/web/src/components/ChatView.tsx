@@ -402,6 +402,8 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
+import { BackgroundTaskPanel, BackgroundTasksBannerPopover } from "./chat/BackgroundTasks";
+import { backgroundTaskEntries, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -6872,6 +6874,10 @@ export default function ChatView(props: ChatViewProps) {
   // banner is the only visible stop affordance. The interrupt path also
   // accepts a completed run while its provider still has background work.
   const activeBackgroundTasks = !isWorking && activeThread ? pendingBackgroundTasks : [];
+  const rosterBackgroundTasks = useMemo(
+    () => selectThreadBackgroundTasks(serverProjection),
+    [serverProjection],
+  );
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork =
     stoppingBackgroundWorkKey === `${environmentId}:${activeThreadId}`;
@@ -6900,7 +6906,6 @@ export default function ChatView(props: ChatViewProps) {
     if (activeBackgroundTasks.length === 0 || !activeThread) {
       return null;
     }
-    const count = activeBackgroundTasks.length;
     return {
       id: `background-work:${activeThread.id}`,
       variant: "default",
@@ -6911,20 +6916,34 @@ export default function ChatView(props: ChatViewProps) {
           aria-hidden="true"
         />
       ),
-      title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
-      description: activeBackgroundTasks.map((task) => task.description || task.taskId).join(", "),
+      // The whole summary opens the task list; the Stop action stays thread-wide.
+      title: (
+        <BackgroundTasksBannerPopover
+          environmentId={environmentId}
+          threadId={activeThread.id}
+          entries={backgroundTaskEntries(activeBackgroundTasks, rosterBackgroundTasks)}
+        />
+      ),
       actions: (
         <Button
           size="xs"
           variant="ghost"
           disabled={isStoppingBackgroundWork}
+          aria-label="Stop all background work"
           onClick={() => void handleStopBackgroundWork()}
         >
           {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
         </Button>
       ),
     };
-  }, [activeBackgroundTasks, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
+  }, [
+    activeBackgroundTasks,
+    activeThread,
+    environmentId,
+    handleStopBackgroundWork,
+    isStoppingBackgroundWork,
+    rosterBackgroundTasks,
+  ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
   // pill); sending a message clears it as a side effect of the send path.
@@ -10391,6 +10410,13 @@ export default function ChatView(props: ChatViewProps) {
         sideThreadId={renderedRightPanelSurface.threadId}
         markdownCwd={gitCwd ?? undefined}
         workspaceRoot={activeWorkspaceRoot}
+      />
+    ) : renderedRightPanelSurface?.kind === "background-task" ? (
+      <BackgroundTaskPanel
+        key={renderedRightPanelSurface.taskId}
+        environmentId={activeThread.environmentId}
+        threadId={activeThread.id}
+        taskId={renderedRightPanelSurface.taskId}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
