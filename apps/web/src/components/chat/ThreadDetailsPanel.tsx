@@ -27,6 +27,7 @@ import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
+import { ThreadBackgroundTasksSection } from "./BackgroundTasks";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
 interface VersionMismatchIssue {
@@ -224,6 +225,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
 
           {density === "full" && !props.draftId ? (
             <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />
+          ) : null}
+
+          {density === "full" && !props.draftId ? (
+            <ThreadBackgroundTasksSection
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+            />
           ) : null}
 
           {density === "full" && !props.draftId ? (

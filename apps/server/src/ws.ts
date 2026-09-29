@@ -50,6 +50,7 @@ import {
   type AcpRegistryListProvidersInput,
   type AcpRegistryListSessionsInput,
   type AcpRegistrySetProviderInput,
+  OrchestrationBackgroundTaskError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
@@ -188,6 +189,10 @@ import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/Atta
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import {
+  findBackgroundTaskOutputFile,
+  readBackgroundTaskOutput,
+} from "./orchestration-v2/backgroundTaskOutputQuery.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -1807,6 +1812,16 @@ const layerWsRpc = (
         return result;
       });
 
+      const taskNotFoundWithCause = (taskId: string, cause: unknown) =>
+        new OrchestrationBackgroundTaskError({ reason: "task-not-found", taskId, cause });
+      const loadBackgroundTaskProviderThreads = (input: {
+        readonly threadId: ThreadId;
+        readonly taskId: string;
+      }) =>
+        threadManagement
+          .getThreadRecords(input.threadId, ["providerThreads"])
+          .pipe(Effect.mapError((cause) => taskNotFoundWithCause(input.taskId, cause)));
+
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
@@ -1859,6 +1874,49 @@ const layerWsRpc = (
           ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
+        [ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput]: (input) =>
+          Effect.gen(function* () {
+            const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
+            return yield* readBackgroundTaskOutput({
+              taskId: input.taskId,
+              outputFile: findBackgroundTaskOutputFile(providerThreads, input.taskId),
+            });
+          }),
+        [ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask]: (input) =>
+          Effect.gen(function* () {
+            const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
+            const providerThread = providerThreads.find((candidate) =>
+              candidate.pendingBackgroundTasks?.some((task) => task.taskId === input.taskId),
+            );
+            const taskNotFound = new OrchestrationBackgroundTaskError({
+              reason: "task-not-found",
+              taskId: input.taskId,
+            });
+            if (providerThread?.providerSessionId == null) return yield* taskNotFound;
+            const runtime = Option.getOrNull(
+              yield* providerSessionsV2
+                .get(providerThread.providerSessionId)
+                .pipe(Effect.mapError((cause) => taskNotFoundWithCause(input.taskId, cause))),
+            );
+            if (runtime === null) return yield* taskNotFound;
+            if (runtime.stopBackgroundTask === undefined) {
+              return yield* new OrchestrationBackgroundTaskError({
+                reason: "stop-unsupported",
+                taskId: input.taskId,
+              });
+            }
+            yield* runtime.stopBackgroundTask({ providerThread, taskId: input.taskId }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationBackgroundTaskError({
+                    reason: "stop-failed",
+                    taskId: input.taskId,
+                    cause,
+                  }),
+              ),
+            );
+            return {};
+          }),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
           threadManagement.getTurnItem(input).pipe(
             Effect.mapError(
