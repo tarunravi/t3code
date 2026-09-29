@@ -693,9 +693,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    blockNativeSubagents: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Use T3 subagents only",
+        description:
+          "Block Claude's native Agent and Workflow tools so subagents run as T3 delegated tasks you can see and stop.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs", "blockNativeSubagents"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1590,6 +1599,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   autoCompactWindow: Schema.optionalKey(
     TrimmedString.check(Schema.isPattern(CLAUDE_AUTO_COMPACT_WINDOW_PATTERN)),
   ),
+  blockNativeSubagents: Schema.optionalKey(Schema.Boolean),
 });
 
 const CursorSettingsPatch = Schema.Struct({

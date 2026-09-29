@@ -236,6 +236,88 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.deepEqual(options.supportedDialogKinds, ["resume_return"]);
   });
 
+  describe("native subagent blocking", () => {
+    const T3_MCP_SERVERS = {
+      "t3-code": { type: "http" as const, url: "http://127.0.0.1:43123/mcp" },
+    };
+    const fullAccessOptions = (input: {
+      readonly mcpServers?: typeof T3_MCP_SERVERS;
+      readonly settings?: ClaudeSettings;
+    }) =>
+      ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        nativeThreadId: "native-thread-subagents",
+        resume: false,
+        cwd: "/workspace",
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        ...input,
+      });
+    const runPreToolUseHooks = (
+      options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+      toolName: string,
+    ) =>
+      Promise.all(
+        (options.hooks?.PreToolUse ?? []).flatMap((matcher) =>
+          matcher.hooks.map((hook) =>
+            hook(
+              {
+                hook_event_name: "PreToolUse",
+                session_id: "native-thread-subagents",
+                transcript_path: "/tmp/transcript.jsonl",
+                cwd: "/workspace",
+                tool_name: toolName,
+                tool_input: { prompt: "list files" },
+                tool_use_id: "toolu_1",
+              },
+              "toolu_1",
+              { signal: new AbortController().signal },
+            ),
+          ),
+        ),
+      );
+
+    it.each(["Agent", "Task", "Workflow"])(
+      "denies native %s with a delegate_task hint in full-access mode",
+      async (toolName) => {
+        const options = fullAccessOptions({ mcpServers: T3_MCP_SERVERS });
+        assert.equal(options.permissionMode, "bypassPermissions");
+        assert.deepEqual(await runPreToolUseHooks(options, toolName), [
+          {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: ClaudeAdapterV2.CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+            },
+          },
+        ]);
+        assert.include(
+          ClaudeAdapterV2.CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+          "mcp__t3-code__delegate_task",
+        );
+      },
+    );
+
+    it("leaves other tools alone", async () => {
+      const options = fullAccessOptions({ mcpServers: T3_MCP_SERVERS });
+      for (const toolName of ["TaskStop", "Monitor", "SendMessage", "ListAgents", "Bash"]) {
+        assert.deepEqual(await runPreToolUseHooks(options, toolName), [{}]);
+      }
+    });
+
+    it("installs no hook without the T3 MCP server", () => {
+      assert.isUndefined(fullAccessOptions({}).hooks);
+    });
+
+    it("installs no hook when the setting is off", () => {
+      const options = fullAccessOptions({
+        mcpServers: T3_MCP_SERVERS,
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, blockNativeSubagents: false },
+      });
+      assert.isUndefined(options.hooks);
+    });
+  });
+
   it("projects AskUserQuestion input with question text as the answer key", () => {
     assert.deepEqual(
       ClaudeAdapterV2.claudeUserInputQuestions({
