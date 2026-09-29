@@ -42,3 +42,22 @@ export function assertStopBackgroundWorkAfterFailedTurnOutput(
   );
   assert.equal(projection.runs[0]?.status, "failed");
 }
+
+export function assertReleasedBackgroundWorkSettledOutput(
+  result: OrchestratorV2ScenarioResult,
+  transcript: ProviderReplayTranscript,
+) {
+  assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["failed"] });
+  const projection = projectionFor(result, transcript.scenario);
+  assertSemanticProjectionIntegrity(projection);
+
+  const command = projection.turnItems.find((item) => item.type === "command_execution");
+  assert.equal(command?.status, "cancelled");
+  assert.isNotNull(command?.completedAt);
+  const shell = result.shellSnapshot.threads.find((thread) => thread.id === projection.thread.id);
+  assert.deepEqual(shell?.pendingBackgroundTasks ?? [], []);
+  assert.notInclude(
+    projection.turnItems.map((item) => item.type),
+    "run_interrupt_request",
+  );
+}
