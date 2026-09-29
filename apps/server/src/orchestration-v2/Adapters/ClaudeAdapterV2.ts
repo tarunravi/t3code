@@ -6464,6 +6464,22 @@ export function makeClaudeAdapterV2(
               });
             }
             const currentTurn = yield* Ref.get(activeTurn);
+            const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
+            // A settled turn is interrupted only for the background work it
+            // left behind: stop each roster task and keep the session. Their
+            // task_notification(stopped) frames clear the roster.
+            if (currentTurn === null && nativeThreadId === existing.nativeThreadId) {
+              const roster = rosterForNativeThread(
+                yield* Ref.get(pendingBackgroundTasksByNativeThread),
+                nativeThreadId,
+              );
+              if (roster.size > 0) {
+                yield* Effect.forEach(roster.keys(), (taskId) => existing.query.stopTask(taskId), {
+                  discard: true,
+                });
+                return;
+              }
+            }
             if (currentTurn?.providerTurnId !== turnInput.providerTurnId) {
               return yield* new ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,

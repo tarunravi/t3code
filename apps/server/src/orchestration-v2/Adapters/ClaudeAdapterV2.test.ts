@@ -3294,6 +3294,85 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("interrupting a settled turn stops its background tasks and keeps the session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let queryInterrupts = 0;
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: Effect.sync(() => {
+            queryInterrupts += 1;
+          }),
+        });
+        const idAllocator = yield* IdAllocatorV2;
+        yield* startBackgroundBashTurn(harness);
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "turn settled");
+
+        const settledTurnId = idAllocator.derive.providerTurn({
+          driver: CLAUDE_PROVIDER,
+          nativeTurnId: "turn:attempt-claude-roster-enrichment",
+        });
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: settledTurnId,
+        });
+        assert.deepEqual(harness.stoppedTaskIds, [WAKE_TASK_ID]);
+        assert.equal(queryInterrupts, 0);
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: WAKE_TASK_ID,
+            tool_use_id: WAKE_TOOL_USE_ID,
+            status: "stopped",
+            output_file: WAKE_OUTPUT_FILE,
+            summary: "Background command stopped",
+            uuid: "00000000-0000-4000-8000-000000000304",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            (providerThreadRosterEvents(harness.events).at(-1)?.providerThread
+              .pendingBackgroundTasks?.length ?? 1) === 0,
+          "roster cleared",
+        );
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("interrupting an active turn with background tasks interrupts the query", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const interruptStarted = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: Deferred.succeed(interruptStarted, undefined),
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const idAllocator = yield* IdAllocatorV2;
+        yield* startBackgroundBashTurn(harness);
+        yield* awaitUntil(
+          () => providerThreadRosterEvents(harness.events).length > 0,
+          "background task on roster",
+        );
+        yield* harness.runtime
+          .interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: CLAUDE_PROVIDER,
+              nativeTurnId: "turn:attempt-claude-roster-enrichment",
+            }),
+          })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(interruptStarted);
+        assert.deepEqual(harness.stoppedTaskIds, []);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("clears the roster when a turn fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
