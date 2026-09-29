@@ -21,6 +21,8 @@ const popoverPopupWidthClassName = {
   sm: "w-64",
   md: "w-80",
   lg: "w-96",
+  // Matches the anchor, e.g. a popover rising from a full-width composer banner.
+  anchor: "w-full",
 } as const;
 
 const popoverViewportPaddingClassName = {
@@ -84,6 +86,7 @@ function PopoverPopup({
           variant === "panel"
             ? "z-(--z-sheet) w-[min(calc(var(--thread-details-panel-width)+--spacing(4)),calc(var(--anchor-width)---spacing(2)))] transition-[top] duration-150 ease-out data-instant:transition-[top] motion-reduce:transition-none motion-reduce:data-instant:transition-none"
             : "z-[130]",
+          width === "anchor" && "w-(--anchor-width)",
         )}
         data-slot="popover-positioner"
         side={side}
