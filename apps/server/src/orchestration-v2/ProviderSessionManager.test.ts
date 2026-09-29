@@ -3,7 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  MessageId,
   type ModelSelection,
+  NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderCapabilities,
@@ -14,7 +16,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -2612,6 +2616,348 @@ it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all 
     });
 
     yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+  }),
+);
+
+// A provider-native subagent that outlived its parent turn: its parent-thread
+// entity, turn item, and node plus the child thread's runless root turn are
+// all still running, and only the provider process could settle them.
+function seedBackgroundSubagent(input: {
+  readonly idAllocator: IdAllocatorV2Shape;
+  readonly threadId: ThreadId;
+  readonly fixture: string;
+  readonly runStatus: "completed" | "running";
+  readonly now: DateTime.Utc;
+}) {
+  return Effect.gen(function* () {
+    const { idAllocator, threadId, now } = input;
+    const childThreadId = ThreadId.make(`thread:${input.fixture}:child`);
+    const runId = RunId.make(`run:${input.fixture}`);
+    const subagentId = NodeId.make(`node:${input.fixture}:subagent`);
+    const childRootId = NodeId.make(`node:${input.fixture}:child-root`);
+    const node = (fields: {
+      readonly id: NodeId;
+      readonly threadId: ThreadId;
+      readonly runId: RunId | null;
+      readonly kind: "root_turn" | "subagent";
+    }) => ({
+      ...fields,
+      parentNodeId: null,
+      rootNodeId: fields.id,
+      status: "running" as const,
+      countsForRun: false,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: now,
+      completedAt: null,
+    });
+    const parentCreated = yield* makeThreadCreatedEvent({ idAllocator, threadId, now });
+    const childCreated = yield* makeThreadCreatedEvent({
+      idAllocator,
+      threadId: childThreadId,
+      now,
+      projectId: parentCreated.payload.projectId,
+    });
+    const event = () => idAllocator.allocate.event({ threadId });
+    const shared = {
+      origin: "provider_native" as const,
+      driver: CODEX_DRIVER,
+      providerInstanceId: modelSelection.instanceId,
+      childThreadId,
+      prompt: "Watch the build",
+      result: null,
+    };
+    yield* (yield* EventSinkV2).write({
+      events: [
+        parentCreated,
+        {
+          ...childCreated,
+          payload: {
+            ...childCreated.payload,
+            createdBy: "agent",
+            creationSource: "provider",
+            lineage: {
+              parentThreadId: threadId,
+              relationshipToParent: "subagent",
+              rootThreadId: threadId,
+            },
+            forkedFrom: { type: "node", nodeId: subagentId },
+          },
+        },
+        {
+          id: yield* event(),
+          type: "run.created",
+          threadId,
+          runId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make(`message:${input.fixture}`),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: input.runStatus,
+            queuePosition: null,
+            requestedAt: now,
+            startedAt: now,
+            completedAt: input.runStatus === "completed" ? now : null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        },
+        {
+          id: yield* event(),
+          type: "node.updated",
+          threadId,
+          runId,
+          nodeId: subagentId,
+          occurredAt: now,
+          payload: node({ id: subagentId, threadId, runId, kind: "subagent" }),
+        },
+        {
+          id: yield* idAllocator.allocate.event({ threadId: childThreadId }),
+          type: "node.updated",
+          threadId: childThreadId,
+          nodeId: childRootId,
+          occurredAt: now,
+          payload: node({
+            id: childRootId,
+            threadId: childThreadId,
+            runId: null,
+            kind: "root_turn",
+          }),
+        },
+        {
+          id: yield* event(),
+          type: "subagent.updated",
+          threadId,
+          runId,
+          nodeId: subagentId,
+          driver: CODEX_DRIVER,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...shared,
+            id: subagentId,
+            threadId,
+            runId,
+            parentNodeId: subagentId,
+            createdBy: "agent",
+            providerThreadId: null,
+            nativeTaskRef: null,
+            title: null,
+            model: null,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+          },
+        },
+        {
+          id: yield* event(),
+          type: "turn-item.updated",
+          threadId,
+          runId,
+          nodeId: subagentId,
+          occurredAt: now,
+          payload: {
+            ...shared,
+            id: TurnItemId.make(`item:${input.fixture}`),
+            threadId,
+            runId,
+            nodeId: subagentId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            type: "subagent",
+            status: "running",
+            title: null,
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+            subagentId,
+          },
+        },
+      ],
+    });
+    return { subagentId, childThreadId, childRootId };
+  });
+}
+
+function readBackgroundSubagentStatuses(input: {
+  readonly threadId: ThreadId;
+  readonly seeded: {
+    readonly subagentId: NodeId;
+    readonly childThreadId: ThreadId;
+    readonly childRootId: NodeId;
+  };
+}) {
+  return Effect.gen(function* () {
+    const projectionStore = yield* ProjectionStoreV2;
+    const parent = yield* projectionStore.getThreadProjection(input.threadId);
+    const child = yield* projectionStore.getThreadProjection(input.seeded.childThreadId);
+    const subagent = parent.subagents.find((row) => row.id === input.seeded.subagentId);
+    return {
+      subagent: subagent?.status,
+      subagentCompletedAt: subagent?.completedAt ?? null,
+      turnItem: parent.turnItems.find((item) => item.type === "subagent")?.status,
+      node: parent.nodes.find((row) => row.id === input.seeded.subagentId)?.status,
+      childRoot: child.nodes.find((row) => row.id === input.seeded.childRootId)?.status,
+    };
+  });
+}
+
+it.effect.each(["idle release", "disconnect"] as const)(
+  "ProviderSessionManagerV2 %s cancels background subagents the session orphans",
+  (closeBy) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const idAllocator = yield* IdAllocatorV2;
+        const manager = yield* ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:session-release-orphans");
+        const seeded = yield* seedBackgroundSubagent({
+          idAllocator,
+          threadId,
+          fixture: "session-release-orphans",
+          runStatus: "completed",
+          now,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        // A Waiting roster entry for a background command in the same process.
+        yield* (yield* EventSinkV2).write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "provider-thread.updated",
+              threadId,
+              driver: CODEX_DRIVER,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+                pendingBackgroundTasks: [{ taskId: "bg-sleep", description: "sleep 600" }],
+              },
+            },
+          ],
+        });
+
+        if (closeBy === "idle release") {
+          yield* TestClock.adjust("1 second");
+          yield* Effect.yieldNow;
+        } else {
+          yield* manager.detach({ providerSessionId, threadId });
+        }
+
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        const statuses = yield* readBackgroundSubagentStatuses({ threadId, seeded });
+        assert.deepEqual(
+          { ...statuses, subagentCompletedAt: undefined },
+          {
+            subagent: "cancelled",
+            subagentCompletedAt: undefined,
+            turnItem: "cancelled",
+            node: "cancelled",
+            childRoot: "cancelled",
+          },
+        );
+        assert.isNotNull(statuses.subagentCompletedAt);
+        const providerThreads = (yield* (yield* ProjectionStoreV2).getThreadProjection(threadId))
+          .providerThreads;
+        assert.deepEqual(
+          providerThreads.map((thread) => thread.pendingBackgroundTasks ?? []),
+          [[]],
+        );
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: closeBy === "idle release" ? 1000 : 60_000,
+            capabilities: ExclusiveCapabilities,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("ProviderSessionManagerV2 release leaves work a live owner can still settle", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      const idAllocator = yield* IdAllocatorV2;
+      const manager = yield* ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const openSession = (threadId: ThreadId) =>
+        Effect.gen(function* () {
+          const providerSessionId = yield* idAllocator.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+          return providerSessionId;
+        });
+
+      // Still-running run: its own fiber owns the subagent.
+      const activeThreadId = ThreadId.make("thread:session-release-active-run");
+      const activeRun = yield* seedBackgroundSubagent({
+        idAllocator,
+        threadId: activeThreadId,
+        fixture: "session-release-active-run",
+        runStatus: "running",
+        now,
+      });
+      yield* manager.close(yield* openSession(activeThreadId));
+
+      // Replaced session: the replacement process keeps the thread.
+      const replacedThreadId = ThreadId.make("thread:session-release-replaced");
+      const replaced = yield* seedBackgroundSubagent({
+        idAllocator,
+        threadId: replacedThreadId,
+        fixture: "session-release-replaced",
+        runStatus: "completed",
+        now,
+      });
+      const oldSessionId = yield* openSession(replacedThreadId);
+      yield* openSession(replacedThreadId);
+      yield* manager.close(oldSessionId);
+
+      for (const [threadId, seeded] of [
+        [activeThreadId, activeRun],
+        [replacedThreadId, replaced],
+      ] as const) {
+        const statuses = yield* readBackgroundSubagentStatuses({ threadId, seeded });
+        assert.deepEqual(
+          { ...statuses, subagentCompletedAt: undefined },
+          {
+            subagent: "running",
+            subagentCompletedAt: undefined,
+            turnItem: "running",
+            node: "running",
+            childRoot: "running",
+          },
+          String(threadId),
+        );
+      }
+    });
+
+    yield* effect.pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000 })));
   }),
 );
 
