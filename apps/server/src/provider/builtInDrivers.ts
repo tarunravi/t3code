@@ -36,6 +36,8 @@ import type {
   AnyProviderDriver,
   ProviderUsageReaderEnv,
 } from "@t3tools/provider-core/server/driver";
+import { OmpDriver, type OmpDriverEnv } from "./Drivers/OmpDriver.ts";
+import { ZCodeDriver, type ZCodeDriverEnv } from "./Drivers/ZCodeDriver.ts";
 
 /**
  * Union of infrastructure services required to construct any built-in
@@ -49,10 +51,11 @@ export type BuiltInDriversEnv =
   | CodexDriverEnv
   | CursorDriverEnv
   | GrokDriverEnv
+  | OmpDriverEnv
   | OpenCodeDriverEnv
   | PiDriverEnv
+  | ZCodeDriverEnv
   | MuseDriverEnv;
-
 /**
  * Ordered list of built-in drivers. Order matters only for tie-breaking in
  * UI presentation — the registry itself is keyed by `driverKind`, so
@@ -66,6 +69,8 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   OpenCodeDriver,
   AntigravityDriver,
   PiDriver,
+  ZCodeDriver,
+  OmpDriver,
   MuseDriver,
   AcpRegistryDriver,
 ];
