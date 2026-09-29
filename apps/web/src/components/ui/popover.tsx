@@ -23,6 +23,8 @@ const popoverPopupWidthClassName = {
   sm: "w-64",
   md: "w-80",
   lg: "w-96",
+  // Matches the anchor, e.g. a popover rising from a full-width composer banner.
+  anchor: "w-full",
 } as const;
 
 // The inset around the content. "compact" suits dense content (a list, a code excerpt, a
@@ -77,6 +79,7 @@ function PopoverPopup({
           variant === "panel"
             ? "z-(--z-sheet) w-[min(var(--thread-details-panel-width),var(--anchor-width))] transition-none"
             : "z-[130]",
+          width === "anchor" && "w-(--anchor-width)",
         )}
         data-slot="popover-positioner"
         side={side}
