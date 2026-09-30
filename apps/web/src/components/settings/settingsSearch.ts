@@ -625,6 +625,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "usage-model-prices",
+    title: "Custom model prices",
+    to: "/settings/providers",
+    searchTerms: ["usage custom pricing cost USD million tokens input output cache ZCode"],
+    providerSettingsOnly: true,
+  },
+  {
     id: "usage-providers",
     title: "Usage providers",
     to: "/settings/providers",
