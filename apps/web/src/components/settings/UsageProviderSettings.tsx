@@ -2,10 +2,13 @@ import type { EnvironmentId, UnifiedSettings } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
+import { makeWindow } from "@t3tools/shared/usageFormat";
 
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useUsage } from "../../state/usage";
+import { UsagePriceOverrides } from "../usage/UsagePriceOverrides";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -21,7 +24,7 @@ import { AddUsageLimitSourceDialog } from "./AddUsageLimitSourceDialog";
 import { searchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
-/** Hub management follows the selected device and access rules of provider settings. */
+/** Usage settings follow the selected device and access rules of provider settings. */
 export function UsageProviderSettings({
   environmentId,
   environmentLabel,
@@ -45,6 +48,7 @@ export function UsageProviderSettings({
   const platform = useAtomValue(serverEnvironment.configValueAtom(environmentId))?.environment
     .platform;
   const [adding, setAdding] = useState(false);
+  const [editingPrices, setEditingPrices] = useState(false);
   const [updatingCursor, setUpdatingCursor] = useState(false);
   const entries = Object.entries(sources);
 
@@ -65,6 +69,22 @@ export function UsageProviderSettings({
 
   return (
     <>
+      <SettingsSection {...searchableSetting("usage-model-prices")}>
+        <SettingsRow
+          title="Token rates"
+          description="Set input, output, and cache rates in USD per million tokens. Models with unknown rates stay unpriced until you add prices."
+          control={
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={readOnly}
+              onClick={() => setEditingPrices(true)}
+            >
+              Edit model prices
+            </Button>
+          }
+        />
+      </SettingsSection>
       <SettingsSection
         {...searchableSetting("usage-providers")}
         headerAction={
@@ -127,7 +147,30 @@ export function UsageProviderSettings({
           environmentLabel={environmentLabel}
         />
       ) : null}
+      {editingPrices && !readOnly ? (
+        <EnvironmentModelPrices environmentId={environmentId} onOpenChange={setEditingPrices} />
+      ) : null}
     </>
+  );
+}
+
+/** Fetch model IDs only when the editor opens, using recent usage from the servers. */
+function EnvironmentModelPrices({
+  environmentId,
+  onOpenChange,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly onOpenChange: (open: boolean) => void;
+}) {
+  const [window] = useState(() => makeWindow(90));
+  const [selectedIds] = useState(() => new Set([environmentId]));
+  const { environments } = useUsage(window, selectedIds);
+  return (
+    <UsagePriceOverrides
+      usage={environments}
+      initialSelectedEnvironmentIds={selectedIds}
+      onOpenChange={onOpenChange}
+    />
   );
 }
 
