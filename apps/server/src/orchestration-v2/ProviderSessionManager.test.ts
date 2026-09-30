@@ -1765,6 +1765,7 @@ function seedBackgroundSubagent(input: {
   readonly fixture: string;
   readonly runStatus: "completed" | "running";
   readonly now: DateTime.Utc;
+  readonly origin?: "provider_native" | "app_owned";
 }) {
   return Effect.gen(function* () {
     const { idAllocator, threadId, now } = input;
@@ -1800,7 +1801,7 @@ function seedBackgroundSubagent(input: {
     });
     const event = () => idAllocator.allocate.event({ threadId });
     const shared = {
-      origin: "provider_native" as const,
+      origin: input.origin ?? "provider_native",
       driver: CODEX_DRIVER,
       providerInstanceId: modelSelection.instanceId,
       childThreadId,
@@ -2022,6 +2023,61 @@ it.effect.each(["idle release", "disconnect"] as const)(
           providerThreads.map((thread) => thread.pendingBackgroundTasks ?? []),
           [[]],
         );
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: closeBy === "idle release" ? 1000 : 60_000,
+            capabilities: ExclusiveCapabilities,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["idle release", "disconnect"] as const)(
+  "ProviderSessionManagerV2 %s leaves app-owned delegated tasks to their child thread",
+  (closeBy) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const idAllocator = yield* IdAllocatorV2;
+        const manager = yield* ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:session-release-delegated");
+        // The parent's turn that called delegate_task has finished; the child
+        // keeps working in its own session.
+        const seeded = yield* seedBackgroundSubagent({
+          idAllocator,
+          threadId,
+          fixture: "session-release-delegated",
+          runStatus: "completed",
+          now,
+          origin: "app_owned",
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+
+        if (closeBy === "idle release") {
+          yield* TestClock.adjust("1 second");
+          yield* Effect.yieldNow;
+        } else {
+          yield* manager.detach({ providerSessionId, threadId });
+        }
+
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.deepEqual(yield* readBackgroundSubagentStatuses({ threadId, seeded }), {
+          subagent: "running",
+          subagentCompletedAt: null,
+          turnItem: "running",
+          node: "running",
+          childRoot: "running",
+        });
       });
 
       yield* effect.pipe(
