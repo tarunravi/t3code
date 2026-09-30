@@ -16,6 +16,10 @@
  * denied; runtime modes map onto ZCode permission modes (see
  * `zcodePermissionMode`). Stop sends SIGINT to the process group, which ZCode
  * handles as a cancelled turn and persists before exiting.
+ *
+ * T3's MCP server reaches ZCode through `--mcp-config`, which only some ZCode
+ * builds accept: each turn writes the thread's endpoint and bearer to a
+ * private temp file that lives for that turn's process.
  */
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -36,6 +40,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -43,7 +48,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
 import { IdAllocatorV2 } from "../IdAllocator.ts";
 import {
   ProviderAdapterForkThreadError,
@@ -72,6 +79,8 @@ import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts"
 import {
   buildZCodePromptArgs,
   parseZCodeStreamLine,
+  zcodeHelpSupportsMcpConfig,
+  zcodeMcpConfigFile,
   zcodePermissionMode,
   zcodeToolTarget,
   ZCodeTurnProjection,
@@ -89,6 +98,7 @@ const STREAM_FLUSH_MS = 50;
 const STOP_GRACE = Duration.seconds(10);
 const STDERR_TAIL_CHARS = 2_000;
 const STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
+const HELP_PROBE_TIMEOUT = Duration.seconds(10);
 const MODEL_SELECTION_MESSAGE =
   "ZCode follows its configured model. Change the model in ZCode or its provider config; this CLI does not support model overrides.";
 
@@ -185,11 +195,19 @@ const ZCodeProviderCapabilitiesV2 = {
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
+function zcodeCapabilities(supportsMcpTools: boolean): OrchestrationV2ProviderCapabilities {
+  return {
+    ...ZCodeProviderCapabilitiesV2,
+    tools: { ...ZCodeProviderCapabilitiesV2.tools, supportsMcpTools },
+  };
+}
+
 interface ZCodeAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
   readonly settings: ZCodeSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+  readonly fileSystem: FileSystem.FileSystem;
   readonly idAllocator: IdAllocatorV2["Service"];
   readonly serverConfig: ServerConfig["Service"];
 }
@@ -256,10 +274,54 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
   const protocolError = (detail: string) =>
     new ProviderAdapterProtocolError({ driver: ZCODE_PROVIDER, detail });
 
+  const probeMcpConfigSupport = Effect.gen(function* () {
+    const spawnCommand = yield* resolveSpawnCommand(command, ["--help"], {
+      env: options.environment,
+    });
+    const child = yield* options.spawner.spawn(
+      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+        env: options.environment,
+        extendEnv: false,
+        shell: spawnCommand.shell,
+      }),
+    );
+    const help = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+    yield* child.exitCode;
+    return zcodeHelpSupportsMcpConfig(help);
+  }).pipe(Effect.scoped, Effect.timeout(HELP_PROBE_TIMEOUT));
+  // Cached only once the probe runs; a missing binary is retried next time.
+  let mcpConfigSupported: boolean | undefined;
+  const supportsMcpConfig = Effect.suspend(() =>
+    mcpConfigSupported !== undefined
+      ? Effect.succeed(mcpConfigSupported)
+      : probeMcpConfigSupport.pipe(
+          Effect.tap((supported) =>
+            Effect.sync(() => {
+              mcpConfigSupported = supported;
+            }),
+          ),
+          Effect.orElseSucceed(() => false),
+        ),
+  );
+
+  /** Writes the turn's `--mcp-config` file into a user-only temp dir removed with `Scope`. */
+  const writeMcpConfigFile = Effect.fnUntraced(function* (
+    session: McpProviderSession.McpProviderSessionConfig,
+  ) {
+    const directory = yield* options.fileSystem.makeTempDirectoryScoped({
+      prefix: "t3-zcode-mcp-",
+    });
+    const path = `${directory}/mcp-config.json`;
+    yield* options.fileSystem.writeFileString(path, zcodeMcpConfigFile(session), {
+      mode: 0o600,
+    });
+    return path;
+  });
+
   return ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: ZCODE_PROVIDER,
-    getCapabilities: () => Effect.succeed(ZCodeProviderCapabilitiesV2),
+    getCapabilities: () => Effect.map(supportsMcpConfig, zcodeCapabilities),
     planSelectionTransition: ({ target }) =>
       Effect.succeed(
         target.model === "default"
@@ -275,6 +337,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
       const platform = yield* HostProcessPlatform;
       const cwd = input.runtimePolicy.cwd ?? options.serverConfig.cwd;
       const createdAt = yield* DateTime.now;
+      const mcpSupported = yield* supportsMcpConfig;
       let sessionEntity: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
         driver: ZCODE_PROVIDER,
@@ -283,7 +346,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
         cwd,
         // The selector is an instruction to follow config, not runtime evidence.
         model: null,
-        capabilities: ZCodeProviderCapabilitiesV2,
+        capabilities: zcodeCapabilities(mcpSupported),
         createdAt,
         updatedAt: createdAt,
         lastError: null,
@@ -622,9 +685,17 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
         });
       });
 
-      const runTurnProcess = (turn: ActiveZCodeTurn, args: ReadonlyArray<string>) => {
+      const runTurnProcess = (
+        turn: ActiveZCodeTurn,
+        promptArgs: Omit<Parameters<typeof buildZCodePromptArgs>[0], "mcpConfigPath">,
+        mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+      ) => {
         let stderrTail = "";
         return Effect.gen(function* () {
+          const args = buildZCodePromptArgs({
+            ...promptArgs,
+            mcpConfigPath: mcpSession === undefined ? null : yield* writeMcpConfigFile(mcpSession),
+          });
           const spawnCommand = yield* resolveSpawnCommand(command, [...args], {
             env: options.environment,
           });
@@ -763,12 +834,19 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
               });
               return path === null ? [] : [path];
             });
-            const args = buildZCodePromptArgs({
-              prompt: turnInput.message.text,
+            const mcpSession = mcpSupported
+              ? McpProviderSession.readMcpProviderSession(turnInput.threadId)
+              : undefined;
+            const promptArgs = {
+              prompt: t3OrchestrationPromptForFirstRun({
+                prompt: turnInput.message.text,
+                runOrdinal: turnInput.runOrdinal,
+                hasT3Mcp: mcpSession !== undefined,
+              }),
               mode: zcodePermissionMode(turnInput.runtimePolicy),
               resumeSessionId: providerThread.nativeThreadRef?.nativeId ?? null,
               attachmentPaths,
-            });
+            };
             const startedAt = yield* DateTime.now;
             const nativeTurnId = `${turnInput.providerThread.id}:attempt:${turnInput.attemptId}`;
             const providerTurn: OrchestrationV2ProviderTurn = {
@@ -810,7 +888,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
             });
             sessionEntity = { ...sessionEntity, model: null };
             yield* updateProviderSession("running", null);
-            yield* runTurnProcess(turn, args).pipe(Effect.forkIn(sessionScope));
+            yield* runTurnProcess(turn, promptArgs, mcpSession).pipe(Effect.forkIn(sessionScope));
           }).pipe(
             Effect.mapError(
               (cause) =>
@@ -894,6 +972,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
 
 export type ZCodeAdapterV2DriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
   | IdAllocatorV2
   | ServerConfig;
 
@@ -909,6 +988,7 @@ export const ZCodeAdapterV2Driver: ProviderAdapterDriver<ZCodeSettings, ZCodeAda
         settings: { ...input.config, enabled: input.enabled },
         environment: mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
         spawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+        fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocatorV2,
         serverConfig: yield* ServerConfig,
       });
