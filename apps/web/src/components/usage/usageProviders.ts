@@ -41,6 +41,7 @@ export const PROVIDER_PRESENTATION = {
     color: "#8c7bd1",
     driverKind: ProviderDriverKind.make("antigravity"),
   },
+  zcode: { label: "ZCode", color: "#14b8a6", driverKind: ProviderDriverKind.make("zcode") },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
 /** Stable provider reading order across charts, summaries, tables, and hover rows. */
