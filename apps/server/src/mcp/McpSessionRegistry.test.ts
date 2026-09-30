@@ -52,6 +52,22 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
       new Set(["preview", "orchestration", "worktree", "pull-requests"]),
     );
 
+    const rebound = yield* registry.rebindProvider({
+      rawToken: token,
+      providerInstanceId: ProviderInstanceId.make("cursor"),
+    });
+    expect(rebound?.providerInstanceId).toBe(ProviderInstanceId.make("cursor"));
+    expect(rebound?.threadId).toBe(threadId);
+    expect((yield* registry.resolve(token))?.providerInstanceId).toBe(
+      ProviderInstanceId.make("cursor"),
+    );
+    expect(
+      yield* registry.rebindProvider({
+        rawToken: "missing",
+        providerInstanceId: ProviderInstanceId.make("cursor"),
+      }),
+    ).toBeUndefined();
+
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
 
