@@ -64,16 +64,17 @@ export const layer: Layer.Layer<
     }) {
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals, turnCheckpoints } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
-      // A stopped run is already terminal. Its checkpoint is the rollback point
-      // for the message after it, so capture leaves its status alone.
-      const stopped = run?.status === "interrupted" || run?.status === "cancelled";
+      // A stopped or failed run is already terminal. Its checkpoint is the
+      // rollback point for rewriting that message, so capture leaves its status alone.
+      const preservesTerminalStatus =
+        run?.status === "interrupted" || run?.status === "cancelled" || run?.status === "failed";
 
       // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.
       if (
         run !== undefined &&
         run.checkpointId !== null &&
-        (run.status === "completed" || stopped)
+        (run.status === "completed" || preservesTerminalStatus)
       ) {
         return;
       }
@@ -86,7 +87,7 @@ export const layer: Layer.Layer<
 
       if (
         run === undefined ||
-        (run.status !== "waiting" && !stopped) ||
+        (run.status !== "waiting" && !preservesTerminalStatus) ||
         rootNode === undefined ||
         scope === undefined ||
         rootNode.checkpointScopeId !== scope.id ||
@@ -104,15 +105,15 @@ export const layer: Layer.Layer<
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
       const hasReadyCheckpoint = (ordinalWithinScope: number) =>
         readyCheckpointOrdinals.includes(ordinalWithinScope);
-      if (stopped) {
-        // A stop can land before the run recorded its baseline. The provider
-        // has not touched the workspace then, so the current tree is the
-        // baseline; an existing baseline ref is left as is.
+      if (preservesTerminalStatus) {
+        // A stop or failure can land before the run recorded its baseline. The
+        // provider has not touched the workspace then, so the current tree is
+        // the baseline; an existing baseline ref is left as is.
         yield* checkpoints
           .captureBaseline({ scope, ordinalWithinScope: baselineOrdinalWithinScope })
           .pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("orchestration V2 stopped run baseline capture failed", {
+              Effect.logWarning("orchestration V2 terminal run baseline capture failed", {
                 runId: run.id,
                 cause: String(cause),
               }),
@@ -149,7 +150,7 @@ export const layer: Layer.Layer<
         capturedAt,
         // A queued run that already started recorded this boundary as its own
         // baseline; recapturing now could include that run's edits.
-        keepExistingRef: stopped,
+        keepExistingRef: preservesTerminalStatus,
       });
       // Match RunExecutionService: capture loaded the waiting run before
       // materializing baselines. Omit delegatedCompletion so a newer cohort
@@ -229,7 +230,7 @@ export const layer: Layer.Layer<
             nodeId: rootNode.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: capturedAt,
-            payload: stopped
+            payload: preservesTerminalStatus
               ? { ...runWithoutDelegatedCompletion, checkpointId: checkpoint.id }
               : {
                   ...runWithoutDelegatedCompletion,
@@ -238,7 +239,7 @@ export const layer: Layer.Layer<
                   checkpointId: checkpoint.id,
                 },
           },
-          ...(stopped
+          ...(preservesTerminalStatus
             ? []
             : [
                 {

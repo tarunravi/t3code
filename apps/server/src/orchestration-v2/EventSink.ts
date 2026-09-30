@@ -105,6 +105,8 @@ export interface EventSinkV2Shape {
     readonly activeAttemptId: RunAttemptId;
     readonly expectedStatus: OrchestrationV2Run["status"];
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+    /** Enqueued in the same transaction, and only when the run write commits. */
+    readonly effects?: ReadonlyArray<PendingOrchestrationEffectV2>;
   }) => Effect.Effect<
     {
       readonly committed: boolean;
@@ -417,10 +419,18 @@ const baseLayer: Layer.Layer<
               events: normalized,
             });
             yield* applyStoredEvents(storedEvents);
+            const effects = input.effects ?? [];
+            if (effects.length > 0) {
+              yield* effectOutbox.enqueue(effects);
+            }
             return { committed: true as const, storedEvents };
           }),
         );
         if (result.committed) {
+          const effectCount = input.effects?.length ?? 0;
+          if (effectCount > 0) {
+            yield* effectOutbox.notifyAvailable(effectCount);
+          }
           yield* eventStore.publishCommitted(result.storedEvents);
           yield* publishLiveEvents(result.storedEvents);
         }
