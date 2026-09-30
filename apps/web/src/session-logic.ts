@@ -1012,12 +1012,24 @@ export function canRestoreFilesForRun(
   );
 }
 
+
+export interface ConversationRewriteRun {
+  readonly id: RunId;
+  readonly ordinal: number;
+  readonly status: string;
+}
+
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
   readonly threadStartCheckpointReady: boolean;
   readonly availableRevertTurnCounts?: ReadonlySet<number> | undefined;
   readonly unsettledRunId?: RunId | null;
+  /**
+   * Terminal runs that never recorded their own checkpoint. The previous
+   * turn's checkpoint is still enough to edit and rewind that message.
+   */
+  readonly runs?: ReadonlyArray<ConversationRewriteRun>;
 }): Map<ChatMessage["id"], number> {
   const readyTurnCountByRunId = new Map<RunId, number>();
   for (const checkpoint of input.checkpoints) {

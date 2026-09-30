@@ -32,6 +32,7 @@ import {
 export { toolGroupAction } from "@t3tools/client-runtime/work-log/presentation";
 import {
   deriveRevertTurnCountByUserMessageId,
+  type ConversationRewriteRun,
   formatDuration,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
@@ -1394,6 +1395,8 @@ export function deriveMessagesTimelineRows(input: {
   supportsConversationRollback: boolean;
   threadStartCheckpointReady?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
+  /** Failed, stopped, or cancelled runs, so their messages stay rewritable. */
+  rewriteRuns?: ReadonlyArray<ConversationRewriteRun>;
   liveAgentTaskIds?: ReadonlySet<string> | undefined;
   worktreeSetup?: WorktreeSetupSnapshot | null;
 }): MessagesTimelineRow[] {
@@ -1412,6 +1415,7 @@ export function deriveMessagesTimelineRows(input: {
         threadStartCheckpointReady: input.threadStartCheckpointReady === true,
         unsettledRunId,
         availableRevertTurnCounts: input.availableRevertTurnCounts,
+        ...(input.rewriteRuns === undefined ? {} : { runs: input.rewriteRuns }),
       })
     : new Map<MessageId, number>();
   const nextRows: MessagesTimelineRow[] = [];
