@@ -68,7 +68,6 @@ import {
   type ProviderAdapterDriverCreateInput,
 } from "../ProviderAdapterDriver.ts";
 import { makeProviderFailure, makeProviderFailureTurnItem } from "../ProviderFailure.ts";
-import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
   buildZCodePromptArgs,
@@ -90,6 +89,8 @@ const STREAM_FLUSH_MS = 50;
 const STOP_GRACE = Duration.seconds(10);
 const STDERR_TAIL_CHARS = 2_000;
 const STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
+const MODEL_SELECTION_MESSAGE =
+  "ZCode follows its configured model. Change the model in ZCode or its provider config; this CLI does not support model overrides.";
 
 const ZCodeProviderCapabilitiesV2 = {
   runtimePolicy: { enforcement: "native" },
@@ -259,10 +260,17 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
     instanceId: options.instanceId,
     driver: ZCODE_PROVIDER,
     getCapabilities: () => Effect.succeed(ZCodeProviderCapabilitiesV2),
-    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    planSelectionTransition: ({ target }) =>
+      Effect.succeed(
+        target.model === "default"
+          ? { type: "apply_on_next_turn" as const }
+          : { type: "reject" as const, reason: MODEL_SELECTION_MESSAGE },
+      ),
     openSession: Effect.fn("ZCodeAdapterV2.openSession")(function* (
       input: ProviderAdapterV2OpenSessionInput,
     ) {
+      if (input.modelSelection.model !== "default")
+        return yield* protocolError(MODEL_SELECTION_MESSAGE);
       const sessionScope = yield* Effect.scope;
       const platform = yield* HostProcessPlatform;
       const cwd = input.runtimePolicy.cwd ?? options.serverConfig.cwd;
@@ -273,7 +281,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
         providerInstanceId: options.instanceId,
         status: "ready",
         cwd,
-        model: input.modelSelection.model,
+        // The selector is an instruction to follow config, not runtime evidence.
+        model: null,
         capabilities: ZCodeProviderCapabilitiesV2,
         createdAt,
         updatedAt: createdAt,
@@ -471,6 +480,12 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
       ) {
         for (const update of turn.projection.apply(record)) {
           switch (update.type) {
+            case "model":
+              if (sessionEntity.model !== update.modelId) {
+                sessionEntity = { ...sessionEntity, model: update.modelId };
+                yield* updateProviderSession(sessionEntity.status, sessionEntity.lastError);
+              }
+              break;
             case "session":
               if (providerThread?.nativeThreadRef?.nativeId !== update.sessionId) {
                 yield* updateProviderThread({ nativeThreadRef: providerRef(update.sessionId) });
@@ -732,6 +747,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
           ),
         startTurn: (turnInput) =>
           Effect.gen(function* () {
+            if (turnInput.modelSelection.model !== "default")
+              return yield* protocolError(MODEL_SELECTION_MESSAGE);
             if (activeTurn !== null) {
               return yield* protocolError(
                 `ZCode provider thread ${turnInput.providerThread.id} already has an active turn`,
@@ -768,7 +785,10 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
             const turn: ActiveZCodeTurn = {
               input: turnInput,
               providerTurn,
-              projection: new ZCodeTurnProjection(providerTurn.id),
+              projection: new ZCodeTurnProjection(
+                providerTurn.id,
+                providerThread.nativeThreadRef?.nativeId ?? null,
+              ),
               itemOrdinals: new Map(),
               itemStartedAt: new Map(),
               outcome: null,
@@ -788,6 +808,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
               firstRunOrdinal: providerThread.firstRunOrdinal ?? turnInput.runOrdinal,
               lastRunOrdinal: turnInput.runOrdinal,
             });
+            sessionEntity = { ...sessionEntity, model: null };
             yield* updateProviderSession("running", null);
             yield* runTurnProcess(turn, args).pipe(Effect.forkIn(sessionScope));
           }).pipe(
