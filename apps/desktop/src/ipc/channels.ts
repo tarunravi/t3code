@@ -127,3 +127,6 @@ export const LIST_VOICE_RECORDINGS_CHANNEL = "desktop:list-voice-recordings";
 export const READ_VOICE_RECORDING_CHANNEL = "desktop:read-voice-recording";
 export const RETRY_VOICE_RECORDING_CHANNEL = "desktop:retry-voice-recording";
 export const DELETE_VOICE_RECORDING_CHANNEL = "desktop:delete-voice-recording";
+
+export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
+export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
