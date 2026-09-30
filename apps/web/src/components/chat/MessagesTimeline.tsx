@@ -190,6 +190,7 @@ import {
   type AssistantCitationTarget,
 } from "./AssistantCitationSource";
 import { useAssistantCitationTarget, type CitationHistoryPage } from "./useAssistantCitationTarget";
+import type { ConversationRewriteRun } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
@@ -484,7 +485,7 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerStatuses: ReadonlyArray<ServerProvider>;
-  runs: ReadonlyArray<HandoffTimelineRun>;
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -768,6 +769,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, [latestRun]);
 
+  const rewriteRuns = useStableRewriteRuns(runsProp);
   const rowsProjectionRef = useRef<{
     readonly threadKey: string;
     readonly workspaceRoot: string | undefined;
@@ -788,6 +790,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaries,
         supportsConversationRollback,
+        rewriteRuns,
         worktreeSetup,
       },
       previous?.threadKey === listIdentityKey && previous.workspaceRoot === workspaceRoot
@@ -811,6 +814,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     activeTurnStartedAt,
     turnDiffSummaries,
     supportsConversationRollback,
+    rewriteRuns,
     worktreeSetup,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
@@ -4564,6 +4568,37 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
 // Structural sharing — reuse old row references when data hasn't changed
 // so LegendList (and React) can skip re-rendering unchanged items.
 // ---------------------------------------------------------------------------
+
+const EMPTY_REWRITE_RUNS: ReadonlyArray<ConversationRewriteRun> = [];
+
+/** Terminal runs whose messages stay editable. Stable across streaming updates. */
+
+function useStableRewriteRuns(
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>,
+): ReadonlyArray<ConversationRewriteRun> {
+  const prev = useRef<{
+    signature: string;
+    value: ReadonlyArray<ConversationRewriteRun>;
+  }>({ signature: "", value: EMPTY_REWRITE_RUNS });
+  return useMemo(() => {
+    const terminal = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [`${run.id}\0${run.ordinal}\0${run.status}`]
+        : [],
+    );
+    const signature = terminal.join("\n");
+    if (signature === prev.current.signature) {
+      return prev.current.value;
+    }
+    const value = runs.flatMap((run) =>
+      run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+        ? [{ id: run.id, ordinal: run.ordinal, status: run.status }]
+        : [],
+    );
+    prev.current = { signature, value };
+    return value;
+  }, [runs]);
+}
 
 /** Content-stable projection of the runs the handoff rows read. The incoming
  *  array is rebuilt on every projection event (status/timestamp churn), but
