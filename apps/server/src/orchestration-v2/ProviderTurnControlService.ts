@@ -192,9 +192,12 @@ export const layer: Layer.Layer<
           // Stopping a settled turn stops its background work. Work outside
           // the thread's roster, such as Claude's background subagents,
           // survives interruptTurn; releasing the session kills it and
-          // settles what it orphaned.
+          // settles what it orphaned. A session shared by several app threads
+          // would take the other threads' work with it, so it is left running.
           if (
             turnSettled &&
+            !runtime.providerSession.capabilities.sessions
+              .supportsMultipleProviderThreadsPerSession &&
             runtime.hasPendingBackgroundWork !== undefined &&
             (yield* runtime.hasPendingBackgroundWork)
           ) {

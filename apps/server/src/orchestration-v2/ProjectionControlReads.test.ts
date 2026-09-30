@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -278,6 +279,7 @@ for (const storage of ["sqlite", "memory"] as const) {
         get: () =>
           Effect.succeed(
             Option.some({
+              providerSession: { capabilities: ClaudeProviderCapabilitiesV2 },
               hasPendingBackgroundWork: Effect.sync(() => hasSessionBackgroundWork),
               hasPendingBackgroundWorkForThread: (target: { id: ProviderThreadId }) =>
                 Effect.sync(() => {
