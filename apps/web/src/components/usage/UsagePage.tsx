@@ -320,7 +320,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             isPartial={isPartial}
             duplicateSources={merged.duplicateSources}
-            sourceIssues={merged.sourceIssues}
+            sourceIssues={sourceMessages}
             contractMismatches={merged.contractMismatches}
           />
         </WorkspaceBreadcrumbItem>

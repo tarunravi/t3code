@@ -578,6 +578,22 @@ export const AntigravityIcon: Icon = (props) => (
   </svg>
 );
 
+// Official ZCode mark, Apache-2.0; geometry unchanged, wrapped for React icon props.
+// https://github.com/zai-org/ZCode/blob/29628c9acdb81b703bbd4080c207a0e7ce5e276e/packages/ui/src/components/ui/ZCodeAboutLogo.tsx
+export const ZCodeIcon: Icon = (props) => (
+  <svg viewBox="0 0 256 218" fill="none" aria-hidden="true" {...props}>
+    <path
+      fill="currentColor"
+      d="M134.4 0.130152L116.48 25.6022C113.665 29.5699 109.054 32.0019 104.064 32.0019H6.3999V0C6.3999 0.130149 134.4 0.130152 134.4 0.130152Z"
+    />
+    <path fill="currentColor" d="M256 0.130127L102.401 217.732H0L153.599 0.130127H256Z" />
+    <path
+      fill="currentColor"
+      d="M121.601 217.732L139.65 192.134C142.465 188.166 147.076 185.734 152.067 185.734H249.604V217.736H121.601V217.732Z"
+    />
+  </svg>
+);
+
 export const OpenCodeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#opencode__clip0_1311_94969)">
