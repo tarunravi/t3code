@@ -49,6 +49,7 @@ import {
 import { makePiRpcConnection, type PiRpcRecord } from "./rpc.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 import { turnItemOutputText } from "../../../client-runtime/src/work-log/itemDetail.ts";
+import { HANDOFF_RECOVERY_BUDGET } from "@t3tools/provider-core/server/handoffBudget";
 
 const layerTest = Layer.mergeAll(
   NodeServices.layer,
@@ -1613,7 +1614,7 @@ describe("PiAdapterV2", () => {
       assert.equal(budget("default"), 16_000);
       assert.equal(budget("anthropic/large"), 16_000);
       assert.equal(runtime.getModelContextWindow?.(modelSelection("anthropic/small")), 32_000);
-      assert.equal(budget("anthropic/small"), 0);
+      assert.equal(budget("anthropic/small"), HANDOFF_RECOVERY_BUDGET);
       assert.isUndefined(runtime.getModelContextWindow?.(modelSelection("anthropic/unknown")));
       assert.isUndefined(
         runtime.getModelContextWindow?.({
