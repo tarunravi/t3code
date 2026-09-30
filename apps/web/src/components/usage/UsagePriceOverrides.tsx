@@ -114,22 +114,24 @@ export function UsagePriceOverrides({
   const customModels = [
     ...new Set(selected.flatMap((environment) => Object.keys(environment.prices ?? {}))),
   ].sort();
+  const observedBuckets = usage
+    .filter((environment) =>
+      selected.some((target) => target.environmentId === environment.environmentId),
+    )
+    .flatMap((environment) => environment.summary?.buckets ?? []);
+  const unpricedModels = observedBuckets
+    .filter((bucket) => bucket.unpricedRecords > 0)
+    .map((bucket) => bucket.model);
+  const rowModels = [...new Set([...customModels, ...unpricedModels])].sort();
   const models = [
-    ...new Set([
-      ...customModels,
-      ...usage
-        .filter((environment) =>
-          selected.some((target) => target.environmentId === environment.environmentId),
-        )
-        .flatMap((environment) => environment.summary?.buckets.map((bucket) => bucket.model) ?? []),
-    ]),
+    ...new Set([...customModels, ...observedBuckets.map((bucket) => bucket.model)]),
   ].sort();
   // Keep new rows in place while successful environments publish their updated settings.
   const newModels = new Set(
     drafts.filter((draft) => draft.isNew).map((draft) => draft.model.trim()),
   );
   const rows: readonly UsagePriceDraft[] = [
-    ...customModels
+    ...rowModels
       .filter((model) => attempt === null || !newModels.has(model))
       .map(
         (model) =>
@@ -149,7 +151,7 @@ export function UsagePriceOverrides({
     if (draft.model.trim() === "") errors.set(draft.id, "Enter a model ID.");
     else if (
       attempt === null &&
-      (customModels.includes(draft.model.trim()) ||
+      (rowModels.includes(draft.model.trim()) ||
         drafts.some((other) => other.id !== draft.id && other.model.trim() === draft.model.trim()))
     )
       errors.set(draft.id, "This model already has a row. Edit its prices there.");
@@ -249,7 +251,8 @@ export function UsagePriceOverrides({
         <DialogHeader>
           <DialogTitle>Custom model prices</DialogTitle>
           <DialogDescription>
-            Prices apply to all past and future usage on the environments you select.
+            Prices apply to all past and future usage on the environments you select. Unpriced
+            models from recent usage are listed below; enter their actual model rates.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -422,7 +425,12 @@ export function UsagePriceOverrides({
                                         ? field.optional
                                           ? "Input rate"
                                           : "0.00"
-                                        : cell.placeholder
+                                        : cell.placeholder === "Automatic" &&
+                                            unpricedModels.includes(row.model)
+                                          ? field.optional
+                                            ? "Input rate"
+                                            : "Unpriced"
+                                          : cell.placeholder
                                     }
                                     autoComplete="off"
                                     disabled={locked}
@@ -438,8 +446,18 @@ export function UsagePriceOverrides({
                           <TableCell>
                             <Tooltip>
                               <TooltipTrigger
-                                render={<Button size="icon-xs" variant="ghost" />}
-                                disabled={locked}
+                                render={
+                                  <Button
+                                    size="icon-xs"
+                                    variant="ghost"
+                                    disabled={
+                                      locked ||
+                                      (!row.isNew &&
+                                        !customModels.includes(row.model) &&
+                                        Object.keys(row.values).length === 0)
+                                    }
+                                  />
+                                }
                                 aria-label={
                                   row.removed
                                     ? `Undo reset for ${row.model}`
@@ -480,7 +498,7 @@ export function UsagePriceOverrides({
               </div>
               <datalist id="usage-price-models">
                 {models
-                  .filter((model) => !customModels.includes(model))
+                  .filter((model) => !rowModels.includes(model))
                   .map((model) => (
                     <option key={model} value={model} />
                   ))}

@@ -2,6 +2,20 @@
   "customNotices": [
     {
       "bundles": ["assets", "desktop", "web"],
+      "license": "Apache-2.0",
+      "name": "ZCode icon",
+      "sourceUrl": "https://github.com/zai-org/ZCode/blob/29628c9acdb81b703bbd4080c207a0e7ce5e276e/packages/ui/src/components/ui/ZCodeAboutLogo.tsx",
+      "generatedNotices": [
+        {
+          "licenseId": "Apache-2.0",
+          "preamble": [
+            "ZCode mark from the official zai-org/ZCode repository. Original path geometry retained; SVG wrapped for T3 React icon props. ZCode and Z.ai are trademarks of their respective owners."
+          ]
+        }
+      ]
+    },
+    {
+      "bundles": ["assets", "desktop", "web"],
       "license": "CC0-1.0",
       "name": "Notification Sound 1 by deadrobotmusic",
       "sourceUrl": "https://freesound.org/people/deadrobotmusic/sounds/750607/",

@@ -14,6 +14,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   UsageDay,
+  UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
@@ -33,6 +34,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as UsageService from "./UsageService.ts";
 import * as CursorUsageSource from "./usageCursorSource.ts";
 
+const decodeUsageSummary = Schema.decodeUnknownSync(UsageSummary);
 const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -124,6 +126,130 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live(
+    "scans native ZCode usage with exact model prices, live updates and shared-source deduplication",
+    () =>
+      Effect.gen(function* () {
+        const { home, settings } = yield* setup;
+        const root = NodePath.join(home, ".zcode", "cli", "db");
+        const dbPath = NodePath.join(root, "db.sqlite");
+        const model = "route/Custom-Model";
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(root, { recursive: true });
+          const db = new NodeSqlite.DatabaseSync(dbPath);
+          try {
+            db.exec(`CREATE TABLE model_usage (
+            id TEXT PRIMARY KEY, session_id TEXT, model_id TEXT, started_at INTEGER,
+            input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+            cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+            provider_total_tokens INTEGER, computed_total_tokens INTEGER
+          )`);
+            for (const id of ["parent", "child"]) {
+              db.prepare(
+                "INSERT INTO model_usage VALUES (?, ?, ?, ?, 100, 20, 5, 10, 60, 120, 120)",
+              ).run(id, id, model, Date.parse("2026-08-01T10:00:00Z"));
+            }
+          } finally {
+            db.close();
+          }
+        });
+        yield* Effect.gen(function* () {
+          const settingsService = yield* ServerSettings.ServerSettingsService;
+          const service = yield* UsageService.make;
+          const original = yield* service.readSummary(WINDOW);
+          assert.strictEqual(original.buckets[0]?.model, model);
+          assert.strictEqual(original.buckets[0]?.provider, "zcode");
+          assert.strictEqual(original.buckets[0]?.unpricedRecords, 2);
+          assert.strictEqual(original.buckets[0]?.costSource, "unpriced");
+          assert.strictEqual(original.buckets[0]?.costUsd, 0);
+          const source = original.sources.find((source) => source.fingerprint.provider === "zcode");
+          assert.strictEqual(source?.status, "ok");
+          assert.strictEqual(source?.scannedFiles, 1);
+          assert.strictEqual(source?.distinctSessions, 2);
+          assert.strictEqual(
+            source?.fingerprint.resolvedHomePath,
+            yield* Effect.promise(() => NodeFSP.realpath(root)),
+          );
+          const decoded = decodeUsageSummary(original);
+          const merged = mergeUsage(
+            [
+              { environmentId: EnvironmentId.make("one"), label: "one", summary: decoded },
+              { environmentId: EnvironmentId.make("two"), label: "two", summary: decoded },
+            ],
+            original.contractVersion,
+          );
+          assert.strictEqual(merged.totalTokens, 240);
+          assert.strictEqual(merged.records, 2);
+
+          yield* settingsService.updateSettings({
+            usagePriceOverrides: {
+              [model]: {
+                inputCostPerMillionTokens: 2,
+                outputCostPerMillionTokens: 8,
+                cacheReadCostPerMillionTokens: 0.5,
+                cacheWriteCostPerMillionTokens: 3,
+              },
+            },
+          });
+          const priced = yield* service.readSummary(WINDOW);
+          assert.closeTo(priced.buckets[0]?.costUsd ?? -1, 0.00056, 1e-12);
+          assert.closeTo(priced.buckets[0]?.cacheSavingsUsd ?? -1, 0.00018, 1e-12);
+          assert.strictEqual(priced.buckets[0]?.costSource, "modelPriced");
+          assert.strictEqual(priced.buckets[0]?.unpricedRecords, 0);
+          assert.deepStrictEqual(priced.buckets[0]?.totals, original.buckets[0]?.totals);
+          yield* settingsService.updateSettings({
+            usagePriceOverrides: {
+              [model]: { inputCostPerMillionTokens: 0, outputCostPerMillionTokens: 0 },
+            },
+          });
+          const free = yield* service.readSummary(WINDOW);
+          assert.strictEqual(free.buckets[0]?.costUsd, 0);
+          assert.strictEqual(free.buckets[0]?.costSource, "modelPriced");
+          assert.strictEqual(free.buckets[0]?.unpricedRecords, 0);
+          yield* settingsService.updateSettings({ usagePriceOverrides: { [model]: null } });
+          assert.deepStrictEqual((yield* service.readSummary(WINDOW)).buckets, original.buckets);
+
+          yield* Effect.sync(() => {
+            const db = new NodeSqlite.DatabaseSync(dbPath);
+            try {
+              db.exec("UPDATE model_usage SET output_tokens = 30, provider_total_tokens = 130");
+            } finally {
+              db.close();
+            }
+          });
+          const updated = yield* service.readSummary(WINDOW);
+          assert.strictEqual(updated.buckets[0]?.records, 2);
+          assert.strictEqual(updated.buckets[0]?.totals.outputTokens, 60);
+        }).pipe(Effect.provide(serviceLayers({ prefix: "usage-service-zcode", home, settings })));
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("reports a missing or unreadable ZCode database without hiding other providers", () =>
+    Effect.gen(function* () {
+      const { home, settings, transcript } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(serviceLayers({ prefix: "usage-service-zcode-status", home, settings })),
+      );
+      const missing = yield* service.readSummary(WINDOW);
+      assert.strictEqual(
+        missing.sources.find((source) => source.fingerprint.provider === "zcode")?.status,
+        "missing",
+      );
+      const root = NodePath.join(home, ".zcode", "cli", "db");
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(root, { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(root, "db.sqlite"), "invalid database");
+      });
+      const failed = yield* service.readSummary(WINDOW);
+      assert.strictEqual(
+        failed.sources.find((source) => source.fingerprint.provider === "zcode")?.status,
+        "partial",
+      );
+      assert.deepStrictEqual(failed.buckets, missing.buckets);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("omits Cursor account usage when no file login is saved", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;

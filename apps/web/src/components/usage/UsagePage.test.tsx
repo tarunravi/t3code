@@ -3,6 +3,7 @@ import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { EnvironmentUsageStatus } from "../../state/usage";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -35,6 +36,10 @@ vi.mock("../WorkspacePageContainer", () => ({ WorkspacePageContainer: "main" }))
 vi.mock("../WorkspacePageHeader", () => ({ WorkspacePageHeader: "header" }));
 vi.mock("./UsageProviderChart", () => ({ UsageProviderChart: "div" }));
 vi.mock("./UsagePriceOverrides", () => ({ UsagePriceOverrides: () => null }));
+vi.mock("./usagePagePreferences", () => ({
+  readUsagePagePreferences: () => ({ metric: "cost", windowDays: 30 }),
+  saveUsagePagePreferences: vi.fn(),
+}));
 vi.mock("./usageProviders", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./usageProviders")>();
   return {
@@ -53,6 +58,7 @@ const environments = [
     label: "Test environment",
     isPending: false,
     error: null,
+    needsCursorKeychainAccess: false,
     summary: {
       contractVersion: USAGE_CONTRACT_VERSION,
       readAt: "2026-08-11T12:37:00.000Z",
@@ -65,7 +71,7 @@ const environments = [
       scanDurationMs: 1,
     },
   },
-];
+] satisfies readonly EnvironmentUsageStatus[];
 
 beforeEach(() => {
   testState.useUsage.mockReturnValue({
@@ -78,7 +84,7 @@ beforeEach(() => {
   });
 });
 
-describe("UsagePage Escape navigation", () => {
+describe("UsagePage", () => {
   let renderer: Root;
   let container: HTMLDivElement;
   let back: ReturnType<typeof vi.spyOn>;
@@ -146,6 +152,75 @@ describe("UsagePage Escape navigation", () => {
     document.body.dispatchEvent(escape(properties));
     expect(back).not.toHaveBeenCalled();
     expect(testState.navigate).not.toHaveBeenCalled();
+  });
+
+  it("renders while summaries are missing and after a failed environment recovers", async () => {
+    for (const status of [
+      { summary: null, error: null, isPending: true },
+      { summary: null, error: "Unavailable", isPending: false },
+      { summary: environments[0]!.summary, error: null, isPending: false },
+    ]) {
+      const next = [{ ...environments[0]!, ...status }];
+      testState.useUsage.mockReturnValue({
+        merged: mergeUsage(
+          next.flatMap((environment) =>
+            environment.summary === null ? [] : [{ ...environment, summary: environment.summary }],
+          ),
+          USAGE_CONTRACT_VERSION,
+        ),
+        environments: next,
+        selectedEnvironments: next,
+        isPending: status.isPending,
+        isPartial: false,
+        refresh: vi.fn(),
+      });
+      await act(() => renderer.render(<UsagePage />));
+      expect(container.textContent).toContain("All environments");
+      expect(
+        container.querySelector('[aria-label="Some environments could not report usage"]') !== null,
+      ).toBe(status.error !== null);
+    }
+  });
+
+  it("shows source coverage messages in the environment menu", async () => {
+    const next = [
+      {
+        ...environments[0]!,
+        summary: {
+          ...environments[0]!.summary,
+          sources: [
+            {
+              fingerprint: {
+                provider: "codex",
+                hostId: "test",
+                resolvedHomePath: "/test",
+                volumeId: "",
+              },
+              status: "partial",
+              scannedFiles: 1,
+              skippedFiles: 1,
+              malformedRecords: 0,
+              distinctSessions: 1,
+              message: "Some session files could not be read.",
+            },
+          ],
+        },
+      },
+    ];
+    testState.useUsage.mockReturnValue({
+      merged: mergeUsage([], USAGE_CONTRACT_VERSION),
+      environments: next,
+      selectedEnvironments: next,
+      isPending: false,
+      isPartial: false,
+      refresh: vi.fn(),
+    });
+    await act(() => renderer.render(<UsagePage />));
+    const trigger = container.querySelector<HTMLButtonElement>('[data-slot="menu-trigger"]')!;
+    await act(() => trigger.click());
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain(
+      "Some session files could not be read.",
+    );
   });
 });
 
