@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-29T21:30:00Z",
+  "updatedAt": "2026-09-30T20:30:00Z",
   "compatibility": [
     {
       "driver": "codex",
@@ -52,8 +52,12 @@
     {
       "driver": "antigravity",
       "t3CodeRange": ">=0.0.42",
-      "recommendedRange": "=1.1.1",
-      "ranges": [{ "range": "=1.1.1", "status": "supported" }]
+      "recommendedVersion": "1.2.1",
+      "recommendedRange": "=1.2.1",
+      "ranges": [
+        { "range": "=1.2.1", "status": "supported" },
+        { "range": "=1.1.1", "status": "unsupported" }
+      ]
     },
     {
       "driver": "pi",
