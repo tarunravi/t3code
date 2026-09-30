@@ -470,9 +470,10 @@ export const layerWithOptions = (
                 // Reuse a still-valid credential for this thread instead of
                 // rotating: long-lived provider processes (codex app-server)
                 // build their MCP client once per conversation and keep using
-                // the credential it started with, so a thread that detaches and
-                // re-attaches across a workspace handoff must come back to the
-                // same token or the process's tool calls fail auth.
+                // the credential it started with. A model or provider switch
+                // must come back to that same secret, or the restored client
+                // fails auth. The provider binding on the secret is updated so
+                // mutation tools still see the run that owns the thread.
                 const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
                   yield* agentAccessSettings(threadId);
                 const capabilities = new Set<
@@ -487,18 +488,34 @@ export const layerWithOptions = (
                   reserveMcpCredential(threadId, existing.providerSessionId);
                   const rawToken = existing.authorizationHeader.replace(/^Bearer\s+/, "");
                   const resolved = yield* mcpSessionRegistry.resolve(rawToken);
-                  if (
+                  const capabilitiesMatch =
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
-                    resolved.thread.providerInstanceId === providerInstanceId &&
-                    // A flipped browser-access setting must not survive through
-                    // credential reuse: rotate so the new scope reflects it.
+                    // A flipped browser or device setting must not survive
+                    // through credential reuse: rotate so the new scope reflects it.
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable
-                  ) {
-                    return { mcpCredentialId: existing.providerSessionId, issued: false };
+                    resolved.capabilities.has("device") === deviceToolsAvailable;
+                  if (capabilitiesMatch && resolved !== undefined) {
+                    if (resolved.thread.providerInstanceId !== providerInstanceId) {
+                      const rebound = yield* mcpSessionRegistry.rebindProvider({
+                        rawToken,
+                        providerInstanceId,
+                      });
+                      if (rebound === undefined) {
+                        dropMcpCredentialReservation(threadId, existing.providerSessionId);
+                      } else {
+                        McpProviderSession.setMcpProviderSession({
+                          ...existing,
+                          providerInstanceId,
+                        });
+                        return { mcpCredentialId: existing.providerSessionId, issued: false };
+                      }
+                    } else {
+                      return { mcpCredentialId: existing.providerSessionId, issued: false };
+                    }
+                  } else {
+                    dropMcpCredentialReservation(threadId, existing.providerSessionId);
                   }
-                  dropMcpCredentialReservation(threadId, existing.providerSessionId);
                 }
                 yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({
@@ -1057,11 +1074,13 @@ export const layerWithOptions = (
             Option.match(entry, {
               onNone: () => Effect.void,
               onSome: (entry) =>
-                // Revoke every credential this session recorded, including for
-                // threads that detached without re-attaching: the provider
-                // process is gone, so nothing holds them anymore. Skip threads
-                // a live replacement session took over, since credential reuse
-                // means the replacement may hold this very credential.
+                // Drop credentials this session rotated away from. Keep the
+                // bearer that is still the thread's current one: the next
+                // model reuses that secret, and a restored provider client
+                // will keep sending it. A reservation means an in-flight open
+                // is configuring a provider process with this credential right
+                // now. Another live session holding the same id must not have
+                // it revoked out from under it.
                 Ref.get(sessions).pipe(
                   Effect.flatMap((current) =>
                     Effect.forEach(
@@ -1071,11 +1090,11 @@ export const layerWithOptions = (
                         // a DIFFERENT credential (left behind by an old session
                         // the thread rotated away from) must not veto revoking
                         // this session's own credential, or it leaks forever.
-                        // A reservation means an in-flight open is configuring
-                        // a provider process with this credential right now;
-                        // revoking it here would strand that process (eager
-                        // adapters cannot pick up a rotated token).
+                        const stillCurrent =
+                          McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId ===
+                          mcpCredentialId;
                         const heldElsewhere =
+                          stillCurrent ||
                           isMcpCredentialReserved(threadId, mcpCredentialId) ||
                           Array.from(current.values()).some(
                             (other) =>
@@ -2125,13 +2144,14 @@ export const layerWithOptions = (
             // Plain detaches deliberately do not revoke: a detached thread's
             // provider process may still be alive (shared multi-thread codex
             // session across a workspace handoff) and holds its MCP client's
-            // credential for the thread it will re-attach with. Credentials
-            // are revoked when the session entry is released (process gone)
-            // or rotated on the next attach if they stopped resolving.
-            // Terminal detaches (thread archived or deleted) revoke the
-            // thread's credentials immediately, even on a retry where the
-            // entry is already gone: there is no legitimate future re-attach,
-            // and the token must not outlive the thread.
+            // credential for the thread it will re-attach with. Releasing the
+            // session also keeps the thread's current bearer, so a later
+            // model can reuse it. A bearer the thread has already rotated
+            // away from is revoked on release. Terminal detaches (thread
+            // archived or deleted) revoke the thread's credentials
+            // immediately, even on a retry where the entry is already gone:
+            // there is no legitimate future re-attach, and the token must not
+            // outlive the thread.
             if (input.revokeMcpCredential === true) {
               yield* clearMcpSession(input.threadId);
             }
