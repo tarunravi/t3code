@@ -1294,6 +1294,49 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
+  it("offers rewrite on a failed user message that has no checkpoint of its own", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-failed" as never,
+            role: "user",
+            text: "Keep going",
+            runId: "turn-failed" as never,
+            inputIntent: "turn_start",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [
+        {
+          runId: "turn-1" as never,
+          completedAt: "2026-01-01T00:00:30Z",
+          assistantMessageId: null,
+          checkpointTurnCount: 1,
+          checkpointRef: "checkpoint-1" as never,
+          status: "ready",
+          files: [],
+        },
+      ],
+      supportsConversationRollback: true,
+      rewriteRuns: [{ id: "turn-failed" as never, ordinal: 2, status: "failed" }],
+    });
+
+    const userRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "user",
+    );
+    expect(userRow?.revertTurnCount).toBe(1);
+  });
+
   it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [
       {

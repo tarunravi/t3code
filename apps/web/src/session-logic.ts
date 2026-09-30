@@ -1057,18 +1057,33 @@ export function canRestoreFilesForRun(
   );
 }
 
+const REWRITABLE_WITHOUT_OWN_CHECKPOINT = new Set(["failed", "interrupted", "cancelled"]);
+
+export interface ConversationRewriteRun {
+  readonly id: RunId;
+  readonly ordinal: number;
+  readonly status: string;
+}
+
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
+  /**
+   * Terminal runs that never recorded their own checkpoint. The previous
+   * turn's checkpoint is still enough to edit and rewind that message.
+   */
+  readonly runs?: ReadonlyArray<ConversationRewriteRun>;
 }): Map<ChatMessage["id"], number> {
   // A "missing" checkpoint (e.g. a project outside git) cannot restore files,
   // but it still marks the turn boundary, so the conversation can be rewritten.
   const readyCheckpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
+  const rewriteTurnCounts = new Set<number>();
   for (const checkpoint of input.checkpoints) {
-    if (isConversationRewriteCheckpoint(checkpoint)) {
-      readyCheckpointByRunId.set(checkpoint.runId, checkpoint);
-    }
+    if (!isConversationRewriteCheckpoint(checkpoint)) continue;
+    readyCheckpointByRunId.set(checkpoint.runId, checkpoint);
+    rewriteTurnCounts.add(checkpoint.checkpointTurnCount);
   }
+  const runsById = new Map((input.runs ?? []).map((run) => [run.id, run]));
   const byUserMessageId = new Map<ChatMessage["id"], number>();
   for (const entry of input.timelineEntries) {
     if (entry.kind !== "message" || entry.message.role !== "user") continue;
@@ -1077,8 +1092,18 @@ export function deriveRevertTurnCountByUserMessageId(input: {
     }
     if (entry.message.runId === null) continue;
     const checkpoint = readyCheckpointByRunId.get(entry.message.runId);
-    if (checkpoint === undefined) continue;
-    byUserMessageId.set(entry.message.id, Math.max(0, checkpoint.checkpointTurnCount - 1));
+    if (checkpoint !== undefined) {
+      byUserMessageId.set(entry.message.id, Math.max(0, checkpoint.checkpointTurnCount - 1));
+      continue;
+    }
+    const run = runsById.get(entry.message.runId);
+    if (run === undefined || !REWRITABLE_WITHOUT_OWN_CHECKPOINT.has(run.status)) continue;
+    const targetTurnCount = Math.max(0, run.ordinal - 1);
+    // Turn 0 is a baseline row the summaries omit. A later failed turn can
+    // rewind to the previous turn as soon as that checkpoint exists.
+    if (targetTurnCount > 0 && rewriteTurnCounts.has(targetTurnCount)) {
+      byUserMessageId.set(entry.message.id, targetTurnCount);
+    }
   }
   return byUserMessageId;
 }

@@ -345,6 +345,53 @@ describe("V2 session presentation", () => {
     ).toBe(0);
   });
 
+  it("rewinds a failed turn from the previous checkpoint when it never captured its own", () => {
+    const previousRunId = RunId.make("run-previous");
+    const failedRunId = RunId.make("run-failed");
+    const messageId = MessageId.make("message-failed");
+    const timelineEntries = [
+      {
+        id: messageId,
+        kind: "message" as const,
+        createdAt: "2026-09-29T00:00:00.000Z",
+        message: {
+          id: messageId,
+          role: "user" as const,
+          text: "Continue after the handoff",
+          runId: failedRunId,
+          inputIntent: "turn_start" as const,
+          streaming: false,
+          createdAt: "2026-09-29T00:00:00.000Z",
+          updatedAt: "2026-09-29T00:00:00.000Z",
+        },
+      },
+    ] as unknown as Parameters<typeof deriveRevertTurnCountByUserMessageId>[0]["timelineEntries"];
+    const previousCheckpoint = {
+      runId: previousRunId,
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-previous" as never,
+      status: "ready" as const,
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-09-29T00:00:01.000Z",
+    };
+
+    expect([
+      ...deriveRevertTurnCountByUserMessageId({
+        timelineEntries,
+        checkpoints: [previousCheckpoint],
+        runs: [{ id: failedRunId, ordinal: 2, status: "failed" }],
+      }),
+    ]).toEqual([[messageId, 1]]);
+    expect(
+      deriveRevertTurnCountByUserMessageId({
+        timelineEntries,
+        checkpoints: [previousCheckpoint],
+        runs: [{ id: failedRunId, ordinal: 2, status: "running" }],
+      }).size,
+    ).toBe(0);
+  });
+
   it("uses visible turn item order and keeps provider errors in the work log", () => {
     const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
     const threadId = ThreadId.make("thread-visible");

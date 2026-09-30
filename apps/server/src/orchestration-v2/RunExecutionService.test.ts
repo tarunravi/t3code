@@ -1520,7 +1520,7 @@ it.effect("does not pin ingestion on background items when the root turn is inte
 );
 
 it.effect.each(["completed", "interrupted", "failed"] as const)(
-  "enqueues checkpoint capture after a %s root turn only when it can be rewritten",
+  "enqueues checkpoint capture after a %s root turn so the message can be rewritten",
   (status) =>
     Effect.gen(function* () {
       const captureEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
@@ -1535,7 +1535,7 @@ it.effect.each(["completed", "interrupted", "failed"] as const)(
             ),
         },
       );
-      assert.equal((yield* Ref.get(captureEffects)).length, status === "failed" ? 0 : 1);
+      assert.equal((yield* Ref.get(captureEffects)).length, 1);
     }),
 );
 
