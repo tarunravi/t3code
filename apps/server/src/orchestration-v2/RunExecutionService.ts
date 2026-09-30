@@ -662,27 +662,30 @@ export const layer: Layer.Layer<
         const checkpointCaptureCommandId = CommandId.make(
           `command:effect:checkpoint.capture:${input.run.id}`,
         );
-        // Stopped runs capture too: their checkpoint is the rollback point for
-        // the next message. The capture is enqueued with these terminal events,
+        // Every settled root turn captures a checkpoint so its user message can
+        // be rewritten. Failed and stopped runs are already terminal; capture
+        // leaves their status alone. The effect is enqueued with these events,
         // ahead of any later run's start on this thread's effect lane.
+        const capturesRewriteCheckpoint =
+          input.terminal.status === "completed" ||
+          input.terminal.status === "interrupted" ||
+          input.terminal.status === "cancelled" ||
+          input.terminal.status === "failed";
         const finalization = {
-          effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
-              ? [
-                  {
-                    id: `effect:checkpoint.capture:${input.run.id}`,
-                    commandId: checkpointCaptureCommandId,
-                    threadId: input.run.threadId,
-                    request: {
-                      type: "checkpoint.capture" as const,
-                      runId: input.run.id,
-                      scopeId: input.checkpointScope.id,
-                    },
+          effects: capturesRewriteCheckpoint
+            ? [
+                {
+                  id: `effect:checkpoint.capture:${input.run.id}`,
+                  commandId: checkpointCaptureCommandId,
+                  threadId: input.run.threadId,
+                  request: {
+                    type: "checkpoint.capture" as const,
+                    runId: input.run.id,
+                    scopeId: input.checkpointScope.id,
                   },
-                ]
-              : [],
+                },
+              ]
+            : [],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
