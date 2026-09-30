@@ -104,10 +104,25 @@ export function attachmentTokenAllowance(attachments: ReadonlyArray<ChatAttachme
   );
 }
 
+const WORKING_RESERVE = 16_000;
+
+/**
+ * Pointer used when the selected transcript cannot fit in the free context.
+ * The model rereads the saved thread instead of failing the user's turn.
+ * The sample id is longer than app thread ids so the budget floor covers them.
+ */
+export function handoffRecoveryContext(threadId: string): string {
+  return `Context handoff. Recover this conversation with t3_thread_read({threadId:${JSON.stringify(threadId)},view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For a long item pass itemId and textOffset=nextTextOffset until null. Prior context is not a new request.`;
+}
+
 // One UTF-8 byte per token is deliberately pessimistic for byte-based tokenizers,
 // including multilingual text. It is not a tokenizer or a guarantee for arbitrary
-// custom models. Unknown windows use a 128k allowance, reserving a quarter for
-// tools, instructions and subsequent work. Current input is never truncated.
+// custom models. Unknown windows use a 128k allowance. 16k is reserved for tools
+// and later work when the known window still has that much free. A quarter of the
+// window used to be reserved as well, which refused handoffs that fit: a thread
+// at 212k of 258k has ~45k free, enough for the capped transcript. Current input
+// is never truncated. When that input itself fits, occupancy cannot consume the
+// recovery pointer.
 export function handoffBudget(input: {
   readonly tokenCap: number;
   readonly userText: string;
@@ -122,9 +137,19 @@ export function handoffBudget(input: {
     usage?.maxTokens ?? Infinity,
     usage?.autoCompactThreshold ?? Infinity,
   );
-  const native = usage?.usedTokens ?? input.nativeContextEstimate;
   const current =
     Buffer.byteLength(JSON.stringify(input.userText)) + attachmentTokenAllowance(input.attachments);
+  const userSlack = window - current;
+  const recoveryFloor = userSlack >= HANDOFF_RECOVERY_BUDGET ? HANDOFF_RECOVERY_BUDGET : 0;
+  const native = Math.min(
+    usage?.usedTokens ?? input.nativeContextEstimate,
+    Math.max(0, userSlack - recoveryFloor),
+  );
+  const slack = userSlack - native;
+  // Flat once free space can no longer hold both the reserve and the pointer,
+  // so adding occupancy never increases the allowance.
+  const room =
+    slack >= recoveryFloor ? Math.max(recoveryFloor, slack - WORKING_RESERVE) : Math.max(0, slack);
   return Math.max(
     0,
     Math.min(
@@ -132,7 +157,7 @@ export function handoffBudget(input: {
       // Cap only imported history. Attachment transport limits belong to adapters;
       // they may send binary/base64 data separately from the history request.
       HANDOFF_BYTE_CAP,
-      window - native - current - Math.max(16_000, Math.ceil(window / 4)),
+      room,
     ),
   );
 }
@@ -223,6 +248,9 @@ export function historyCost(
     ) + 256
   );
 }
+
+/** Floor that still fits `handoffRecoveryContext` for any app thread id. */
+export const HANDOFF_RECOVERY_BUDGET = historyCost([], handoffRecoveryContext("x".repeat(128)));
 
 export function selectHistory(input: {
   readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;

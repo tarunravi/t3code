@@ -5,7 +5,12 @@ import type {
 import type { ProviderAdapterV2HistoricalContext } from "./ProviderAdapter.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { historyCost, renderHistory, selectHistory } from "./ContextHandoffBudget.ts";
+import {
+  handoffRecoveryContext,
+  historyCost,
+  renderHistory,
+  selectHistory,
+} from "./ContextHandoffBudget.ts";
 
 /**
  * Persist before/after injection: an ambiguous pending delivery requires a fresh native thread.
@@ -68,13 +73,29 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
         ? `${coverage}\n${oldContext}`
         : coverage;
-    const selected = selectHistory({
+    const fitted = selectHistory({
       messages,
       coverage: fullCoverage,
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
       budget,
     });
-    if (historyCost(selected.messages, selected.context) > budget) {
+    const recoveryContext = handoffRecoveryContext(
+      input.providerThread.appThreadId ?? pending[0]!.threadId,
+    );
+    // The known window already bounded the budget. When the transcript still
+    // does not fit, point at the saved thread instead of failing the turn.
+    const selected =
+      historyCost(fitted.messages, fitted.context) <= budget
+        ? fitted
+        : historyCost([], recoveryContext) <= budget
+          ? {
+              ...fitted,
+              messages: [],
+              context: recoveryContext,
+              omittedItemIds: messages.map((message) => message.itemId),
+            }
+          : undefined;
+    if (selected === undefined) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
       return yield* new ContextHandoffBudgetError();
     }
