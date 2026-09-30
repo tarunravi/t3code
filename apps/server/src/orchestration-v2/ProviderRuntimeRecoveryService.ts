@@ -390,6 +390,8 @@ export const make = Effect.gen(function* () {
         ...(yield* orphanedBackgroundWorkEvents({
           projection,
           skipRunIds: new Set(runs.map((run) => run.id)),
+          // Delegated children lost their processes in the same restart.
+          settleAppOwnedSubagents: true,
           alreadyCancelledItemIds: new Set(
             events.flatMap((event) =>
               event.type === "turn-item.updated" ? [event.payload.id] : [],

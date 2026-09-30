@@ -1758,6 +1758,7 @@ function seedBackgroundSubagent(input: {
   readonly fixture: string;
   readonly runStatus: "completed" | "running";
   readonly now: DateTime.Utc;
+  readonly origin?: "provider_native" | "app_owned";
 }) {
   return Effect.gen(function* () {
     const { idAllocator, threadId, now } = input;
@@ -1793,7 +1794,7 @@ function seedBackgroundSubagent(input: {
     });
     const event = () => idAllocator.allocate.event({ threadId });
     const shared = {
-      origin: "provider_native" as const,
+      origin: input.origin ?? "provider_native",
       driver: CODEX_DRIVER,
       providerInstanceId: modelSelection.instanceId,
       childThreadId,
