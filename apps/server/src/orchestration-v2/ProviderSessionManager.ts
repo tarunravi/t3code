@@ -809,6 +809,8 @@ export const layerWithOptions = (
                 ...(yield* orphanedBackgroundWorkEvents({
                   projection,
                   skipRunIds: liveRunIds,
+                  // A delegated child outlives this session and settles itself.
+                  settleAppOwnedSubagents: false,
                   now,
                   allocateEventId,
                 })),
