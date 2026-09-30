@@ -75,8 +75,12 @@
     {
       "driver": "antigravity",
       "t3CodeRange": ">=0.0.42",
-      "recommendedRange": "=1.1.1",
-      "ranges": [{ "range": "=1.1.1", "status": "supported" }]
+      "recommendedVersion": "1.2.1",
+      "recommendedRange": "=1.2.1",
+      "ranges": [
+        { "range": "=1.2.1", "status": "supported" },
+        { "range": "=1.1.1", "status": "unsupported" }
+      ]
     },
     {
       "driver": "pi",
