@@ -687,6 +687,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           Layer.mergeAll(
             IdAllocator.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
               materializeBaselineCheckpoint: () =>
                 Effect.die("baseline materialization must be skipped when ordinal 0 is ready"),
               capture: () => Effect.succeed(captured),
@@ -782,13 +783,13 @@ it.effect(
                 turnCheckpoints: [{ ordinalWithinScope: 1, runId: firstRunId, appRunOrdinal: 1 }],
               } as never),
           }),
-          Layer.mock(CheckpointServiceV2)({
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
             materializeBaselineCheckpoint: ({ ordinalWithinScope }) =>
               Effect.succeed(baselineFor(ordinalWithinScope)),
             capture: () =>
               Effect.succeed({ ...baselineFor(2), runId: secondRunId, appRunOrdinal: 2 }),
           }),
-          Layer.mock(EventSinkV2)({
+          Layer.mock(EventSink.EventSinkV2)({
             commitCommand: (input) =>
               Effect.sync(() => {
                 committed.push(...input.events);
@@ -820,109 +821,112 @@ it.effect(
   },
 );
 
-it.effect("checkpoints an interrupted turn without changing its terminal status", () => {
-  const interruptedRunId = RunId.make("run:capture-interrupted:1");
-  const interruptedScopeId = CheckpointScopeId.make("scope:capture-interrupted");
-  const nodeId = NodeId.make("node:capture-interrupted");
-  const committed: Array<OrchestrationV2DomainEvent> = [];
-  const baselineCaptures: Array<number> = [];
-  const captureInputs: Array<{ readonly keepExistingRef?: boolean }> = [];
-  const checkpointFor = (ordinalWithinScope: number) => ({
-    id: CheckpointId.make(`checkpoint:interrupted:${ordinalWithinScope}`),
-    threadId,
-    scopeId: interruptedScopeId,
-    runId: ordinalWithinScope === 0 ? null : interruptedRunId,
-    nodeId,
-    parentCheckpointId: null,
-    ordinalWithinScope,
-    appRunOrdinal: ordinalWithinScope === 0 ? null : ordinalWithinScope,
-    ref: CheckpointRef.make(`checkpoint-ref:interrupted:${ordinalWithinScope}`),
-    status: "ready" as const,
-    files: [],
-    capturedAt: DateTime.makeUnsafe("2026-09-25T00:00:00Z"),
-  });
-  const run = {
-    id: interruptedRunId,
-    ordinal: 1,
-    status: "interrupted",
-    checkpointId: null as CheckpointId | null,
-    completedAt: DateTime.makeUnsafe("2026-09-25T00:00:00Z"),
-    providerInstanceId,
-    delegatedCompletion: null,
-  };
-  const layer = CheckpointCaptureService.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        IdAllocator.layer,
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getCheckpointCaptureContext: () =>
-            Effect.succeed({
-              run,
-              rootNode: {
-                id: nodeId,
-                status: "interrupted",
-                checkpointScopeId: interruptedScopeId,
-              },
-              scope: { id: interruptedScopeId, kind: "root_run", cwd: "/repo" },
-              providerThread: { driver },
-              readyCheckpointOrdinals: [],
-              turnCheckpoints: [],
-            } as never),
-        }),
-        Layer.mock(CheckpointServiceV2)({
-          captureBaseline: ({ ordinalWithinScope }) =>
-            Effect.sync(() => {
-              baselineCaptures.push(ordinalWithinScope);
-            }),
-          materializeBaselineCheckpoint: ({ ordinalWithinScope }) =>
-            Effect.succeed(checkpointFor(ordinalWithinScope)),
-          capture: (input) =>
-            Effect.sync(() => {
-              captureInputs.push(input);
-              return checkpointFor(input.ordinalWithinScope);
-            }),
-        }),
-        Layer.mock(EventSinkV2)({
-          commitCommand: (input) =>
-            Effect.sync(() => {
-              committed.push(...input.events);
-              return {
-                commandId: input.commandId,
-                committed: true,
-                sequence: 1,
-                events: input.events,
-                effects: [],
-              } as never;
-            }),
-        }),
+it.effect.each(["interrupted", "failed"] as const)(
+  "checkpoints a %s turn without changing its terminal status",
+  (status) => {
+    const terminalRunId = RunId.make(`run:capture-${status}:1`);
+    const terminalScopeId = CheckpointScopeId.make(`scope:capture-${status}`);
+    const nodeId = NodeId.make(`node:capture-${status}`);
+    const committed: Array<OrchestrationV2DomainEvent> = [];
+    const baselineCaptures: Array<number> = [];
+    const captureInputs: Array<{ readonly keepExistingRef?: boolean }> = [];
+    const checkpointFor = (ordinalWithinScope: number) => ({
+      id: CheckpointId.make(`checkpoint:${status}:${ordinalWithinScope}`),
+      threadId,
+      scopeId: terminalScopeId,
+      runId: ordinalWithinScope === 0 ? null : terminalRunId,
+      nodeId,
+      parentCheckpointId: null,
+      ordinalWithinScope,
+      appRunOrdinal: ordinalWithinScope === 0 ? null : ordinalWithinScope,
+      ref: CheckpointRef.make(`checkpoint-ref:${status}:${ordinalWithinScope}`),
+      status: "ready" as const,
+      files: [],
+      capturedAt: DateTime.makeUnsafe("2026-09-25T00:00:00Z"),
+    });
+    const run = {
+      id: terminalRunId,
+      ordinal: 1,
+      status,
+      checkpointId: null as CheckpointId | null,
+      completedAt: DateTime.makeUnsafe("2026-09-25T00:00:00Z"),
+      providerInstanceId,
+      delegatedCompletion: null,
+    };
+    const layer = CheckpointCaptureService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getCheckpointCaptureContext: () =>
+              Effect.succeed({
+                run,
+                rootNode: {
+                  id: nodeId,
+                  status,
+                  checkpointScopeId: terminalScopeId,
+                },
+                scope: { id: terminalScopeId, kind: "root_run", cwd: "/repo" },
+                providerThread: { driver },
+                readyCheckpointOrdinals: [],
+                turnCheckpoints: [],
+              } as never),
+          }),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: ({ ordinalWithinScope }) =>
+              Effect.sync(() => {
+                baselineCaptures.push(ordinalWithinScope);
+              }),
+            materializeBaselineCheckpoint: ({ ordinalWithinScope }) =>
+              Effect.succeed(checkpointFor(ordinalWithinScope)),
+            capture: (input) =>
+              Effect.sync(() => {
+                captureInputs.push(input);
+                return checkpointFor(input.ordinalWithinScope);
+              }),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            commitCommand: (input) =>
+              Effect.sync(() => {
+                committed.push(...input.events);
+                return {
+                  commandId: input.commandId,
+                  committed: true,
+                  sequence: 1,
+                  events: input.events,
+                  effects: [],
+                } as never;
+              }),
+          }),
+        ),
       ),
-    ),
-  );
-  return Effect.gen(function* () {
-    const service = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
-    yield* service.execute({ threadId, runId: interruptedRunId, scopeId: interruptedScopeId });
-
-    // The rewrite target (the thread start) exists even if the stop beat the run's baseline.
-    assert.deepEqual(baselineCaptures, [0]);
-    assert.deepEqual(
-      committed.flatMap((event) =>
-        event.type === "checkpoint.captured" ? [event.payload.ordinalWithinScope] : [],
-      ),
-      [0, 1],
     );
-    assert.equal(captureInputs[0]?.keepExistingRef, true);
-    const runUpdated = committed.find((event) => event.type === "run.updated");
-    assert.equal(runUpdated?.type === "run.updated" && runUpdated.payload.status, "interrupted");
-    assert.equal(
-      runUpdated?.type === "run.updated" && runUpdated.payload.checkpointId,
-      checkpointFor(1).id,
-    );
-    const nodeUpdated = committed.find((event) => event.type === "node.updated");
-    assert.equal(nodeUpdated?.type === "node.updated" && nodeUpdated.payload.status, "interrupted");
+    return Effect.gen(function* () {
+      const service = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
+      yield* service.execute({ threadId, runId: terminalRunId, scopeId: terminalScopeId });
 
-    committed.length = 0;
-    run.checkpointId = checkpointFor(1).id;
-    yield* service.execute({ threadId, runId: interruptedRunId, scopeId: interruptedScopeId });
-    assert.deepEqual(committed, []);
-  }).pipe(Effect.provide(layer));
-});
+      // The rewrite target (the thread start) exists even if the stop beat the run's baseline.
+      assert.deepEqual(baselineCaptures, [0]);
+      assert.deepEqual(
+        committed.flatMap((event) =>
+          event.type === "checkpoint.captured" ? [event.payload.ordinalWithinScope] : [],
+        ),
+        [0, 1],
+      );
+      assert.equal(captureInputs[0]?.keepExistingRef, true);
+      const runUpdated = committed.find((event) => event.type === "run.updated");
+      assert.equal(runUpdated?.type === "run.updated" && runUpdated.payload.status, status);
+      assert.equal(
+        runUpdated?.type === "run.updated" && runUpdated.payload.checkpointId,
+        checkpointFor(1).id,
+      );
+      // The terminal root node already holds its status and scope.
+      assert.isFalse(committed.some((event) => event.type === "node.updated"));
+
+      committed.length = 0;
+      run.checkpointId = checkpointFor(1).id;
+      yield* service.execute({ threadId, runId: terminalRunId, scopeId: terminalScopeId });
+      assert.deepEqual(committed, []);
+    }).pipe(Effect.provide(layer));
+  },
+);
