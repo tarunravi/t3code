@@ -34,6 +34,15 @@ export interface McpSessionRegistryShape {
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
   /**
+   * Point an existing bearer at a different provider without changing the
+   * secret. Long-lived clients (Codex restores the MCP client it built for
+   * the conversation) keep sending the original token after a model switch.
+   */
+  readonly rebindProvider: (input: {
+    readonly rawToken: string;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
+  /**
    * Records a sign of life for every credential bound to `threadId`. Provider
    * turns call this so that a session which is plainly alive keeps its
    * credential even when it goes a long time without touching an MCP tool.
@@ -181,6 +190,29 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     },
   );
 
+  const rebindProvider: McpSessionRegistryShape["rebindProvider"] = Effect.fn(
+    "McpSessionRegistry.rebindProvider",
+  )(function* (input) {
+    if (input.rawToken.length === 0) return undefined;
+    const tokenHash = yield* hashToken(input.rawToken);
+    const timestamp = yield* currentTimeMillis;
+    return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const current = pruneDead(records, timestamp);
+      const record = current.get(tokenHash);
+      if (!record) return [undefined, { records: current }] as const;
+      const scope: McpInvocationContext.McpThreadInvocationScope = {
+        ...record.scope,
+        thread: {
+          ...record.scope.thread,
+          providerInstanceId: ProviderInstanceId.make(input.providerInstanceId),
+        },
+      };
+      const next = new Map(current);
+      next.set(tokenHash, { ...record, scope, lastAliveAt: timestamp });
+      return [scope, { records: next }] as const;
+    });
+  });
+
   const touch: McpSessionRegistryShape["touch"] = Effect.fn("McpSessionRegistry.touch")(
     function* (threadId) {
       const timestamp = yield* currentTimeMillis;
@@ -205,6 +237,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
+    rebindProvider,
     touch,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
