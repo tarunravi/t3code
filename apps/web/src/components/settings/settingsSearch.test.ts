@@ -45,6 +45,12 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it.each(["model prices", "ZCode pricing", "cache cost"])(
+    "finds the model pricing editor for %s",
+    (query) => {
+      expect(searchSettings(query).map((item) => item.id)).toContain("usage-model-prices");
+    },
+  );
   it.each(["send shortcut", "multiline", "new line"])("finds Send shortcut for %s", (query) => {
     expect(searchSettings(query).map((item) => item.id)).toContain("send-shortcut");
   });

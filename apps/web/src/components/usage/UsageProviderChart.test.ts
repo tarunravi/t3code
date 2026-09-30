@@ -115,6 +115,7 @@ describe("buildPeriodColumns", () => {
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
+      { provider: "zcode", value: 0 },
     ]);
   });
 
@@ -127,6 +128,12 @@ describe("buildPeriodColumns", () => {
 });
 
 describe("providersWithUsage", () => {
+  it("includes unpriced ZCode tokens in provider charts", () => {
+    expect(providersWithUsage([{ provider: "zcode", costUsd: 0, totalTokens: 120 }])).toEqual([
+      "zcode",
+    ]);
+  });
+
   it("omits providers with no cost or tokens", () => {
     expect(
       providersWithUsage([
