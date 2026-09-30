@@ -360,12 +360,30 @@ export const layer: Layer.Layer<
               } satisfies OrchestrationV2DomainEvent;
             }),
           );
+          // A start that fails before the provider turn still needs a checkpoint,
+          // or the user message cannot be edited and rewound.
+          const effects =
+            status === "failed"
+              ? [
+                  {
+                    id: `effect:checkpoint.capture:${runId}`,
+                    commandId: CommandId.make(`command:effect:checkpoint.capture:${runId}`),
+                    threadId: projection.thread.id,
+                    request: {
+                      type: "checkpoint.capture" as const,
+                      runId,
+                      scopeId: checkpointScope.id,
+                    },
+                  },
+                ]
+              : [];
           yield* eventSink.writeIfRunCurrent({
             threadId: projection.thread.id,
             runId,
             activeAttemptId: attempt.id,
             expectedStatus: "starting",
             events,
+            effects,
           });
         },
       );
