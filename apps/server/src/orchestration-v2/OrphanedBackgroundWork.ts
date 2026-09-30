@@ -65,10 +65,16 @@ function resolveStaleBackgroundItemProviderInstanceId(
  * runs itself or they are still live. `alreadyCancelledItemIds` lists items
  * the caller already cancelled in the same commit. `onCancelledItem` sees each
  * cancelled background-capable item.
+ *
+ * An app-owned delegated task runs in its own child thread and provider
+ * session, and settles when that child's run ends. Only a caller that knows
+ * the child's process is gone too (process-loss recovery) sets
+ * `settleAppOwnedSubagents`; releasing the parent's session must not cancel it.
  */
 export const orphanedBackgroundWorkEvents = <E>(input: {
   readonly projection: ProjectionRuntimeRecoveryState;
   readonly skipRunIds: ReadonlySet<string>;
+  readonly settleAppOwnedSubagents: boolean;
   readonly alreadyCancelledItemIds?: ReadonlySet<string>;
   readonly onCancelledItem?: (item: OrchestrationV2ThreadProjection["turnItems"][number]) => void;
   readonly now: DateTime.Utc;
@@ -87,6 +93,13 @@ export const orphanedBackgroundWorkEvents = <E>(input: {
         continue;
       }
       if (!isNonterminalTurnItemStatus(item.status)) {
+        continue;
+      }
+      if (
+        item.type === "subagent" &&
+        item.origin === "app_owned" &&
+        !input.settleAppOwnedSubagents
+      ) {
         continue;
       }
       const providerInstanceId = resolveStaleBackgroundItemProviderInstanceId(item, projection);
