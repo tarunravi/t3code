@@ -16,7 +16,6 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
@@ -45,9 +44,11 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
+import { ChatCanvas } from "./ChatCanvas";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
+import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerSurface } from "./ComposerSurface";
 import { MessagesTimeline } from "./MessagesTimeline";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import {
@@ -162,6 +163,8 @@ export function SideChatPanel(props: {
   const sendToParentCommand = useAtomCommand(threadEnvironment.startTurn);
 
   const listRef = useRef<LegendListRef | null>(null);
+  const sideShellSeen = useRef(false);
+  if (sideShell !== null) sideShellSeen.current = true;
   // Side chats are short, so the timeline derives without carrying memo state across renders.
   const timelineEntries = useMemo(
     () =>
@@ -267,8 +270,11 @@ export function SideChatPanel(props: {
       : SIDE_CHAT_PARENT_STATUS_LABELS[resolveSideChatParentStatus(parentShell)];
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background" data-side-chat-panel="true">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs">
+    <div
+      className="flex h-full min-h-0 flex-col overflow-x-clip bg-background"
+      data-side-chat-panel="true"
+    >
+      <div className="surface-subheader gap-2 px-3 text-xs" data-surface-subheader>
         <span className="font-medium text-foreground">Side chat</span>
         {parentStatus === null ? null : (
           <span className="text-muted-foreground" data-side-chat-parent-status="true">
@@ -276,10 +282,10 @@ export function SideChatPanel(props: {
           </span>
         )}
       </div>
-      <div className="relative min-h-0 flex-1">
+      <ChatCanvas composerOverlayElement={null}>
         {sideShell === null ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            This side chat has ended.
+            {sideShellSeen.current ? "This side chat has ended." : "Opening side chat…"}
           </div>
         ) : (
           <MessagesTimeline
@@ -314,8 +320,8 @@ export function SideChatPanel(props: {
             onManualNavigation={noop}
           />
         )}
-      </div>
-      <div className="shrink-0 border-t border-border p-2">
+      </ChatCanvas>
+      <div className="chat-composer-lane shrink-0 pt-1.5 pb-3 sm:pt-2 sm:pb-4">
         {pendingApproval !== null ? (
           <div className="mb-2 flex flex-col gap-2 rounded-lg border border-warning/40 p-2">
             <ComposerPendingApprovalPanel approval={pendingApproval} pendingCount={1} />
@@ -348,55 +354,73 @@ export function SideChatPanel(props: {
             </Button>
           </div>
         ) : null}
-        <Textarea
-          size="sm"
-          value={prompt}
-          placeholder="Ask a side question"
-          aria-label="Side chat message"
-          disabled={sideShell === null}
-          onChange={(event) => setPrompt(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              send();
-            }
-          }}
-        />
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <ProviderModelPicker
-            size="xs"
-            activeInstanceId={modelSelection.instanceId}
-            model={modelSelection.model}
-            lockedProvider={null}
-            instanceEntries={instanceEntries}
-            modelOptionsByInstance={modelOptionsByInstance}
-            triggerAriaLabel="Side chat model"
-            onInstanceModelChange={(instanceId: ProviderInstanceId, model: string) =>
-              setPickedModel(createModelSelection(instanceId, model))
-            }
-          />
-          {isWorking ? (
-            <Button
-              size="icon-xs"
-              variant="outline"
-              aria-label="Stop side chat"
-              onClick={() =>
-                void interruptTurn({ environmentId, input: { threadId: sideThreadId } })
-              }
-            >
-              <SquareIcon />
-            </Button>
-          ) : (
-            <Button
-              size="icon-xs"
-              aria-label="Send side question"
-              disabled={prompt.trim().length === 0 || sideShell === null}
-              onClick={send}
-            >
-              <ArrowUpIcon />
-            </Button>
-          )}
-        </div>
+        <ComposerSurface.Shell>
+          <ComposerSurface.Host>
+            <ComposerSurface.Main>
+              <div className="relative z-10 rounded-3xl">
+                <div className="px-3 pt-3 pb-2 sm:px-4 sm:pt-3.5">
+                  <textarea
+                    value={prompt}
+                    placeholder="Ask a side question"
+                    aria-label="Side chat message"
+                    disabled={sideShell === null}
+                    rows={1}
+                    className="field-sizing-content max-h-40 min-h-10 w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-placeholder/75 disabled:cursor-not-allowed disabled:opacity-64"
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        send();
+                      }
+                    }}
+                  />
+                </div>
+                <div
+                  data-chat-composer-footer="true"
+                  className="flex min-w-0 items-center justify-between gap-2 px-2 pb-2 sm:px-3 sm:pb-3"
+                >
+                  <ProviderModelPicker
+                    size="xs"
+                    activeInstanceId={modelSelection.instanceId}
+                    model={modelSelection.model}
+                    lockedProvider={null}
+                    instanceEntries={instanceEntries}
+                    modelOptionsByInstance={modelOptionsByInstance}
+                    triggerAriaLabel="Side chat model"
+                    onInstanceModelChange={(instanceId: ProviderInstanceId, model: string) =>
+                      setPickedModel(createModelSelection(instanceId, model))
+                    }
+                  />
+                  <ComposerPrimaryActions
+                    compact
+                    pendingAction={null}
+                    isRunning={isWorking}
+                    showPlanFollowUpPrompt={false}
+                    promptHasText={prompt.trim().length > 0}
+                    isSendBusy={false}
+                    sendDisabledReason={null}
+                    isConnecting={false}
+                    isEnvironmentUnavailable={sideShell === null}
+                    isPreparingWorktree={false}
+                    hasSendableContent={
+                      !isWorking && prompt.trim().length > 0 && sideShell !== null
+                    }
+                    onSubmitMessage={send}
+                    onInterrupt={() =>
+                      void interruptTurn({ environmentId, input: { threadId: sideThreadId } })
+                    }
+                    onPreviousPendingQuestion={noop}
+                    onImplementPlanInNewThread={noop}
+                  />
+                </div>
+              </div>
+            </ComposerSurface.Main>
+          </ComposerSurface.Host>
+        </ComposerSurface.Shell>
       </div>
     </div>
   );
