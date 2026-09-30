@@ -42,6 +42,16 @@ describe("buildPeriodColumns", () => {
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
       { provider: "muse", value: 7 },
+      { provider: "zcode", value: 0 },
     ]);
   });
+});
+
+describe("fork usage chart", () => {
+  it("includes unpriced ZCode tokens in provider charts", () => {
+    expect(providersWithUsage([{ provider: "zcode", costUsd: 0, totalTokens: 120 }])).toEqual([
+      "zcode",
+    ]);
+  });
+
 });

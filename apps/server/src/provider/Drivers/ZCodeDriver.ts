@@ -10,6 +10,7 @@
 import { ProviderDriverKind, TextGenerationError, ZCodeSettings } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -21,10 +22,7 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import {
-  buildInitialZCodeProviderSnapshot,
-  checkZCodeProviderStatus,
-} from "../ZCodeProvider.ts";
+import { buildInitialZCodeProviderSnapshot, checkZCodeProviderStatus } from "../ZCodeProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -67,6 +65,7 @@ export type ZCodeDriverEnv =
   | ZCodeAdapterV2DriverEnv
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
   | ServerSettingsService;
 
 export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
@@ -80,6 +79,7 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fs = yield* FileSystem.FileSystem;
       const serverSettings = yield* ServerSettingsService;
       const processEnv = mergeProviderInstanceEnvironment(
         environment,
@@ -128,6 +128,7 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
         checkProvider: checkZCodeProviderStatus(effectiveConfig, processEnv).pipe(
           Effect.map(stampIdentity),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fs),
         ),
       }).pipe(
         Effect.mapError(
