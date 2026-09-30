@@ -568,6 +568,15 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
       expect.objectContaining({
         activeAttemptId: harness.attemptId,
         expectedStatus: "starting",
+        effects: [
+          expect.objectContaining({
+            request: expect.objectContaining({
+              type: "checkpoint.capture",
+              runId: RunId.make("run-native-account-command"),
+              scopeId: CheckpointScopeId.make("scope-native-account-command"),
+            }),
+          }),
+        ],
       }),
     );
     const projection = harness.projection();

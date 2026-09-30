@@ -28,6 +28,7 @@ export {
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
   deriveRevertTurnCountByUserMessageId,
+  type ConversationRewriteRun,
   formatDuration,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
@@ -1398,6 +1399,8 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt?: string | null;
   turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   supportsConversationRollback: boolean;
+  /** Failed, stopped, or cancelled runs, so their messages stay rewritable. */
+  rewriteRuns?: ReadonlyArray<ConversationRewriteRun>;
   /** Task ids of subagents still working, used by the active tool indicator. */
   liveAgentTaskIds?: ReadonlySet<string> | undefined;
   /** Live bootstrap progress. Renders a stage card under the first user message. */
@@ -1414,6 +1417,7 @@ export function deriveMessagesTimelineRows(input: {
     ? deriveRevertTurnCountByUserMessageId({
         timelineEntries: timelineEntries,
         checkpoints: input.turnDiffSummaries,
+        ...(input.rewriteRuns === undefined ? {} : { runs: input.rewriteRuns }),
       })
     : new Map<MessageId, number>();
   const nextRows: MessagesTimelineRow[] = [];
