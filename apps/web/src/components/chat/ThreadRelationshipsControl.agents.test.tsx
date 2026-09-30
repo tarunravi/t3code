@@ -31,6 +31,7 @@ vi.mock("../ui/tooltip", () => ({
   TooltipPopup: ({ children }: { children: ReactNode }) => (state.showTooltips ? children : null),
 }));
 
+import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
 let renderer: ReactTestRenderer;
@@ -178,6 +179,91 @@ it("shows the matching child agent details and refreshes them when the agent set
   };
   await act(async () => renderer.update(cloneElement(panel)));
   expect(text()).toContain("Lineage · 1 running");
+});
+
+it("keeps a settled agent in current work while a follow-up run is active on its thread", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const childShell = {
+    id: "child-1",
+    title: "Checker",
+    status: "completed",
+    activityRunStatus: null,
+    activityRunStartedAt: null,
+    forkedFrom: null,
+    lineage: { rootThreadId: "parent", parentThreadId: "parent", relationshipToParent: "subagent" },
+  };
+  state.projection = {
+    thread: { id: "parent", lineage: { relationshipToParent: null }, activeProviderThreadId: null },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [
+      {
+        id: "agent-1",
+        driver: "codex",
+        providerInstanceId: "codex",
+        childThreadId: "child-1",
+        title: "Checker",
+        prompt: "Check the change",
+        model: "gpt-5.4",
+        status: "completed",
+        result: "Done",
+        startedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+        completedAt: DateTime.makeUnsafe("2026-09-16T12:02:15Z"),
+        updatedAt: DateTime.makeUnsafe("2026-09-16T12:02:15Z"),
+      },
+    ],
+  };
+  const panel = (
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("parent")}
+    />
+  );
+  const text = () =>
+    renderer.root
+      .findAll((node) => typeof node.type === "string")
+      .flatMap((node) => node.children.filter((child) => typeof child === "string"))
+      .join(" ")
+      .replace(/\s+/g, " ");
+  let mounted = false;
+  const withChildRun = async (activityRunStatus: string | null) => {
+    state.shells = [
+      {
+        environmentId: "test",
+        source: {
+          ...childShell,
+          activityRunStatus,
+          activityRunStartedAt:
+            activityRunStatus === null ? null : DateTime.makeUnsafe("2026-09-16T12:05:00Z"),
+        },
+      },
+    ];
+    await act(async () => {
+      if (mounted) renderer.update(cloneElement(panel));
+      else renderer = create(panel);
+    });
+    mounted = true;
+  };
+
+  await withChildRun(null);
+  expect(text()).toContain("Previous agents (1)");
+  expect(text()).not.toContain("Checker");
+
+  await withChildRun("running");
+  expect(text()).toContain("Lineage · 1 running");
+  expect(text()).not.toContain("Previous agents");
+  expect(text()).toContain("Checker");
+  expect(renderer.root.findByType(AgentElapsed).props.agent).toMatchObject({
+    status: "running",
+    startedAt: "2026-09-16T12:05:00.000Z",
+    completedAt: null,
+  });
+
+  await withChildRun(null);
+  expect(renderer.root.findByType("h3").children).toEqual(["Lineage"]);
+  expect(text()).toContain("Previous agents (1)");
 });
 
 it("shows readable models and only differing workspace details in agent tooltips", async () => {
