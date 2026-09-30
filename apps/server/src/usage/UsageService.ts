@@ -53,6 +53,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
+import { readZCodeUsage } from "./zcodeUsageReader.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
@@ -619,6 +620,27 @@ export const make = Effect.gen(function* () {
         );
       }
       return [...canonical];
+    });
+    const zcodeHome =
+      (platform === "win32" ? hostEnvironment["USERPROFILE"] : hostEnvironment["HOME"]) || home;
+    const zcodeRoot = path.join(zcodeHome, ".zcode", "cli", "db");
+    const zcodeDir = yield* fileSystem
+      .realPath(zcodeRoot)
+      .pipe(Effect.orElseSucceed(() => zcodeRoot));
+    const zcode = yield* Effect.promise(() =>
+      readZCodeUsage(path.join(zcodeDir, "db.sqlite"), windowStartMs),
+    );
+    scanned.push({
+      provider: "zcode",
+      dir: zcodeDir,
+      volumeId: yield* Effect.promise(() => readDirectoryVolumeId(zcodeDir)),
+      files: zcode.missing ? null : zcode.files,
+      status: zcode.error ? "partial" : "ok",
+      message: zcode.error
+        ? "ZCode usage history could not be fully read."
+        : zcode.missing
+          ? "No ZCode usage database on this environment."
+          : "ZCode retains up to 30 days of native usage history.",
     });
     const dataHome = hostEnvironment["XDG_DATA_HOME"]?.trim();
     for (const dir of yield* envRoots("OPENCODE_DATA_DIR", [
