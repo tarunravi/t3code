@@ -1,7 +1,9 @@
-import type {
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2ThreadShell,
-  ThreadId,
+import {
+  isOrchestrationV2WorkActive,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -39,6 +41,40 @@ export function resolveMergeBackTargetThreadId(
   return projection.thread.forkedFrom?.type === "run"
     ? projection.thread.forkedFrom.threadId
     : projection.thread.lineage.parentThreadId;
+}
+
+const CHILD_RUN_SUBAGENT_STATUS = {
+  preparing: "pending",
+  starting: "pending",
+  running: "running",
+  waiting: "waiting",
+} as const satisfies Record<
+  NonNullable<OrchestrationV2ThreadShell["activityRunStatus"]>,
+  OrchestrationV2Subagent["status"]
+>;
+
+/**
+ * A subagent row records the run its parent delegated. A later run on the
+ * child thread, such as a follow-up message sent to it, only reaches the
+ * child's shell, so that run is the subagent's current work until it settles.
+ */
+export function withChildThreadActivity<
+  S extends Pick<OrchestrationV2Subagent, "status" | "startedAt" | "completedAt">,
+>(
+  subagent: S,
+  childThread:
+    | Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "activityRunStartedAt">
+    | null
+    | undefined,
+): S {
+  const activityRunStatus = childThread?.activityRunStatus;
+  if (activityRunStatus == null || isOrchestrationV2WorkActive(subagent.status)) return subagent;
+  return {
+    ...subagent,
+    status: CHILD_RUN_SUBAGENT_STATUS[activityRunStatus],
+    startedAt: childThread?.activityRunStartedAt ?? subagent.startedAt,
+    completedAt: null,
+  };
 }
 
 function edgeKey(edge: ThreadRelationshipEdge): string {
@@ -105,7 +141,7 @@ export function deriveThreadRelationshipGraph(input: {
         sourceThreadId: ownerThreadId,
         targetThreadId: subagent.childThreadId,
         kind: "subagent",
-        status: threadsById.get(subagent.childThreadId)?.activityRunStatus ?? subagent.status,
+        status: withChildThreadActivity(subagent, threadsById.get(subagent.childThreadId)).status,
       });
     }
     for (const transfer of input.projection.contextTransfers) {

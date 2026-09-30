@@ -19,6 +19,7 @@ import {
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
   type ThreadRelationshipWalkRow,
+  withChildThreadActivity,
 } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   canDetachThreadProviderSession,
@@ -197,22 +198,6 @@ export function ThreadRelationshipsPanel(props: {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
   const providers = useServerConfigs().get(props.environmentId)?.providers;
-  const subagentsByThreadId = useMemo(
-    () =>
-      new Map(
-        (projection?.subagents ?? [])
-          .filter((subagent) => subagent.childThreadId !== null)
-          .map((subagent) => [
-            subagent.childThreadId,
-            {
-              ...projectedSubagentsToRuntime([subagent])[0]!,
-              driver: subagent.driver,
-              providerInstanceId: subagent.providerInstanceId,
-            },
-          ]),
-      ),
-    [projection?.subagents],
-  );
   const threadShells = useThreadShells();
   const projects = useProjects().filter((project) => project.environmentId === props.environmentId);
   const archived = useArchivedThreadSnapshots([props.environmentId]);
@@ -228,6 +213,31 @@ export function ThreadRelationshipsPanel(props: {
     ];
     return deriveThreadRelationshipGraph({ threads: shells, projection });
   }, [archivedShells, projection, props.environmentId, threadShells]);
+  const subagents = useMemo(
+    () =>
+      projection?.subagents.map((subagent) =>
+        subagent.childThreadId === null
+          ? subagent
+          : withChildThreadActivity(subagent, graph.nodes.get(subagent.childThreadId)?.thread),
+      ),
+    [graph, projection?.subagents],
+  );
+  const subagentsByThreadId = useMemo(
+    () =>
+      new Map(
+        (subagents ?? [])
+          .filter((subagent) => subagent.childThreadId !== null)
+          .map((subagent) => [
+            subagent.childThreadId,
+            {
+              ...projectedSubagentsToRuntime([subagent])[0]!,
+              driver: subagent.driver,
+              providerInstanceId: subagent.providerInstanceId,
+            },
+          ]),
+      ),
+    [subagents],
+  );
   const currentThread = projection?.thread ?? graph.nodes.get(props.threadId)?.thread;
   const currentProject = projects.find((project) => project.id === currentThread?.projectId);
   const navigate = useNavigate();
