@@ -20,8 +20,13 @@ agent-written summary.
 ## Context limits
 
 A handoff must leave room for existing provider context, your request and attachments, instructions,
-tools, and subsequent work. If even its retrieval references cannot fit, T3 Code reports an error
-instead of shortening your request. Compact the target conversation or select a larger-context
+tools, and subsequent work. T3 Code sizes the imported transcript to the selected model's known
+context window, leaving 16,000 tokens for tools and later work when that much is free. Messages that
+still do not fit are omitted whole. If even a short transcript does not fit, the handoff is a pointer
+that tells the model to reread the saved thread with `t3_thread_read` instead of failing the turn.
+
+T3 Code reports an error only when your current request and attachments do not fit in the known
+window. That request is not truncated. Compact the target conversation or select a larger-context
 model before trying again.
 
 Server operators can set `T3CODE_CONTEXT_HANDOFF_TOKEN_CAP` to change the initial history allowance
@@ -35,10 +40,12 @@ provider context telemetry. Starting a fresh provider conversation clears prior 
 known model capacity. Changing models or context-window options discards stale usage and compaction
 thresholds.
 
-When no capacity information is available, T3 Code assumes a 128,000-token window. It reserves at
-least 16,000 tokens, or a quarter of the window when larger, for instructions, tools, and subsequent
-work. Images reserve an estimated 8,192 tokens each, independent of their file size; other
-attachments reserve 4,096 each for their references. Existing context is estimated from saved
-activity when usage telemetry is unavailable. Known smaller windows still constrain the handoff.
+When no capacity information is available, T3 Code assumes a 128,000-token window. It reserves
+16,000 tokens for instructions, tools, and subsequent work when the window still has that much free.
+Images reserve an estimated 8,192 tokens each, independent of their file size; other
+attachments reserve 4,096 each for their references.
+Existing context is estimated from saved activity when usage telemetry is unavailable. A byte-length
+estimate can overstate the transcript; it may shrink the handoff, but it cannot remove the recovery
+pointer when your request fits the known window. Known smaller windows still constrain the handoff.
 These are fallback estimates, not exact token counts. Image resolution, custom models, and hidden
 native context can differ, so the provider may still reject an input.

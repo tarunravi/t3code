@@ -17,8 +17,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
+  HANDOFF_RECOVERY_BUDGET,
   contextUsageForHandoff,
   handoffBudget,
+  handoffRecoveryContext,
   historyCost,
   historyResponseItems,
   selectHistory,
@@ -220,6 +222,8 @@ describe("handoff budget", () => {
     assert.isBelow(handoffBudget(base), 16_000);
     assert.isBelow(handoffBudget({ ...base, nativeContextEstimate: 8_000 }), handoffBudget(base));
     assert.equal(handoffBudget({ ...base, userText: "界".repeat(30_000) }), 0);
+    // 23k of a 24k window cannot hold the normal transcript. The user message
+    // still fits, so the allowance stays large enough for the recovery pointer.
     assert.equal(
       handoffBudget({
         ...base,
@@ -228,7 +232,7 @@ describe("handoff budget", () => {
           contextUsage: { usedTokens: 23_000, maxTokens: 24_000 },
         },
       }),
-      0,
+      HANDOFF_RECOVERY_BUDGET,
     );
     for (const sizeBytes of [100_000, 10 * 1024 * 1024]) {
       const attachments = [
@@ -243,7 +247,12 @@ describe("handoff budget", () => {
       const withImage = handoffBudget({ ...base, attachments });
       assert.isAbove(withImage, 4_000);
       assert.isBelow(withImage, handoffBudget(base));
-      assert.equal(handoffBudget({ ...base, attachments: [...attachments, ...attachments] }), 0);
+      // Two image allowances use up the 16k working reserve on a 32k model.
+      // The request still fits, so the handoff keeps the recovery pointer.
+      assert.equal(
+        handoffBudget({ ...base, attachments: [...attachments, ...attachments] }),
+        HANDOFF_RECOVERY_BUDGET,
+      );
       assert.equal(
         handoffBudget({
           ...base,
@@ -347,6 +356,7 @@ describe("handoff budget", () => {
       }),
       16_000,
     );
+    // A byte estimate near the default window used to refuse the switch.
     assert.equal(
       handoffBudget({
         tokenCap: 16_000,
@@ -355,7 +365,35 @@ describe("handoff budget", () => {
         providerThread,
         nativeContextEstimate: 120_000,
       }),
-      0,
+      HANDOFF_RECOVERY_BUDGET,
+    );
+    // Measured Codex occupancy from a Grok → gpt-6.1-sol handoff: 212,657 of
+    // 258,400 leaves ~45k free, which holds the capped transcript.
+    assert.equal(
+      handoffBudget({
+        tokenCap: 16_000,
+        userText: "Continue work",
+        attachments: [],
+        providerThread: {
+          ...providerThread,
+          contextUsage: { usedTokens: 212_657, maxTokens: 258_400 },
+        },
+        nativeContextEstimate: 600_000,
+        modelContextWindow: 258_400,
+      }),
+      16_000,
+    );
+    // An unmeasured byte stand-in past the known window cannot erase the pointer.
+    assert.equal(
+      handoffBudget({
+        tokenCap: 16_000,
+        userText: "Continue work",
+        attachments: [],
+        providerThread,
+        nativeContextEstimate: 600_000,
+        modelContextWindow: 500_000,
+      }),
+      HANDOFF_RECOVERY_BUDGET,
     );
   });
   it("reserves context for image batches up to the attachment limit, honoring smaller known windows", () => {
@@ -378,8 +416,8 @@ describe("handoff budget", () => {
       assert.isAtLeast(budget, 0);
       assert.isAtMost(budget, previousBudget);
       previousBudget = budget;
-      if (count <= 8) assert.equal(budget, 16_000);
-      if (count === 10) {
+      if (count <= 11) assert.equal(budget, 16_000);
+      if (count === 12) {
         assert.isAbove(budget, 0);
         assert.isBelow(budget, 16_000);
       }
@@ -389,25 +427,29 @@ describe("handoff budget", () => {
         assert.isAtMost(historyCost(selected.messages, selected.context), budget);
       }
       assert.equal(handoffBudget({ ...input, modelContextWindow: 2_000_000 }), 16_000);
-      assert.equal(handoffBudget({ ...input, modelContextWindow: 20_000 }), 0);
-      assert.equal(
-        handoffBudget({
-          ...input,
-          providerThread: { ...providerThread, contextUsage: { usedTokens: 0, maxTokens: 20_000 } },
-        }),
-        0,
-      );
-      assert.equal(
-        handoffBudget({
-          ...input,
-          modelContextWindow: 1_000_000,
-          providerThread: {
-            ...providerThread,
-            contextUsage: { usedTokens: 0, maxTokens: 1_000_000, autoCompactThreshold: 20_000 },
-          },
-        }),
-        0,
-      );
+      // A 20k window refuses the handoff only once the request itself does not fit.
+      const narrowWindow = handoffBudget({ ...input, modelContextWindow: 20_000 });
+      const narrowUsage = handoffBudget({
+        ...input,
+        providerThread: { ...providerThread, contextUsage: { usedTokens: 0, maxTokens: 20_000 } },
+      });
+      const narrowCompact = handoffBudget({
+        ...input,
+        modelContextWindow: 1_000_000,
+        providerThread: {
+          ...providerThread,
+          contextUsage: { usedTokens: 0, maxTokens: 1_000_000, autoCompactThreshold: 20_000 },
+        },
+      });
+      if (count * 8_192 >= 20_000) {
+        assert.equal(narrowWindow, 0);
+        assert.equal(narrowUsage, 0);
+        assert.equal(narrowCompact, 0);
+      } else {
+        assert.isAbove(narrowWindow, 0);
+        assert.equal(narrowUsage, narrowWindow);
+        assert.equal(narrowCompact, narrowWindow);
+      }
     }
   });
 });
@@ -666,6 +708,39 @@ describe("handoff delivery", () => {
       assert.notInclude(serialized, "Preserve every line");
       assert.equal(serialized.split("Partial work").length - 1, 1);
       assert.include(serialized, "Latest result");
+    }),
+  );
+
+  it.effect("points at thread_read when the transcript cannot fit the free context", () =>
+    Effect.gen(function* () {
+      let captured: ProviderAdapterV2HistoricalContext | undefined;
+      const oversized = message("item:oversized", "user", "x".repeat(20_000));
+      const result = yield* deliverContextHandoffs({
+        handoffs: [
+          {
+            ...handoff,
+            history: {
+              ...handoff.history!,
+              coverage: "x".repeat(5_000),
+              messages: [...messages, oversized],
+            },
+          },
+        ],
+        providerThread,
+        budget: HANDOFF_RECOVERY_BUDGET,
+        alreadyDeliveredItemIds: new Set(),
+        inject: (history) =>
+          Effect.sync(() => {
+            captured = history;
+            return true;
+          }),
+        persist: () => Effect.void,
+      });
+      assert.equal(result.context, "");
+      assert.isDefined(captured);
+      assert.deepEqual(captured.messages, []);
+      assert.equal(captured.context, handoffRecoveryContext(threadId));
+      assert.isAtMost(historyCost([], captured.context), HANDOFF_RECOVERY_BUDGET);
     }),
   );
 
