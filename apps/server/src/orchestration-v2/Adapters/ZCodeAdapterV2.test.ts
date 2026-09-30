@@ -1,6 +1,10 @@
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   NodeId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -15,6 +19,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Sink from "effect/Sink";
@@ -22,11 +27,14 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy, type ProviderAdapterV2Event } from "../ProviderAdapter.ts";
 import { makeZCodeAdapterV2 } from "./ZCodeAdapterV2.ts";
 import {
   buildZCodePromptArgs,
+  zcodeHelpSupportsMcpConfig,
+  zcodeMcpConfigFile,
   zcodePermissionMode,
   ZCodeTurnProjection,
 } from "./ZCodeStreamJson.ts";
@@ -40,6 +48,10 @@ const INSTANCE_ID = ProviderInstanceId.make("zcode");
 const THREAD_ID = ThreadId.make("thread-zcode-test");
 const SESSION_ID = ProviderSessionId.make("provider-session-zcode-test");
 const ZCODE_SESSION = "sess_8d4e6d5c-2f9d-45b8-ad04-9cbd50bc600d";
+const MCP_ENDPOINT = "http://127.0.0.1:43123/mcp";
+const MCP_AUTHORIZATION = "Bearer secret-zcode-mcp-token";
+const HELP_WITHOUT_MCP_CONFIG = "zcode 0.16.9\n  --mode <mode>    Permission mode\n";
+const HELP_WITH_MCP_CONFIG = `${HELP_WITHOUT_MCP_CONFIG}  --mcp-config <path>  Add MCP servers\n`;
 
 const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
@@ -99,17 +111,48 @@ interface ScriptedProcess {
   readonly onKill?: ReadonlyArray<string>;
 }
 
-function makeFakeZCode(scripts: ReadonlyArray<ScriptedProcess>) {
+interface SpawnedMcpConfig {
+  readonly path: string;
+  readonly contents: string;
+  readonly fileMode: number;
+  readonly directoryMode: number;
+}
+
+/** The `--mcp-config` file as ZCode would see it at startup. */
+function readSpawnedMcpConfig(args: ReadonlyArray<string>): SpawnedMcpConfig | undefined {
+  const index = args.indexOf("--mcp-config");
+  const path = index === -1 ? undefined : args[index + 1];
+  if (path === undefined) return undefined;
+  return {
+    path,
+    contents: NodeFS.readFileSync(path, "utf8"),
+    fileMode: NodeFS.statSync(path).mode & 0o777,
+    directoryMode: NodeFS.statSync(NodePath.dirname(path)).mode & 0o777,
+  };
+}
+
+function makeFakeZCode(
+  scripts: ReadonlyArray<ScriptedProcess>,
+  help: string = HELP_WITHOUT_MCP_CONFIG,
+) {
   const spawned: Array<{ readonly args: ReadonlyArray<string>; readonly cwd: string | undefined }> =
     [];
+  const mcpConfigs: Array<SpawnedMcpConfig | undefined> = [];
   const kills: Array<string | undefined> = [];
+  let helpProbes = 0;
   const remaining = [...scripts];
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       assert.isTrue(ChildProcess.isStandardCommand(command));
       if (!ChildProcess.isStandardCommand(command)) return yield* Effect.die("piped command");
-      spawned.push({ args: command.args, cwd: command.options.cwd });
-      const script = remaining.shift() ?? { lines: [] };
+      const isHelpProbe = command.args.length === 1 && command.args[0] === "--help";
+      if (isHelpProbe) {
+        helpProbes += 1;
+      } else {
+        spawned.push({ args: command.args, cwd: command.options.cwd });
+        mcpConfigs.push(readSpawnedMcpConfig(command.args));
+      }
+      const script = isHelpProbe ? { lines: [help] } : (remaining.shift() ?? { lines: [] });
       const stdout = yield* Queue.unbounded<string, Cause.Done>();
       const exited = yield* Deferred.make<number>();
       yield* Queue.offerAll(
@@ -144,8 +187,30 @@ function makeFakeZCode(scripts: ReadonlyArray<ScriptedProcess>) {
       });
     }),
   );
-  return { spawner, spawned, kills };
+  return {
+    spawner,
+    spawned,
+    mcpConfigs,
+    kills,
+    helpProbes: () => helpProbes,
+  };
 }
+
+/** Registers the thread's T3 MCP credential, as `ProviderSessionManager` does before a turn. */
+const withMcpSession = Effect.acquireRelease(
+  Effect.sync(() =>
+    McpProviderSession.setMcpProviderSession({
+      environmentId: EnvironmentId.make("environment-zcode-mcp"),
+      threadId: THREAD_ID,
+      providerSessionId: "mcp-session-zcode",
+      providerInstanceId: INSTANCE_ID,
+      endpoint: MCP_ENDPOINT,
+      authorizationHeader: MCP_AUTHORIZATION,
+      browserToolsAvailable: false,
+    }),
+  ),
+  () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
+);
 
 const openRuntime = Effect.fnUntraced(function* (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
@@ -156,6 +221,7 @@ const openRuntime = Effect.fnUntraced(function* (
     settings: { enabled: true, binaryPath: "zcode-glm" },
     environment: {},
     spawner,
+    fileSystem: yield* FileSystem.FileSystem,
     idAllocator: yield* IdAllocatorV2,
     serverConfig: yield* ServerConfig,
   });
@@ -306,6 +372,7 @@ describe("ZCode stream-json protocol", () => {
         mode: "edit",
         resumeSessionId: ZCODE_SESSION,
         attachmentPaths: ["/tmp/a.png"],
+        mcpConfigPath: null,
       }),
       [
         "--prompt=--help me",
@@ -319,6 +386,47 @@ describe("ZCode stream-json protocol", () => {
         "/tmp/a.png",
       ],
     );
+  });
+
+  it("attaches T3's MCP config in place of the native Agent tool", () => {
+    assert.deepEqual(
+      buildZCodePromptArgs({
+        prompt: "hi",
+        mode: "yolo",
+        resumeSessionId: ZCODE_SESSION,
+        attachmentPaths: [],
+        mcpConfigPath: "/tmp/t3-zcode-mcp-x/mcp-config.json",
+      }),
+      [
+        "--prompt=hi",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "yolo",
+        "--resume",
+        ZCODE_SESSION,
+        "--mcp-config",
+        "/tmp/t3-zcode-mcp-x/mcp-config.json",
+        "--disallowed-tools",
+        "Agent",
+      ],
+    );
+    assert.deepEqual(
+      JSON.parse(
+        zcodeMcpConfigFile({ endpoint: MCP_ENDPOINT, authorizationHeader: MCP_AUTHORIZATION }),
+      ),
+      {
+        mcpServers: {
+          "t3-code": {
+            type: "http",
+            url: MCP_ENDPOINT,
+            headers: { Authorization: MCP_AUTHORIZATION },
+          },
+        },
+      },
+    );
+    assert.isTrue(zcodeHelpSupportsMcpConfig(HELP_WITH_MCP_CONFIG));
+    assert.isFalse(zcodeHelpSupportsMcpConfig(HELP_WITHOUT_MCP_CONFIG));
   });
 
   it("fails a tool that headless ZCode denied and interrupts a cancelled one", () => {
@@ -576,6 +684,122 @@ describe("ZCodeAdapterV2", () => {
       assert.equal(terminal.type === "turn.terminal" && terminal.status, "interrupted");
       const command = latestItems(emitted).find((item) => item.type === "command_execution");
       assert.equal(command?.status, "interrupted");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("passes a private per-turn MCP config on every turn and removes it after", () =>
+    Effect.gen(function* () {
+      yield* withMcpSession;
+      const fake = makeFakeZCode(
+        [{ lines: TOOL_TURN }, { lines: TOOL_TURN }],
+        HELP_WITH_MCP_CONFIG,
+      );
+      const { adapter, runtime, emitted, providerThread, nextTerminal } = yield* openRuntime(
+        fake.spawner,
+      );
+      assert.isTrue((yield* adapter.getCapabilities()).tools.supportsMcpTools);
+      assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
+
+      yield* runtime.startTurn(yield* turnInput(providerThread, 1, "Delegate a task"));
+      yield* nextTerminal;
+      const resumable = emitted.findLast(
+        (next) =>
+          next.type === "provider_thread.updated" &&
+          next.providerThread.nativeThreadRef?.nativeId === ZCODE_SESSION,
+      );
+      assert.isTrue(resumable?.type === "provider_thread.updated");
+      if (resumable?.type !== "provider_thread.updated") return;
+      yield* runtime.startTurn(yield* turnInput(resumable.providerThread, 2, "Again"));
+      yield* nextTerminal;
+
+      assert.equal(fake.helpProbes(), 1);
+      const [first, second] = fake.mcpConfigs;
+      assert.isDefined(first);
+      assert.isDefined(second);
+      if (first === undefined || second === undefined) return;
+      assert.isTrue(NodePath.isAbsolute(first.path));
+      assert.notEqual(first.path, second.path);
+      for (const config of [first, second]) {
+        assert.equal(
+          config.contents,
+          zcodeMcpConfigFile({ endpoint: MCP_ENDPOINT, authorizationHeader: MCP_AUTHORIZATION }),
+        );
+        assert.equal(config.fileMode, 0o600);
+        assert.equal(config.directoryMode, 0o700);
+        assert.isFalse(NodeFS.existsSync(NodePath.dirname(config.path)));
+      }
+      const [firstArgs, secondArgs] = fake.spawned.map((spawn) => spawn.args);
+      assert.includeMembers([...(firstArgs ?? [])], ["--disallowed-tools", "Agent"]);
+      assert.includeMembers(
+        [...(secondArgs ?? [])],
+        ["--resume", ZCODE_SESSION, "--mcp-config", second.path, "--disallowed-tools", "Agent"],
+      );
+      assert.isTrue(firstArgs?.[0]?.includes("delegate_task"));
+      assert.equal(secondArgs?.[0], "--prompt=Again");
+      assert.notInclude(JSON.stringify(fake.spawned), "secret-zcode-mcp-token");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("removes the MCP config when a turn fails or is interrupted", () =>
+    Effect.gen(function* () {
+      yield* withMcpSession;
+      const fake = makeFakeZCode(
+        [
+          { lines: [], exitCode: 1, stderr: "Error: --mcp-config: invalid\n" },
+          {
+            lines: TOOL_TURN.slice(0, 8),
+            onKill: [event("turn.completed", { response: "", resultType: "cancelled" })],
+          },
+        ],
+        HELP_WITH_MCP_CONFIG,
+      );
+      const { runtime, emitted, providerThread, nextTerminal } = yield* openRuntime(fake.spawner);
+
+      yield* runtime.startTurn(yield* turnInput(providerThread, 1, "Fail"));
+      const failed = yield* nextTerminal;
+      assert.equal(failed.type === "turn.terminal" && failed.status, "failed");
+
+      yield* runtime.startTurn(yield* turnInput(providerThread, 2, "Stop"));
+      const running = yield* Effect.gen(function* () {
+        while (true) {
+          const turn = emitted.findLast(
+            (next) => next.type === "provider_turn.updated" && next.providerTurn.ordinal === 2,
+          );
+          if (turn?.type === "provider_turn.updated" && fake.spawned.length === 2) {
+            return turn.providerTurn;
+          }
+          yield* Effect.yieldNow;
+        }
+      });
+      yield* runtime.interruptTurn({ providerThread, providerTurnId: running.id });
+      const interrupted = yield* nextTerminal;
+      assert.equal(interrupted.type === "turn.terminal" && interrupted.status, "interrupted");
+
+      assert.equal(fake.mcpConfigs.length, 2);
+      for (const config of fake.mcpConfigs) {
+        assert.isDefined(config);
+        if (config !== undefined) assert.isFalse(NodeFS.existsSync(config.path));
+      }
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps the plain CLI arguments for a ZCode build without --mcp-config", () =>
+    Effect.gen(function* () {
+      yield* withMcpSession;
+      const fake = makeFakeZCode([{ lines: TOOL_TURN }]);
+      const { adapter, runtime, providerThread, nextTerminal } = yield* openRuntime(fake.spawner);
+      assert.isFalse((yield* adapter.getCapabilities()).tools.supportsMcpTools);
+
+      yield* runtime.startTurn(yield* turnInput(providerThread, 1, "Read a.txt"));
+      yield* nextTerminal;
+
+      assert.deepEqual(fake.spawned[0]?.args, [
+        "--prompt=Read a.txt",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "yolo",
+      ]);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });
