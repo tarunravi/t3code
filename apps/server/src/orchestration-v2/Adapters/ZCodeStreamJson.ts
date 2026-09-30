@@ -128,6 +128,7 @@ export interface ZCodeTurnUsage {
 
 export type ZCodeTurnUpdate =
   | { readonly type: "session"; readonly sessionId: string }
+  | { readonly type: "model"; readonly modelId: string }
   | {
       readonly type: "stream_delta";
       readonly itemId: string;
@@ -146,24 +147,57 @@ export type ZCodeTurnUpdate =
  */
 export class ZCodeTurnProjection {
   private sessionId: string | null = null;
+  private mainTurnId: string | null = null;
   private segment = 0;
   private readonly openItems = new Map<ZCodeStreamItemKind, string>();
   readonly tools = new Map<string, ZCodeToolState>();
   private readonly turnKey: string;
 
-  constructor(turnKey: string) {
+  constructor(turnKey: string, resumeSessionId: string | null = null) {
     this.turnKey = turnKey;
+    this.sessionId = resumeSessionId;
   }
 
   apply(record: ZCodeRecord): ReadonlyArray<ZCodeTurnUpdate> {
     const updates: Array<ZCodeTurnUpdate> = [];
     const sessionId = stringField(record, "sessionId");
-    if (sessionId !== undefined && sessionId !== this.sessionId) {
+    if (
+      sessionId !== undefined &&
+      this.sessionId === null &&
+      (record["type"] === "turn.started" || record["type"] === "result")
+    ) {
       this.sessionId = sessionId;
       updates.push({ type: "session", sessionId });
     }
     const payload = field(record, "payload");
     switch (record["type"]) {
+      case "turn.started":
+        if (sessionId === this.sessionId && this.mainTurnId === null) {
+          this.mainTurnId = stringField(record, "turnId") ?? null;
+        }
+        break;
+      case "session.updated": {
+        // The mapper drops querySource. Only turn-model-step requests carry
+        // iteration; title/compaction/workspace requests do not. Child turns
+        // carry their own session/turn IDs. Never infer from a bare model ID.
+        const modelId = stringField(payload, "modelId")?.trim();
+        const providerId = stringField(payload, "providerId")?.trim();
+        const iteration = numberField(payload, "iteration");
+        if (
+          this.mainTurnId !== null &&
+          sessionId === this.sessionId &&
+          stringField(record, "turnId") === this.mainTurnId &&
+          modelId &&
+          providerId &&
+          numberField(payload, "messageCount") !== undefined &&
+          iteration !== undefined &&
+          Number.isInteger(iteration) &&
+          iteration >= 0
+        ) {
+          updates.push({ type: "model", modelId });
+        }
+        break;
+      }
       case "model.streaming":
         this.applyStreaming(payload, updates);
         break;

@@ -314,3 +314,13 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/appearance", "theme")).toBeNull();
   });
 });
+
+describe("fork pricing search", () => {
+  it.each(["model prices", "ZCode pricing", "cache cost"])(
+    "finds the model pricing editor for %s",
+    (query) => {
+      expect(searchSettings(query).map((item) => item.id)).toContain("usage-model-prices");
+    },
+  );
+
+});
