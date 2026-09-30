@@ -495,7 +495,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         if (
           initialized.agentInfo?.name !== "antigravity-acp" ||
           initialized.agentInfo.version !== expectedVersion ||
-          // Antigravity 1.1.1 can report 2 with the legacy ACP response shape.
+          // Antigravity 1.2.1 reports protocol 2 with the legacy ACP response shape.
           // The ACP client chooses the session wire format from that shape.
           (initialized.protocolVersion !== 1 && initialized.protocolVersion !== 2) ||
           initialized.agentCapabilities?.loadSession !== true ||
