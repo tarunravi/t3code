@@ -39,6 +39,8 @@ export function buildZCodePromptArgs(input: {
   readonly mode: ZCodePermissionMode;
   readonly resumeSessionId: string | null;
   readonly attachmentPaths: ReadonlyArray<string>;
+  /** A `zcodeMcpConfigFile` path; ZCode reads it at startup, so it is passed on every turn. */
+  readonly mcpConfigPath: string | null;
 }): ReadonlyArray<string> {
   return [
     // `=` keeps a prompt that starts with "-" from parsing as a flag.
@@ -49,7 +51,39 @@ export function buildZCodePromptArgs(input: {
     input.mode,
     ...(input.resumeSessionId === null ? [] : ["--resume", input.resumeSessionId]),
     ...input.attachmentPaths.flatMap((path) => ["--attach", path]),
+    // With T3's MCP attached, subagents go through `delegate_task` so they
+    // show up as T3 child threads; ZCode's native `Agent` tool would hide them.
+    ...(input.mcpConfigPath === null
+      ? []
+      : ["--mcp-config", input.mcpConfigPath, "--disallowed-tools", "Agent"]),
   ];
+}
+
+/**
+ * `--mcp-config` file contents. The bearer travels in the file, never on the
+ * command line; ZCode logs server URLs but not header values.
+ */
+export function zcodeMcpConfigFile(session: {
+  readonly endpoint: string;
+  readonly authorizationHeader: string;
+}): string {
+  return JSON.stringify({
+    mcpServers: {
+      "t3-code": {
+        type: "http",
+        url: session.endpoint,
+        headers: { Authorization: session.authorizationHeader },
+      },
+    },
+  });
+}
+
+/**
+ * Official ZCode 0.16.9 rejects `--mcp-config` as an unknown option, and the
+ * fork that adds it reports the same version, so support is read from help.
+ */
+export function zcodeHelpSupportsMcpConfig(helpText: string): boolean {
+  return helpText.includes("--mcp-config");
 }
 
 export type ZCodeRecord = Record<string, unknown>;
