@@ -19,7 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
 import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
@@ -149,6 +149,7 @@ function makeFakeZCode(scripts: ReadonlyArray<ScriptedProcess>) {
 
 const openRuntime = Effect.fnUntraced(function* (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  model = "default",
 ) {
   const adapter = makeZCodeAdapterV2({
     instanceId: INSTANCE_ID,
@@ -161,7 +162,7 @@ const openRuntime = Effect.fnUntraced(function* (
   const runtime = yield* adapter.openSession({
     threadId: THREAD_ID,
     providerSessionId: SESSION_ID,
-    modelSelection: { instanceId: INSTANCE_ID, model: "default" },
+    modelSelection: { instanceId: INSTANCE_ID, model },
     runtimePolicy,
   });
   const emitted: Array<ProviderAdapterV2Event> = [];
@@ -179,7 +180,7 @@ const openRuntime = Effect.fnUntraced(function* (
     modelSelection: { instanceId: INSTANCE_ID, model: "default" },
     runtimePolicy,
   });
-  return { runtime, emitted, providerThread, nextTerminal: Queue.take(terminals) };
+  return { adapter, runtime, emitted, providerThread, nextTerminal: Queue.take(terminals) };
 });
 
 const appThread = Effect.map(DateTime.now, (now): OrchestrationV2AppThread => ({
@@ -242,6 +243,53 @@ function latestItems(events: ReadonlyArray<ProviderAdapterV2Event>) {
 }
 
 describe("ZCode stream-json protocol", () => {
+  it("attributes only anchored parent turn requests, excluding child and auxiliary models", () => {
+    // Actual mapSessionEvent output: querySource is stripped. turn-model-step
+    // supplies iteration; title-generation-sidecar and compact-active do not.
+    const projection = new ZCodeTurnProjection("model-test", "parent");
+    const request = {
+      type: "session.updated",
+      sessionId: "parent",
+      turnId: "main-turn",
+      payload: {
+        providerId: "proxy",
+        modelId: "alias",
+        messageCount: 3,
+        toolCount: 8,
+        iteration: 0,
+      },
+    };
+    assert.deepEqual(projection.apply(request), []);
+    projection.apply({
+      type: "turn.started",
+      sessionId: "parent",
+      turnId: "main-turn",
+      payload: { input: "test", turnNumber: 0 },
+    });
+    assert.deepEqual(projection.apply(request), [{ type: "model", modelId: "alias" }]);
+    assert.deepEqual(projection.apply({ ...request, sessionId: "child" }), []);
+    assert.deepEqual(projection.apply({ ...request, turnId: "other-turn" }), []);
+    for (const [modelId, toolCount] of [
+      ["title-model", 0],
+      ["compact-model", 8],
+    ] as const) {
+      assert.deepEqual(
+        projection.apply({
+          ...request,
+          payload: { providerId: "proxy", modelId, messageCount: 3, toolCount },
+        }),
+        [],
+      );
+    }
+    for (const iteration of [undefined, "0", -1]) {
+      assert.deepEqual(
+        projection.apply({ ...request, payload: { ...request.payload, iteration } }),
+        [],
+      );
+    }
+    assert.deepEqual(projection.apply(request), [{ type: "model", modelId: "alias" }]);
+  });
+
   it("maps T3 runtime modes onto ZCode permission modes", () => {
     const mode = (runtimeMode: typeof runtimePolicy.runtimeMode, plan = false) =>
       zcodePermissionMode({ runtimeMode, interactionMode: plan ? "plan" : "default" });
@@ -321,6 +369,104 @@ describe("ZCode stream-json protocol", () => {
 });
 
 describe("ZCodeAdapterV2", () => {
+  it.effect("rejects unsupported model selections before spawning a process", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeZCode([]);
+      const opened = yield* openRuntime(fake.spawner, "some-other-model").pipe(Effect.exit);
+      assert.equal(opened._tag, "Failure");
+      const { adapter, runtime, providerThread } = yield* openRuntime(fake.spawner);
+      const capabilities = yield* adapter.getCapabilities();
+      const current = { instanceId: INSTANCE_ID, model: "default" };
+      const rejected = yield* adapter.planSelectionTransition({
+        current,
+        target: { ...current, model: "some-other-model" },
+        sessionCapabilities: capabilities,
+      });
+      assert.equal(rejected.type, "reject");
+      const accepted = yield* adapter.planSelectionTransition({
+        current,
+        target: current,
+        sessionCapabilities: capabilities,
+      });
+      assert.equal(accepted.type, "apply_on_next_turn");
+      const input = yield* turnInput(providerThread, 1, "test");
+      const started = yield* runtime
+        .startTurn({ ...input, modelSelection: { ...current, model: "some-other-model" } })
+        .pipe(Effect.exit);
+      assert.equal(started._tag, "Failure");
+      assert.equal(fake.spawned.length, 0);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "reports runtime-requested model IDs, including resumed sessions, without resolving aliases",
+    () =>
+      Effect.gen(function* () {
+        const request = (modelId: string) =>
+          event("session.updated", {
+            providerId: "bifrost",
+            modelId,
+            messageCount: 3,
+            toolCount: 8,
+            iteration: 0,
+          });
+        const started = event("turn.started", { input: "test", turnNumber: 0 });
+        const child = JSON.stringify({
+          ...JSON.parse(request("child-model")),
+          sessionId: "child",
+          turnId: "child-turn",
+        });
+        const auxiliary = event("session.updated", {
+          providerId: "bifrost",
+          modelId: "title-model",
+          messageCount: 1,
+          toolCount: 0,
+        });
+        const fake = makeFakeZCode([
+          {
+            lines: [
+              started,
+              request("sparks/native-model"),
+              child,
+              auxiliary,
+              event("turn.completed", { resultType: "success" }),
+            ],
+          },
+          {
+            lines: [
+              child,
+              started,
+              request("auto"),
+              auxiliary,
+              event("turn.completed", { resultType: "success" }),
+            ],
+          },
+        ]);
+        const { runtime, emitted, providerThread, nextTerminal } = yield* openRuntime(fake.spawner);
+        assert.equal(runtime.providerSession.model, null);
+        yield* runtime.startTurn(yield* turnInput(providerThread, 1, "test"));
+        yield* nextTerminal;
+        assert.equal(runtime.providerSession.model, "sparks/native-model");
+        const resumable = emitted.findLast(
+          (next) =>
+            next.type === "provider_thread.updated" && next.providerThread.nativeThreadRef !== null,
+        );
+        assert.isTrue(resumable?.type === "provider_thread.updated");
+        if (resumable?.type !== "provider_thread.updated") return;
+        yield* runtime.startTurn(yield* turnInput(resumable.providerThread, 2, "again"));
+        yield* nextTerminal;
+        assert.equal(runtime.providerSession.model, "auto");
+        assert.includeMembers([...(fake.spawned[1]?.args ?? [])], ["--resume", ZCODE_SESSION]);
+        assert.isTrue(
+          emitted.some(
+            (next) =>
+              next.type === "provider_session.updated" &&
+              next.providerSession.model === "sparks/native-model",
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("streams a headless turn and resumes its ZCode session on the next turn", () =>
     Effect.gen(function* () {
       const fake = makeFakeZCode([{ lines: TOOL_TURN }, { lines: TOOL_TURN }]);
