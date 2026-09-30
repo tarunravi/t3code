@@ -45,6 +45,13 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it.each(["model prices", "ZCode pricing", "cache cost"])(
+    "finds the model pricing editor for %s",
+    (query) => {
+      expect(searchSettings(query).map((item) => item.id)).toContain("usage-model-prices");
+    },
+  );
+
   it.each(["OTel", "OTLP", "telemetry export", "Grafana"])(
     "finds environment telemetry settings for %s",
     (query) => {
