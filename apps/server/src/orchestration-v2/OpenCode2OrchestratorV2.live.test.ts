@@ -116,6 +116,7 @@ const mcpRegistryLayer = Layer.succeed(
         },
       }),
     resolve: () => Effect.succeed(undefined),
+    rebindProvider: () => Effect.succeed(undefined),
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
