@@ -123,7 +123,10 @@ import {
 } from "@t3tools/shared/projectScripts";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { usageLimitRunPresentedAsLatest } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestUnheldRun,
+  usageLimitRunPresentedAsLatest,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import { truncate } from "@t3tools/shared/String";
@@ -3477,12 +3480,6 @@ export default function ChatView(props: ChatViewProps) {
     if (serverProjection === null || serverProjection === undefined) {
       return [];
     }
-    const newestRun =
-      serverProjection.runs.length === 0
-        ? null
-        : serverProjection.runs.reduce((latest, candidate) =>
-            candidate.ordinal > latest.ordinal ? candidate : latest,
-          );
     const sessionError =
       serverProjection.providerSessions.findLast(
         (session) => session.providerInstanceId === serverProjection.thread.providerInstanceId,
@@ -3492,7 +3489,7 @@ export default function ChatView(props: ChatViewProps) {
         serverProjection.runs,
         serverProjection.turnItems,
         sessionError,
-      ) ?? newestRun;
+      ) ?? latestUnheldRun(serverProjection.runs);
     return [
       ...derivePendingBackgroundWork({
         latestRun,
