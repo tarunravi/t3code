@@ -3196,7 +3196,7 @@ const makeWsRpcLayer = (
                 }
                 // A cloned project exists before its files do. Clients ask again
                 // when the clone lands (see createProjectFaviconUrlAtomFamily).
-                const clone = yield* projectCloneTracker.get(project.value.id);
+                const clone = yield* projectCloneTracker.get(project.value.projectId);
                 return yield* issueAssetUrl({
                   resource: input.resource,
                   ...(project.value.faviconPath
