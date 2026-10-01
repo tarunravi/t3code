@@ -62,21 +62,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
   delegatedTaskProgress,
 } from "../orchestration-v2/SubagentProjection.ts";
-import {
-  isActiveRun,
-  isTerminalRunStatus,
-  latestActiveRun,
-  latestRun,
-  ThreadManagementError,
-  ThreadManagementService,
-} from "../orchestration-v2/ThreadManagementService.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 
@@ -159,7 +152,7 @@ export class OrchestratorMcpService extends Context.Service<
   OrchestratorMcpServiceShape
 >()("t3/mcp/OrchestratorMcpService") {}
 
-const isThreadManagementError = Schema.is(ThreadManagementError);
+const isThreadManagementError = Schema.is(ThreadManagementService.ThreadManagementError);
 
 function failure(code: OrchestratorMcpFailure["code"], message: string): OrchestratorMcpFailure {
   return new OrchestratorMcpFailure({ code, message });
@@ -347,7 +340,7 @@ export function hasPendingChildRuns(
 ): boolean {
   return childProjection.runs.some(
     (run) =>
-      !isTerminalRunStatus(run.status) &&
+      !ThreadManagementService.isTerminalRunStatus(run.status) &&
       (delegatedRun === undefined || run.ordinal > delegatedRun.ordinal),
   );
 }
@@ -433,7 +426,7 @@ function latestTerminalResultRun(
   return projection.runs
     .filter(
       (run) =>
-        isTerminalRunStatus(run.status) &&
+        ThreadManagementService.isTerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
         (run.id === delegatedRun?.id || run.startedAt !== null),
@@ -617,8 +610,8 @@ function threadDetail(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">,
   itemCount: number,
 ): OrchestratorMcpThreadDetail {
-  const latest = latestRun(projection);
-  const active = latestActiveRun(projection);
+  const latest = ThreadManagementService.latestRun(projection);
+  const active = ThreadManagementService.latestActiveRun(projection);
   return {
     threadId: projection.thread.id,
     projectId: projection.thread.projectId,
@@ -778,10 +771,10 @@ function timelineItem(input: {
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const threadManagement = yield* ThreadManagementService;
-  const providerRegistry = yield* ProviderRegistry;
-  const providerAdapters = yield* ProviderAdapterRegistryV2;
-  const scheduledTasks = yield* ScheduledTaskService;
+  const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+  const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const serverSettings = yield* ServerSettingsService.ServerSettingsService;
 
   const loadSubagentSettings = serverSettings.getSettings.pipe(
@@ -1166,7 +1159,7 @@ const make = Effect.gen(function* () {
         task.completionDelivery?.state !== "acknowledged" &&
         task.completionDelivery?.state !== "disposed"
       ) {
-        const observingRun = latestActiveRun(parentProjection);
+        const observingRun = ThreadManagementService.latestActiveRun(parentProjection);
         const acknowledgementRequestKey = yield* requestKey(undefined);
         yield* threadManagement
           .dispatch({
@@ -1413,7 +1406,7 @@ const make = Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
         const parentRun = parent.runs
-          .filter(isActiveRun)
+          .filter(ThreadManagementService.isActiveRun)
           .toSorted((left, right) => right.ordinal - left.ordinal)[0];
         if (
           parentRun === undefined ||
@@ -1574,7 +1567,7 @@ const make = Effect.gen(function* () {
           } satisfies OrchestratorMcpTaskCancelResult;
         }
         const child = yield* loadProjection(current.childThreadId);
-        const activeRun = latestActiveRun(child);
+        const activeRun = ThreadManagementService.latestActiveRun(child);
         if (activeRun === undefined) {
           return yield* failure(
             "task_not_cancellable",
@@ -1618,7 +1611,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
-        const parentRun = latestActiveRun(parent);
+        const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (
           parentRun === undefined ||
           parentRun.rootNodeId === null ||
@@ -1999,9 +1992,9 @@ export const layer: Layer.Layer<
   OrchestratorMcpService,
   never,
   | Crypto.Crypto
-  | ThreadManagementService
-  | ProviderRegistry
-  | ProviderAdapterRegistryV2
-  | ScheduledTaskService
+  | ThreadManagementService.ThreadManagementService
+  | ProviderRegistry.ProviderRegistry
+  | ProviderAdapterRegistry.ProviderAdapterRegistryV2
+  | ScheduledTaskService.ScheduledTaskService
   | ServerSettingsService.ServerSettingsService
 > = Layer.effect(OrchestratorMcpService, make);

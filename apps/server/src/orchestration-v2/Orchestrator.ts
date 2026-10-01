@@ -51,6 +51,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -683,6 +684,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
@@ -7594,20 +7596,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         run?.providerThreadId === null
           ? undefined
           : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
+      // Background work can outlive the run that started it, so the check
+      // reads the thread's active background items from every run, as the
+      // UI's Waiting banner does, not only this run's items.
       const hasBackgroundWork =
         run?.id === projection.runs.at(-1)?.id &&
         derivePendingBackgroundWork({
           latestRun: run,
           providerThreads: projection.providerThreads,
-          turnItems: projection.turnItems,
+          turnItems: (yield* projectionStore
+            .getRuntimeRecoveryProjection(command.threadId)
+            .pipe(
+              Effect.mapError(
+                () => new OrchestratorProjectionError({ threadId: command.threadId }),
+              ),
+            )).turnItems,
           activeProviderThreadId: projection.thread.activeProviderThreadId,
           runs: projection.runs,
         }).length > 0;
-      const providerTurn = projection.providerTurns.findLast(
-        (candidate) =>
-          candidate.runAttemptId === run?.activeAttemptId &&
-          (candidate.status === "running" || hasBackgroundWork),
-      );
+      // A latest run interrupted before its provider turn started has no turn
+      // of its own, so background work is stopped through the provider
+      // thread's latest turn.
+      const providerTurn =
+        projection.providerTurns.findLast(
+          (candidate) =>
+            candidate.runAttemptId === run?.activeAttemptId &&
+            (candidate.status === "running" || hasBackgroundWork),
+        ) ??
+        (hasBackgroundWork
+          ? projection.providerTurns.findLast(
+              (candidate) => candidate.providerThreadId === providerThread?.id,
+            )
+          : undefined);
       if (run === undefined || rootNode === undefined || providerThread === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7994,6 +8014,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (command.restoreFiles !== false) {
         const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
+          projects,
+          path,
           fileSystem,
           projections: projectionStore,
         }).pipe(
@@ -9595,6 +9617,7 @@ export const layer: Layer.Layer<
   never,
   | CheckpointServiceV2
   | FileSystem.FileSystem
+  | Path.Path
   | CommandPolicyV2
   | CommandReceiptStoreV2
   | ContextHandoffServiceV2

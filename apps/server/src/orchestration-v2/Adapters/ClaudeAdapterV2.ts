@@ -10,6 +10,7 @@ import {
   type ForkSessionOptions,
   type ForkSessionResult,
   getSubagentMessages,
+  type HookCallbackMatcher,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -85,7 +86,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { planClaudeSkillDispatch } from "../../provider/Drivers/ClaudeSkillDispatch.ts";
 import { discoverClaudeSkills } from "../../provider/Drivers/ClaudeSkills.ts";
 import { compileClaudeModelSelection } from "../../claudeModelOptions.ts";
-import { ServerConfig } from "../../config.ts";
+import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   claudeSignedOutMessage,
@@ -101,7 +102,7 @@ import {
   type EventNdjsonLogger,
   shouldPersistProviderEvent,
 } from "../../provider/Layers/EventNdjsonLogger.ts";
-import { ProviderEventLoggers } from "../../provider/Layers/ProviderEventLoggers.ts";
+import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
 import {
   claudeRateLimitEventToUpdate,
   type ClaudeScopedLimitNames,
@@ -111,45 +112,18 @@ import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanc
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
+import * as IdAllocator from "../IdAllocator.ts";
 import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import { providerMessageTextWithAttachmentPaths } from "../AttachmentPrompt.ts";
-import {
-  ProviderAdapterEnsureThreadError,
-  ProviderAdapterForkThreadError,
-  ProviderAdapterInterruptError,
-  ProviderAdapterOpenSessionError,
-  ProviderAdapterProtocolError,
-  ProviderAdapterReadThreadSnapshotError,
-  ProviderAdapterResumeThreadError,
-  ProviderAdapterRollbackThreadError,
-  ProviderAdapterRuntimeRequestResponseError,
-  ProviderAdapterSteerRunError,
-  ProviderAdapterTurnStartError,
-  ProviderAdapterV2,
-  type ProviderAdapterV2EnsureThreadInput,
-  type ProviderAdapterV2Event,
-  type ProviderAdapterV2ForkThreadInput,
-  type ProviderAdapterV2InterruptInput,
-  type ProviderAdapterV2OpenSessionInput,
-  type ProviderAdapterV2RollbackThreadInput,
-  type ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2Shape,
-  type ProviderAdapterV2SessionRuntime,
-  type ProviderAdapterV2SteerInput,
-  type ProviderAdapterV2TurnInput,
-} from "../ProviderAdapter.ts";
+import * as ProviderAdapter from "../ProviderAdapter.ts";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
   type ProviderAdapterDriverCreateInput,
 } from "../ProviderAdapterDriver.ts";
 import { type BackgroundWorkReport, backgroundWorkNotification } from "../Notification.ts";
-import {
-  type ProviderContinuationRequest,
-  ProviderContinuationRequests,
-} from "../ProviderContinuationRequests.ts";
+import * as ProviderContinuationRequests from "../ProviderContinuationRequests.ts";
 import {
   makeSubagentChildThread,
   makeSubagentConversationArtifacts,
@@ -404,9 +378,11 @@ export interface ClaudeAgentSdkSubagentLookupInput {
 
 const isClaudeAgentSdkQueryRunnerError = Schema.is(ClaudeAgentSdkQueryRunnerError);
 const isProviderAdapterRuntimeRequestResponseError = Schema.is(
-  ProviderAdapterRuntimeRequestResponseError,
+  ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
 );
-const isProviderAdapterRollbackThreadError = Schema.is(ProviderAdapterRollbackThreadError);
+const isProviderAdapterRollbackThreadError = Schema.is(
+  ProviderAdapter.ProviderAdapterRollbackThreadError,
+);
 
 function queryRunnerError(cause: unknown, method: string): ClaudeAgentSdkQueryRunnerError {
   return isClaudeAgentSdkQueryRunnerError(cause)
@@ -602,12 +578,12 @@ export function makeClaudeAgentSdkProtocolLogger(input: {
 export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
   ClaudeAgentSdkQueryRunner,
   never,
-  Crypto.Crypto | ProviderEventLoggers
+  Crypto.Crypto | ProviderEventLoggers.ProviderEventLoggers
 > = Layer.effect(
   ClaudeAgentSdkQueryRunner,
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
-    const { native: nativeEventLogger } = yield* ProviderEventLoggers;
+    const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
 
     return ClaudeAgentSdkQueryRunner.of({
       allocateSessionId: crypto.randomUUIDv4.pipe(
@@ -808,6 +784,37 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
   }),
 );
 
+// Every deny carries the full redirect: a resumed transcript drops earlier
+// deny reasons, and only permissionDecisionReason reaches the model.
+export const CLAUDE_NATIVE_SUBAGENT_DENY_REASON =
+  "Native subagents are disabled in T3 Code. Call mcp__t3-code__delegate_task with the same prompt; check mcp__t3-code__orchestrator_capabilities for allowed provider/model IDs.";
+
+// Task is the pre-rename name of Agent that some SDK paths still report;
+// Workflow spawns native agents too.
+const CLAUDE_NATIVE_SUBAGENT_TOOLS: ReadonlyArray<string> = ["Agent", "Task", "Workflow"];
+
+// Native subagents run outside T3's task model, so T3 cannot show or cancel
+// them. disallowedTools removes their definitions from the model's context;
+// this PreToolUse hook is the backstop if a resumed transcript or settings
+// drift brings one back. A hook is used instead of canUseTool because the SDK
+// skips canUseTool under bypassPermissions (full-access threads).
+const CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS: HookCallbackMatcher = {
+  matcher: CLAUDE_NATIVE_SUBAGENT_TOOLS.join("|"),
+  hooks: [
+    async (hookInput) =>
+      hookInput.hook_event_name === "PreToolUse" &&
+      CLAUDE_NATIVE_SUBAGENT_TOOLS.includes(hookInput.tool_name)
+        ? {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: CLAUDE_NATIVE_SUBAGENT_DENY_REASON,
+            },
+          }
+        : {},
+  ],
+};
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
@@ -850,6 +857,11 @@ export function makeClaudeQueryOptions(input: {
     ? { resume: input.nativeThreadId }
     : { sessionId: input.nativeThreadId };
   const selectedTools = input.tools ?? CLAUDE_CODE_PRESET_TOOLS;
+  const blockNativeSubagents =
+    input.mcpServers !== undefined && input.settings?.blockNativeSubagents !== false;
+  const disallowedTools = blockNativeSubagents
+    ? Array.from(new Set([...(input.disallowedTools ?? []), ...CLAUDE_NATIVE_SUBAGENT_TOOLS]))
+    : input.disallowedTools;
   const selectionSettings =
     Object.keys(compiledSelection.settings).length === 0
       ? undefined
@@ -884,7 +896,7 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
-    ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...(disallowedTools === undefined ? {} : { disallowedTools: [...disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -912,6 +924,7 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(blockNativeSubagents ? { hooks: { PreToolUse: [CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS] } } : {}),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -1044,7 +1057,7 @@ function resultTextFromSdkMessage(
 }
 
 function makeProviderThread(input: {
-  readonly idAllocator: IdAllocatorV2Shape;
+  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly providerInstanceId: ProviderInstanceId;
   readonly appThreadId: OrchestrationV2ProviderThread["appThreadId"];
   readonly ownerNodeId?: OrchestrationV2ProviderThread["ownerNodeId"];
@@ -1084,7 +1097,7 @@ const getNativeThreadId = Effect.fnUntraced(function* (
 ) {
   const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
   if (nativeThreadId === undefined || nativeThreadId === null) {
-    return yield* new ProviderAdapterProtocolError({
+    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
       driver: CLAUDE_PROVIDER,
       detail: `Provider thread ${providerThread.id} is missing a native Claude session id.`,
     });
@@ -1108,13 +1121,13 @@ const getNativeConversationHeadId = Effect.fnUntraced(function* (
     return undefined;
   }
   if (nativeHeadRef.driver !== CLAUDE_PROVIDER) {
-    return yield* new ProviderAdapterProtocolError({
+    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
       driver: CLAUDE_PROVIDER,
       detail: `Provider thread ${providerThread.id} has a non-Claude native conversation head reference.`,
     });
   }
   if (nativeHeadRef.nativeId === null) {
-    return yield* new ProviderAdapterProtocolError({
+    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
       driver: CLAUDE_PROVIDER,
       detail: `Provider thread ${providerThread.id} has a Claude native conversation head reference without a native id.`,
     });
@@ -1123,7 +1136,7 @@ const getNativeConversationHeadId = Effect.fnUntraced(function* (
 });
 
 const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpToMessageId")(
-  function* (input: ProviderAdapterV2ForkThreadInput) {
+  function* (input: ProviderAdapter.ProviderAdapterV2ForkThreadInput) {
     if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
       return undefined;
     }
@@ -1133,7 +1146,7 @@ const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpT
       .toSorted((left, right) => left.ordinal - right.ordinal);
     const boundaryIndex = sourceTurns.findIndex((turn) => turn.id === input.providerTurnId);
     if (boundaryIndex < 0) {
-      return yield* new ProviderAdapterForkThreadError({
+      return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
         driver: CLAUDE_PROVIDER,
         providerThreadId: input.sourceProviderThread.id,
         cause: `Cannot fork Claude thread from provider turn ${input.providerTurnId}: source turn was not found in provider thread ${input.sourceProviderThread.id}.`,
@@ -1156,7 +1169,7 @@ const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpT
       return undefined;
     }
 
-    return yield* new ProviderAdapterForkThreadError({
+    return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
       driver: CLAUDE_PROVIDER,
       providerThreadId: input.sourceProviderThread.id,
       cause: `Cannot fork Claude thread from prior provider turn ${input.providerTurnId}: no SDK assistant message cursor was recorded for that turn.`,
@@ -1166,14 +1179,14 @@ const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpT
 
 const resolveClaudeRollbackResumeSessionAt = Effect.fn(
   "ClaudeAdapterV2.resolveRollbackResumeSessionAt",
-)(function* (input: ProviderAdapterV2RollbackThreadInput) {
+)(function* (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) {
   switch (input.target.type) {
     case "thread_start":
       return null;
     case "provider_turn": {
       const target = input.target;
       if (target.providerTurn.providerThreadId !== input.providerThread.id) {
-        return yield* new ProviderAdapterRollbackThreadError({
+        return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
           driver: CLAUDE_PROVIDER,
           providerThreadId: input.providerThread.id,
           cause: `Cannot roll back Claude thread ${input.providerThread.id} to provider turn ${target.providerTurn.id}: target turn belongs to provider thread ${target.providerTurn.providerThreadId}.`,
@@ -1197,7 +1210,7 @@ const resolveClaudeRollbackResumeSessionAt = Effect.fn(
         return null;
       }
 
-      return yield* new ProviderAdapterRollbackThreadError({
+      return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
         driver: CLAUDE_PROVIDER,
         providerThreadId: input.providerThread.id,
         cause: `Cannot roll back Claude thread ${input.providerThread.id} to provider turn ${target.providerTurn.id}: no SDK assistant message cursor was recorded for that turn.`,
@@ -1299,7 +1312,7 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
       continue;
     }
     if (!isSupportedClaudeImageMimeType(attachment.mimeType)) {
-      return yield* new ProviderAdapterProtocolError({
+      return yield* new ProviderAdapter.ProviderAdapterProtocolError({
         driver: CLAUDE_PROVIDER,
         detail: `Unsupported Claude image attachment type '${attachment.mimeType}'`,
       });
@@ -1310,7 +1323,7 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
       attachment,
     });
     if (attachmentPath === null) {
-      return yield* new ProviderAdapterProtocolError({
+      return yield* new ProviderAdapter.ProviderAdapterProtocolError({
         driver: CLAUDE_PROVIDER,
         detail: `Invalid attachment id '${attachment.id}'`,
       });
@@ -1319,7 +1332,7 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
     const bytes = yield* input.fileSystem.readFile(attachmentPath).pipe(
       Effect.mapError(
         (cause) =>
-          new ProviderAdapterProtocolError({
+          new ProviderAdapter.ProviderAdapterProtocolError({
             driver: CLAUDE_PROVIDER,
             detail: `Failed to read attachment '${attachment.id}'`,
             payload: cause,
@@ -1420,7 +1433,7 @@ const isClaudeRuntimeReadOnlyFullAccessSandboxPolicy = Schema.is(
 );
 
 function sandboxPolicyKindForClaudeRuntimePolicy(
-  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ): ClaudeRuntimeSandboxPolicyKindName | undefined {
   return runtimePolicy.sandboxPolicy !== undefined &&
     isClaudeRuntimeSandboxPolicyKind(runtimePolicy.sandboxPolicy)
@@ -1428,7 +1441,9 @@ function sandboxPolicyKindForClaudeRuntimePolicy(
     : undefined;
 }
 
-function readOnlyPolicyAllowsGlobalReads(runtimePolicy: ProviderAdapterV2RuntimePolicy): boolean {
+function readOnlyPolicyAllowsGlobalReads(
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+): boolean {
   return (
     runtimePolicy.sandboxPolicy !== undefined &&
     isClaudeRuntimeReadOnlyFullAccessSandboxPolicy(runtimePolicy.sandboxPolicy)
@@ -1436,7 +1451,7 @@ function readOnlyPolicyAllowsGlobalReads(runtimePolicy: ProviderAdapterV2Runtime
 }
 
 function permissionModeForClaudeRuntimePolicy(
-  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ): PermissionMode {
   if (runtimePolicy.interactionMode === "plan") {
     return "plan";
@@ -1493,7 +1508,7 @@ export interface ClaudeRuntimeQueryPolicy {
 }
 
 export function claudeRuntimeQueryPolicyForRuntimePolicy(
-  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ): ClaudeRuntimeQueryPolicy {
   const permissionMode = permissionModeForClaudeRuntimePolicy(runtimePolicy);
   const readOnlyTools =
@@ -2307,7 +2322,9 @@ function isClaudeActiveSteeringAbortResult(message: SDKResultMessage): boolean {
   );
 }
 
-function isClaudeProviderContinuationTurn(input: ProviderAdapterV2TurnInput): boolean {
+function isClaudeProviderContinuationTurn(
+  input: ProviderAdapter.ProviderAdapterV2TurnInput,
+): boolean {
   return input.message.createdBy === "agent" && input.message.creationSource === "provider";
 }
 
@@ -2420,8 +2437,8 @@ function providerFailureFromApiRetry(message: SDKAPIRetryMessage): Orchestration
 }
 
 function buildAssistantArtifacts(input: {
-  readonly idAllocator: IdAllocatorV2Shape;
-  readonly turnInput: ProviderAdapterV2TurnInput;
+  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
+  readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeItemId: string;
   readonly text: string;
@@ -2556,7 +2573,7 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 }
 
 interface ActiveClaudeTurnContext {
-  readonly input: ProviderAdapterV2TurnInput;
+  readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly nativeTurnId: string;
   nativeMessageCursor: string | null;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
@@ -2646,7 +2663,7 @@ interface ActiveClaudeToolCall {
   readonly classification: ClaudeToolClassification;
   readonly input: ClaudeNativeToolInput;
   readonly threadId: ThreadId;
-  readonly runId: ProviderAdapterV2TurnInput["runId"] | null;
+  readonly runId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"] | null;
   readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly parentNodeId: OrchestrationV2ExecutionNode["id"];
   readonly ordinal: number;
@@ -2813,19 +2830,21 @@ export interface ClaudeAdapterV2Options {
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
-  readonly idAllocator: IdAllocatorV2Shape;
+  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
   readonly onUsageLimits?: ServerProviderShape["applyUsageLimits"];
   /** Sink for wake-turn continuation requests; defaults to dropping them. */
   readonly continuationRequests?: {
-    readonly offer: (request: ProviderContinuationRequest) => Effect.Effect<void>;
+    readonly offer: (
+      request: ProviderContinuationRequests.ProviderContinuationRequest,
+    ) => Effect.Effect<void>;
   };
 }
 
 export function makeClaudeAdapterV2(
   adapterOptions: ClaudeAdapterV2Options,
-): ProviderAdapterV2Shape {
+): ProviderAdapter.ProviderAdapterV2Shape {
   const { attachmentsDir, fileSystem, path, idAllocator, queryRunner } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
@@ -2853,13 +2872,13 @@ export function makeClaudeAdapterV2(
       Effect.provideService(Path.Path, path),
     );
 
-  return ProviderAdapterV2.of({
+  return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
-      function* (input: ProviderAdapterV2OpenSessionInput) {
+      function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -2869,7 +2888,7 @@ export function makeClaudeAdapterV2(
           model: input.modelSelection.model,
           now,
         });
-        const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveClaudeTurnContext | null>(null);
         const interruptedTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
@@ -3108,7 +3127,7 @@ export function makeClaudeAdapterV2(
         const runtimeContext = yield* Effect.context<never>();
         const runPromise = Effect.runPromiseWith(runtimeContext);
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
+        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
           Queue.offer(events, event).pipe(Effect.asVoid);
 
         // Claude emits retry progress but no recovered frame; the next
@@ -3608,7 +3627,7 @@ export function makeClaudeAdapterV2(
           readonly classification: ClaudeToolClassification;
           readonly toolInput: ClaudeNativeToolInput;
           readonly threadId: ThreadId;
-          readonly runId: ProviderAdapterV2TurnInput["runId"] | null;
+          readonly runId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"] | null;
           readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
           readonly parentNodeId: OrchestrationV2ExecutionNode["id"];
           readonly ordinal: number;
@@ -4473,7 +4492,7 @@ export function makeClaudeAdapterV2(
           const nodeId = idAllocator.derive.approvalNode({ requestId });
           const providerSessionId = input.context.input.providerThread.providerSessionId;
           if (providerSessionId === null) {
-            return yield* new ProviderAdapterProtocolError({
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
               driver: CLAUDE_PROVIDER,
               detail: `Provider thread ${input.context.input.providerThread.id} is missing a provider session id.`,
             });
@@ -4716,7 +4735,7 @@ export function makeClaudeAdapterV2(
           }
 
           const threadDisposition = input.threadDisposition ?? "reusable";
-          const terminalEvent: ProviderAdapterV2Event =
+          const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
               ? {
                   type: "turn.terminal",
@@ -6643,7 +6662,7 @@ export function makeClaudeAdapterV2(
           );
 
         const openQuery = Effect.fnUntraced(function* (
-          turnInput: ProviderAdapterV2TurnInput,
+          turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
         ) {
           const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
@@ -6799,7 +6818,7 @@ export function makeClaudeAdapterV2(
         });
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
-          function* (turnInput: ProviderAdapterV2TurnInput) {
+          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
@@ -6810,7 +6829,7 @@ export function makeClaudeAdapterV2(
             const providerTurnOrdinal = turnInput.providerTurnOrdinal;
             const currentTurn = yield* Ref.get(activeTurn);
             if (currentTurn !== null) {
-              return yield* new ProviderAdapterProtocolError({
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider turn ${currentTurn.providerTurnId} is still active.`,
               });
@@ -6959,7 +6978,7 @@ export function makeClaudeAdapterV2(
             effect.pipe(
               Effect.mapError(
                 (cause) =>
-                  new ProviderAdapterTurnStartError({
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
                     driver: CLAUDE_PROVIDER,
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
@@ -6971,10 +6990,10 @@ export function makeClaudeAdapterV2(
         );
 
         const interruptTurn = Effect.fn("ClaudeAdapterV2.interruptTurn")(
-          function* (turnInput: ProviderAdapterV2InterruptInput) {
+          function* (turnInput: ProviderAdapter.ProviderAdapterV2InterruptInput) {
             const existing = yield* Ref.get(queryContext);
             if (existing === null) {
-              return yield* new ProviderAdapterProtocolError({
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider thread ${turnInput.providerThread.id} has no live query.`,
               });
@@ -7002,7 +7021,7 @@ export function makeClaudeAdapterV2(
               return;
             }
             if (currentTurn?.providerTurnId !== turnInput.providerTurnId) {
-              return yield* new ProviderAdapterProtocolError({
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
               });
@@ -7041,7 +7060,7 @@ export function makeClaudeAdapterV2(
             effect.pipe(
               Effect.mapError(
                 (cause) =>
-                  new ProviderAdapterInterruptError({
+                  new ProviderAdapter.ProviderAdapterInterruptError({
                     driver: CLAUDE_PROVIDER,
                     providerThreadId: turnInput.providerThread.id,
                     providerTurnId: turnInput.providerTurnId,
@@ -7052,17 +7071,17 @@ export function makeClaudeAdapterV2(
         );
 
         const steerTurn = Effect.fn("ClaudeAdapterV2.steerTurn")(
-          function* (turnInput: ProviderAdapterV2SteerInput) {
+          function* (turnInput: ProviderAdapter.ProviderAdapterV2SteerInput) {
             const existing = yield* Ref.get(queryContext);
             if (existing === null) {
-              return yield* new ProviderAdapterProtocolError({
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider thread ${turnInput.providerThread.id} has no live query.`,
               });
             }
             const currentTurn = yield* Ref.get(activeTurn);
             if (currentTurn?.providerTurnId !== turnInput.providerTurnId) {
-              return yield* new ProviderAdapterProtocolError({
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
               });
@@ -7089,7 +7108,7 @@ export function makeClaudeAdapterV2(
             effect.pipe(
               Effect.mapError(
                 (cause) =>
-                  new ProviderAdapterSteerRunError({
+                  new ProviderAdapter.ProviderAdapterSteerRunError({
                     driver: CLAUDE_PROVIDER,
                     providerThreadId: turnInput.providerThread.id,
                     providerTurnId: turnInput.providerTurnId,
@@ -7140,7 +7159,7 @@ export function makeClaudeAdapterV2(
         });
         yield* Effect.addFinalizer(() => closeSession());
 
-        const runtime: ProviderAdapterV2SessionRuntime = {
+        const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: adapterOptions.instanceId,
           driver: CLAUDE_PROVIDER,
           providerSessionId: input.providerSessionId,
@@ -7191,7 +7210,7 @@ export function makeClaudeAdapterV2(
               );
             }),
           ensureThread: Effect.fn("ClaudeAdapterV2.ensureThread")(
-            function* (threadInput: ProviderAdapterV2EnsureThreadInput) {
+            function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               const createdAt = yield* DateTime.now;
               const nativeThreadId = yield* queryRunner.allocateSessionId;
               return makeProviderThread({
@@ -7207,7 +7226,7 @@ export function makeClaudeAdapterV2(
               effect.pipe(
                 Effect.mapError(
                   (cause) =>
-                    new ProviderAdapterEnsureThreadError({
+                    new ProviderAdapter.ProviderAdapterEnsureThreadError({
                       driver: CLAUDE_PROVIDER,
                       threadId: threadInput.threadId,
                       cause,
@@ -7229,7 +7248,7 @@ export function makeClaudeAdapterV2(
               effect.pipe(
                 Effect.mapError(
                   (cause) =>
-                    new ProviderAdapterResumeThreadError({
+                    new ProviderAdapter.ProviderAdapterResumeThreadError({
                       driver: CLAUDE_PROVIDER,
                       providerSessionId: input.providerSessionId,
                       providerThreadId: threadInput.providerThread.id,
@@ -7260,7 +7279,7 @@ export function makeClaudeAdapterV2(
                 existing.nativeThreadId !== nativeThreadId ||
                 !(yield* hasPendingBackgroundTaskOnNativeThread(nativeThreadId, stopInput.taskId))
               ) {
-                return yield* new ProviderAdapterProtocolError({
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
                   detail: `Claude provider thread ${stopInput.providerThread.id} has no live background task ${stopInput.taskId}.`,
                 });
@@ -7270,7 +7289,7 @@ export function makeClaudeAdapterV2(
               yield* existing.query.stopTask(stopInput.taskId).pipe(
                 Effect.mapError(
                   (cause) =>
-                    new ProviderAdapterProtocolError({
+                    new ProviderAdapter.ProviderAdapterProtocolError({
                       driver: CLAUDE_PROVIDER,
                       detail: `Claude could not stop background task ${stopInput.taskId}`,
                       cause,
@@ -7285,10 +7304,10 @@ export function makeClaudeAdapterV2(
                 String(requestInput.requestId),
               );
               if (pending === undefined) {
-                return yield* new ProviderAdapterRuntimeRequestResponseError({
+                return yield* new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
                   driver: CLAUDE_PROVIDER,
                   requestId: requestInput.requestId,
-                  cause: new ProviderAdapterProtocolError({
+                  cause: new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: CLAUDE_PROVIDER,
                     detail: `No pending Claude runtime request ${requestInput.requestId}.`,
                   }),
@@ -7299,10 +7318,10 @@ export function makeClaudeAdapterV2(
                 return;
               }
               if (requestInput.decision === undefined) {
-                return yield* new ProviderAdapterRuntimeRequestResponseError({
+                return yield* new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
                   driver: CLAUDE_PROVIDER,
                   requestId: requestInput.requestId,
-                  cause: new ProviderAdapterProtocolError({
+                  cause: new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: CLAUDE_PROVIDER,
                     detail: `Claude ${pending.requestKind} request ${requestInput.requestId} requires an approval decision.`,
                   }),
@@ -7315,7 +7334,7 @@ export function makeClaudeAdapterV2(
                 Effect.mapError((cause) =>
                   isProviderAdapterRuntimeRequestResponseError(cause)
                     ? cause
-                    : new ProviderAdapterRuntimeRequestResponseError({
+                    : new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
                         driver: CLAUDE_PROVIDER,
                         requestId: requestInput.requestId,
                         cause,
@@ -7325,7 +7344,7 @@ export function makeClaudeAdapterV2(
           ),
           readThreadSnapshot: (snapshotInput) =>
             Effect.fail(
-              new ProviderAdapterReadThreadSnapshotError({
+              new ProviderAdapter.ProviderAdapterReadThreadSnapshotError({
                 driver: CLAUDE_PROVIDER,
                 providerThreadId: snapshotInput.providerThread.id,
                 cause: "Claude V2 adapter does not implement snapshots.",
@@ -7335,7 +7354,7 @@ export function makeClaudeAdapterV2(
             function* (rollbackInput) {
               const currentTurn = yield* Ref.get(activeTurn);
               if (currentTurn !== null) {
-                return yield* new ProviderAdapterProtocolError({
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
                   detail: `Cannot roll back Claude provider thread ${rollbackInput.providerThread.id} while provider turn ${currentTurn.providerTurnId} is active.`,
                 });
@@ -7398,7 +7417,7 @@ export function makeClaudeAdapterV2(
                 Effect.mapError((cause) =>
                   isProviderAdapterRollbackThreadError(cause)
                     ? cause
-                    : new ProviderAdapterRollbackThreadError({
+                    : new ProviderAdapter.ProviderAdapterRollbackThreadError({
                         driver: CLAUDE_PROVIDER,
                         providerThreadId: rollbackInput.providerThread.id,
                         cause,
@@ -7410,7 +7429,7 @@ export function makeClaudeAdapterV2(
             function* (forkInput) {
               const currentTurn = yield* Ref.get(activeTurn);
               if (currentTurn !== null) {
-                return yield* new ProviderAdapterProtocolError({
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
                   detail: `Cannot fork Claude provider thread ${forkInput.sourceProviderThread.id} while provider turn ${currentTurn.providerTurnId} is active.`,
                 });
@@ -7455,7 +7474,7 @@ export function makeClaudeAdapterV2(
               effect.pipe(
                 Effect.mapError(
                   (cause) =>
-                    new ProviderAdapterForkThreadError({
+                    new ProviderAdapter.ProviderAdapterForkThreadError({
                       driver: CLAUDE_PROVIDER,
                       providerThreadId: forkInput.sourceProviderThread.id,
                       cause,
@@ -7471,7 +7490,7 @@ export function makeClaudeAdapterV2(
         effect.pipe(
           Effect.mapError(
             (cause) =>
-              new ProviderAdapterOpenSessionError({
+              new ProviderAdapter.ProviderAdapterOpenSessionError({
                 driver: CLAUDE_PROVIDER,
                 providerSessionId: input.providerSessionId,
                 cause,
@@ -7485,9 +7504,9 @@ export function makeClaudeAdapterV2(
 export type ClaudeAdapterV2DriverEnv =
   | ClaudeAgentSdkQueryRunner
   | FileSystem.FileSystem
-  | IdAllocatorV2
+  | IdAllocator.IdAllocatorV2
   | Path.Path
-  | ServerConfig;
+  | ServerConfig.ServerConfig;
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
@@ -7497,10 +7516,10 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const { instanceId, environment, enabled, config } = input;
     const fileSystem = yield* FileSystem.FileSystem;
     const hostEnvironment = yield* HostProcessEnvironment;
-    const idAllocator = yield* IdAllocatorV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const queryRunner = yield* ClaudeAgentSdkQueryRunner;
-    const serverConfig = yield* ServerConfig;
-    const continuationRequests = yield* ProviderContinuationRequests;
+    const serverConfig = yield* ServerConfig.ServerConfig;
+    const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const baseEnvironment = mergeProviderInstanceEnvironment(environment, hostEnvironment);
     const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
     const path = yield* Path.Path;
@@ -7545,10 +7564,10 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcessEnvironment;
-  const idAllocator = yield* IdAllocatorV2;
+  const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const queryRunner = yield* ClaudeAgentSdkQueryRunner;
-  const serverConfig = yield* ServerConfig;
-  const continuationRequests = yield* ProviderContinuationRequests;
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
 
   return makeClaudeAdapterV2({
     instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
@@ -7564,7 +7583,11 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
 });
 
 const layer: Layer.Layer<
-  ProviderAdapterV2,
+  ProviderAdapter.ProviderAdapterV2,
   never,
-  ClaudeAgentSdkQueryRunner | FileSystem.FileSystem | IdAllocatorV2 | Path.Path | ServerConfig
-> = Layer.effect(ProviderAdapterV2, makeDefaultClaudeAdapterV2());
+  | ClaudeAgentSdkQueryRunner
+  | FileSystem.FileSystem
+  | IdAllocator.IdAllocatorV2
+  | Path.Path
+  | ServerConfig.ServerConfig
+> = Layer.effect(ProviderAdapter.ProviderAdapterV2, makeDefaultClaudeAdapterV2());

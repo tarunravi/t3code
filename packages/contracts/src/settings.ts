@@ -576,6 +576,9 @@ function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fields>(
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -684,9 +687,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    blockNativeSubagents: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Use T3 subagents only",
+        description:
+          "Block Claude's native Agent and Workflow tools so subagents run as T3 delegated tasks you can see and stop. Applies to Claude sessions started after the change.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs", "blockNativeSubagents"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -993,6 +1005,19 @@ export const UsageLimitSourceConfig = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
+
+/**
+ * Bitbucket API credentials for this environment, used before the
+ * `T3CODE_BITBUCKET_*` environment variables. The tokens live in the server's
+ * secret store; settings and clients only see a redaction marker when one is
+ * set. The access token wins when both kinds are configured.
+ */
+export const BitbucketSettings = Schema.Struct({
+  email: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  accessToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  apiToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type BitbucketSettings = typeof BitbucketSettings.Type;
 
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -1406,6 +1431,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  bitbucket: BitbucketSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Keyed by a user-chosen id so a source keeps its rows across edits. Entries
   // this build cannot decode round-trip untouched, as provider instances do.
   usageLimitSources: Schema.Record(UsageLimitSourceId, UsageLimitSourceConfig).pipe(
@@ -1543,6 +1569,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   autoCompactWindow: Schema.optionalKey(
     TrimmedString.check(Schema.isPattern(CLAUDE_AUTO_COMPACT_WINDOW_PATTERN)),
   ),
+  blockNativeSubagents: Schema.optionalKey(Schema.Boolean),
 });
 
 const CursorSettingsPatch = Schema.Struct({
@@ -1690,6 +1717,14 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
       otlpMetricsUrl: Schema.optionalKey(TrimmedString),
       otlpLogsUrl: Schema.optionalKey(TrimmedString),
+    }),
+  ),
+  /** An empty token clears it; an omitted one keeps what the server has. */
+  bitbucket: Schema.optionalKey(
+    Schema.Struct({
+      email: Schema.optionalKey(TrimmedString),
+      accessToken: Schema.optionalKey(TrimmedString),
+      apiToken: Schema.optionalKey(TrimmedString),
     }),
   ),
   providers: Schema.optionalKey(

@@ -28,6 +28,7 @@ import {
 } from "../../providerInstances";
 import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
 import {
+  deriveCanInterruptRunningThread,
   derivePendingApprovals,
   derivePhase,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
@@ -399,6 +400,7 @@ export function SideChatPanel(props: {
                     compact
                     pendingAction={null}
                     isRunning={isWorking}
+                    canInterrupt={deriveCanInterruptRunningThread(sideShell !== null, runtime)}
                     showPlanFollowUpPrompt={false}
                     promptHasText={prompt.trim().length > 0}
                     isSendBusy={false}

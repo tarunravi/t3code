@@ -13,8 +13,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { ProjectionStoreV2 } from "./ProjectionStore.ts";
-import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -72,12 +72,12 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  ProjectionStoreV2 | ProviderSessionManagerV2
+  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
-    const projections = yield* ProjectionStoreV2;
-    const sessions = yield* ProviderSessionManagerV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
     const load = (input: {
       readonly threadId: ThreadId;
@@ -176,17 +176,33 @@ export const layer: Layer.Layer<
             ? loaded.session
             : yield* sessions.get(input.providerSessionId);
           if (Option.isNone(session)) return;
+          const runtime = session.value;
+          const turnSettled = loaded.providerTurn.status !== "running";
           if (
-            loaded.providerTurn.status !== "running" &&
-            (session.value.hasPendingBackgroundWorkForThread === undefined ||
-              !(yield* session.value.hasPendingBackgroundWorkForThread(loaded.providerThread)))
-          )
-            return;
-          yield* session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-            requestRuntimeRestart: true,
-          });
+            !turnSettled ||
+            (runtime.hasPendingBackgroundWorkForThread !== undefined &&
+              (yield* runtime.hasPendingBackgroundWorkForThread(loaded.providerThread)))
+          ) {
+            yield* runtime.interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              requestRuntimeRestart: true,
+            });
+          }
+          // Stopping a settled turn stops its background work. Work outside
+          // the thread's roster, such as Claude's background subagents,
+          // survives interruptTurn; releasing the session kills it and
+          // settles what it orphaned. A session shared by several app threads
+          // would take the other threads' work with it, so it is left running.
+          if (
+            turnSettled &&
+            !runtime.providerSession.capabilities.sessions
+              .supportsMultipleProviderThreadsPerSession &&
+            runtime.hasPendingBackgroundWork !== undefined &&
+            (yield* runtime.hasPendingBackgroundWork)
+          ) {
+            yield* sessions.close(input.providerSessionId);
+          }
         }).pipe(
           Effect.mapError((cause) =>
             isProviderTurnControlError(cause)

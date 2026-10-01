@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { isParentOwnedThread } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -126,10 +127,12 @@ function EnvironmentNotifications({
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
+      // Waiting only on commands (a dev server) is done; subagents and monitors wake the agent.
+      const settled =
+        status === "ready" ||
+        (status === "waiting" && !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks));
       const completion =
-        status === "ready" &&
-        thread.latestRun?.status === "completed" &&
-        Number.isFinite(completedAt)
+        settled && thread.latestRun?.status === "completed" && Number.isFinite(completedAt)
           ? completedAt
           : (prior?.completion ?? null);
       next.set(thread.id, { attention, completion });
