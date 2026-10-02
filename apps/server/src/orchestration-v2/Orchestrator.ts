@@ -7791,11 +7791,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           activeProviderThreadId: projection.thread.activeProviderThreadId,
           runs: projection.runs,
         }).length > 0;
-      const providerTurn = projection.providerTurns.findLast(
-        (candidate) =>
-          candidate.runAttemptId === run?.activeAttemptId &&
-          (candidate.status === "running" || hasBackgroundWork),
-      );
+      // A latest run interrupted before its provider turn started has no turn
+      // of its own, so background work is stopped through the provider
+      // thread's latest turn.
+      const providerTurn =
+        projection.providerTurns.findLast(
+          (candidate) =>
+            candidate.runAttemptId === run?.activeAttemptId &&
+            (candidate.status === "running" || hasBackgroundWork),
+        ) ??
+        (hasBackgroundWork
+          ? projection.providerTurns.findLast(
+              (candidate) => candidate.providerThreadId === providerThread?.id,
+            )
+          : undefined);
       if (run === undefined || rootNode === undefined || providerThread === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
