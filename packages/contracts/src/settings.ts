@@ -703,7 +703,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Use T3 subagents only",
         description:
-          "Block Claude's native Agent and Workflow tools so subagents run as T3 delegated tasks you can see and stop.",
+          "Block Claude's native Agent and Workflow tools so subagents run as T3 delegated tasks you can see and stop. Applies to Claude sessions started after the change.",
         providerSettingsForm: { control: "switch" },
       }),
     ),
