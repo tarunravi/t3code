@@ -461,6 +461,8 @@ export function layerWithRegistry<Error>(
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
         delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
+        // Stop enqueues this for every held thread; replayed threads own no delegated tasks.
+        stopDelegatedTasks: () => Effect.void,
       });
     }),
   ).pipe(Layer.provide(layerOrchestratorProvided));
