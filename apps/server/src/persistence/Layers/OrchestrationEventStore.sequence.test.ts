@@ -171,6 +171,17 @@ it.effect(
           .map((row) => row.sequence),
       );
 
+      const commandReplay = yield* store
+        .readAgentEvents({ commandId: CommandId.make("selected-command"), limit: 17 })
+        .pipe(Stream.runCollect);
+      assert.deepEqual(
+        commandReplay.map((event) => event.sequence),
+        retained
+          .filter((row) => row.aggregate_kind === "thread" && row.command_id === "selected-command")
+          .slice(0, 17)
+          .map((row) => row.sequence),
+      );
+
       const catchUp = retained.filter((row) => row.sequence > afterSequence);
       const highWater = catchUp.at(-1)!.sequence;
       let liveSequence = 0;
@@ -246,13 +257,21 @@ it.effect("uses indexed high-water lookups for populated history without OR scan
       yield* store.latestAgentSequence(ThreadId.make("target")).pipe(Effect.withTracer(tracer)),
       1,
     );
-    assert.equal(statements.length, 2);
+    const absentCommandEvents = yield* store
+      .readAgentEvents({ commandId: CommandId.make("absent-command"), limit: 10 })
+      .pipe(Stream.runCollect, Effect.withTracer(tracer));
+    assert.equal(absentCommandEvents.length, 0);
+    assert.equal(statements.length, 3);
     const applicationPlan = yield* sql.unsafe<{ readonly detail: string }>(
       `EXPLAIN QUERY PLAN ${statements[0]}`,
     );
     const agentPlan = yield* sql.unsafe<{ readonly detail: string }>(
       `EXPLAIN QUERY PLAN ${statements[1]}`,
       ["target"],
+    );
+    const commandPlan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${statements[2]}`,
+      [0, Number.MAX_SAFE_INTEGER, "absent-command", 10],
     );
     assert.match(
       applicationPlan.map((row) => row.detail).join("\n"),
@@ -262,7 +281,11 @@ it.effect("uses indexed high-water lookups for populated history without OR scan
       agentPlan.map((row) => row.detail).join("\n"),
       /USING COVERING INDEX idx_orchestration_events_agent_stream_sequence \(stream_id=\?\)/,
     );
-    for (const row of [...applicationPlan, ...agentPlan]) {
+    assert.match(
+      commandPlan.map((row) => row.detail).join("\n"),
+      /USING INDEX idx_orch_events_command_id/,
+    );
+    for (const row of [...applicationPlan, ...agentPlan, ...commandPlan]) {
       assert.notMatch(row.detail, /MULTI-INDEX OR|TEMP B-TREE/);
     }
   }).pipe(
