@@ -1220,6 +1220,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
             setModel: () => Effect.void,
             setPermissionMode: () => Effect.void,
             interrupt: Effect.void,
+            stopTask: () => Effect.void,
             close: Effect.void,
           };
         }),
