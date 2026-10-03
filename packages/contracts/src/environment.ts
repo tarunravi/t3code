@@ -135,6 +135,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   /** Server resolves `projectSettingsOverrides`; older servers ignore the key. */
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server enforces `threadSubagentRosters` in delegate_task; older servers ignore the key. */
+  threadSubagentRosters: Schema.optionalKey(Schema.Boolean),
   /** Server resolves a project's `providerInstances` override entry. Older
       servers decode the key away (unknown fields are stripped, not
       rejected), so the per-project provider switch would silently do
