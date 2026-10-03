@@ -22,6 +22,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadBackgroundTasksSection } from "./BackgroundTasks";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadSubagentsPanel } from "./ThreadSubagentsPanel";
 
 export interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
@@ -182,6 +183,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               environmentId={props.environmentId}
               threadId={props.threadId}
             />
+          ) : null}
+
+          {density === "full" && !props.draftId ? (
+            <ThreadSubagentsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}
 
           {density === "full" && !props.draftId ? (
