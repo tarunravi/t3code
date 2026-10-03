@@ -8,6 +8,7 @@ import {
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -1222,6 +1223,27 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/** What a roster entry is for, so agents pick the right worker for the job. */
+export const SubagentRole = Schema.Literals(["default", "hard", "bulk", "overnight"]);
+export type SubagentRole = typeof SubagentRole.Type;
+
+/** One subagent a thread may delegate to: a model on a provider instance, its options, and its role. */
+export const SubagentRosterEntry = Schema.Struct({
+  selection: ModelSelection,
+  role: Schema.optionalKey(SubagentRole),
+});
+export type SubagentRosterEntry = typeof SubagentRosterEntry.Type;
+
+/**
+ * A thread's own subagent list. It replaces the environment-wide subagent
+ * allowlist for that thread; order is preference, so the first entry (or the
+ * "default" role) is the fallback when an agent names no model.
+ */
+export const ThreadSubagentRoster = Schema.Struct({
+  entries: Schema.Array(SubagentRosterEntry),
+});
+export type ThreadSubagentRoster = typeof ThreadSubagentRoster.Type;
+
 export const ServerSettings = Schema.Struct({
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
@@ -1404,6 +1426,14 @@ export const ServerSettings = Schema.Struct({
       ),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Saved subagents offered first when building a thread's roster. */
+  subagentHotlist: Schema.Array(SubagentRosterEntry).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Per-thread subagent rosters. A thread without an entry uses the allowlist above. */
+  threadSubagentRosters: Schema.Record(ThreadId, ThreadSubagentRoster).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   /**
    * The merge method pull requests start with; `null` reuses the method
    * last chosen on this device. Server-side so a project can override it
@@ -1716,6 +1746,12 @@ export const ServerSettingsPatch = Schema.Struct({
         }),
       ),
     ),
+  ),
+  /** Replaces the whole hotlist. */
+  subagentHotlist: Schema.optionalKey(Schema.Array(SubagentRosterEntry)),
+  /** Per-thread replacement. `null` returns that thread to the environment allowlist. */
+  threadSubagentRosters: Schema.optionalKey(
+    Schema.Record(ThreadId, Schema.NullOr(ThreadSubagentRoster)),
   ),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(

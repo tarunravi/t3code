@@ -1047,6 +1047,167 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect("narrows subagents to a thread's roster and defaults to its default entry", () =>
+    Effect.gen(function* () {
+      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+      const codexDriver = ProviderDriverKind.make("codex");
+      const codex = {
+        ...providerSnapshot({ instanceId: codexInstanceId, driver: codexDriver }),
+        models: [
+          { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null },
+          { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol", isCustom: false, capabilities: null },
+        ],
+      };
+      const antigravity = providerSnapshot({
+        instanceId: antigravityInstanceId,
+        driver: ProviderDriverKind.make("antigravity"),
+        model: "ant-model",
+      });
+      const claude = providerSnapshot({
+        instanceId: claudeInstanceId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        model: "claude-opus-5-5",
+      });
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: codexDriver,
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Summarize the diff.",
+        title: null,
+        model: "gpt-5.6-sol",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      let delegated = false;
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest({
+          // The roster is the user's explicit pick, so it outranks this.
+          subagentModelPreferences: { [codexInstanceId]: { hiddenModels: ["gpt-5.6-sol"] } },
+          threadSubagentRosters: {
+            [parentThreadId]: {
+              entries: [
+                { selection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" }, role: "hard" },
+                {
+                  selection: {
+                    instanceId: antigravityInstanceId,
+                    model: "ant-model",
+                    options: [{ id: "effort", value: "medium" }],
+                  },
+                  role: "default",
+                },
+              ],
+            },
+          },
+        }),
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection(delegated ? [task] : [])
+                : childProjection,
+            ),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  delegated = true;
+                }),
+              ),
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([codex, antigravity, claude]),
+        }),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId, claudeInstanceId]),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const capabilities = yield* service.capabilities(scope);
+        const byId = new Map(
+          capabilities.providers.map((provider) => [provider.providerInstanceId, provider]),
+        );
+        assert.deepEqual(
+          byId.get(codexInstanceId)?.models.map((model) => model.id),
+          ["gpt-5.6-sol"],
+        );
+        assert.isFalse(byId.get(claudeInstanceId)?.canRunChildTask);
+        assert.deepEqual(byId.get(claudeInstanceId)?.constraints, [
+          "Not in this thread's subagent roster.",
+        ]);
+        assert.deepEqual(
+          capabilities.threadRoster?.entries.map((entry) => [
+            entry.target.providerInstanceId,
+            entry.role,
+            entry.label,
+            entry.available,
+          ]),
+          [
+            [codexInstanceId, "hard", "GPT-5.6 Sol", true],
+            [antigravityInstanceId, "default", "ant-model", true],
+          ],
+        );
+
+        const outside = yield* service
+          .delegateTask(scope, {
+            task: "Look at the diff.",
+            target: { providerInstanceId: claudeInstanceId },
+            mode: "async",
+          })
+          .pipe(Effect.flip);
+        assert.equal(outside.code, "model_unavailable");
+        assert.isTrue(outside.message.includes("not in this thread's subagent roster"));
+        assert.isTrue(outside.message.includes("antigravity/ant-model (default, effort=medium)"));
+
+        yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          mode: "async",
+          clientRequestId: "roster-default",
+        });
+        yield* service.delegateTask(scope, {
+          task: "Fix the hard bug.",
+          target: { providerInstanceId: codexInstanceId },
+          mode: "async",
+          clientRequestId: "roster-provider-only",
+        });
+        const selections = (yield* Ref.get(dispatched)).map(
+          (command) => (command as { modelSelection: unknown }).modelSelection,
+        );
+        assert.deepEqual(selections, [
+          {
+            instanceId: antigravityInstanceId,
+            model: "ant-model",
+            options: [{ id: "effort", value: "medium" }],
+          },
+          { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
+        ]);
+      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
   it.effect("advertises and accepts only models allowed for subagents", () =>
     Effect.gen(function* () {
       const codex = providerSnapshot({
