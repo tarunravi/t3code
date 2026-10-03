@@ -29,6 +29,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadBackgroundTasksSection } from "./BackgroundTasks";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadSubagentsPanel } from "./ThreadSubagentsPanel";
 
 interface VersionMismatchIssue {
   readonly clientVersion: string;
@@ -232,6 +233,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               environmentId={props.environmentId}
               threadId={props.threadId}
             />
+          ) : null}
+
+          {density === "full" && !props.draftId ? (
+            <ThreadSubagentsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}
 
           {density === "full" && !props.draftId ? (

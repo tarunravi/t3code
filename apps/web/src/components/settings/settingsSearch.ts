@@ -476,6 +476,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["/side side question fork provider default parent"],
   },
   {
+    id: "subagent-hotlist",
+    title: "Subagent hotlist",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["subagents delegate workers favorites recommended presets roster models"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",
