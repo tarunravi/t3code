@@ -167,6 +167,17 @@ it.effect(
           .map((row) => row.sequence),
       );
 
+      const commandReplay = yield* store
+        .readAgentEvents({ commandId: CommandId.make("selected-command"), limit: 17 })
+        .pipe(Stream.runCollect);
+      assert.deepEqual(
+        commandReplay.map((event) => event.sequence),
+        retained
+          .filter((row) => row.aggregate_kind === "thread" && row.command_id === "selected-command")
+          .slice(0, 17)
+          .map((row) => row.sequence),
+      );
+
       const catchUp = retained.filter((row) => row.sequence > afterSequence);
       const highWater = catchUp.at(-1)!.sequence;
       let liveSequence = 0;
@@ -203,4 +214,139 @@ it.effect(
       );
       assert.isAbove(liveSequence, highWater);
     }).pipe(Effect.provide(Layer.fresh(layerEventStore))),
+);
+
+it.effect("uses indexed high-water lookups for populated history without OR scans", () =>
+  Effect.gen(function* () {
+    const store = yield* OrchestrationEventStore.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    yield* sql`
+      WITH RECURSIVE history(n) AS (
+        SELECT 1 UNION ALL SELECT n + 1 FROM history WHERE n < 25000
+      )
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+      )
+      SELECT 'history:' || n, 'thread',
+        CASE WHEN n = 1 THEN 'target' ELSE 'other' END,
+        n, 'provider-session.detached', ${occurredAt}, 'server', '{}', '{}',
+        CASE WHEN n % 3 = 0 THEN 1 ELSE 2 END
+      FROM history
+    `;
+    const statements: Array<string> = [];
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options);
+        const end = span.end.bind(span);
+        span.end = (endTime, exit) => {
+          end(endTime, exit);
+          const query = span.attributes.get("db.query.text");
+          if (typeof query === "string") statements.push(query);
+        };
+        return span;
+      },
+    });
+    assert.equal(yield* store.latestApplicationSequence.pipe(Effect.withTracer(tracer)), 25_000);
+    assert.equal(
+      yield* store.latestAgentSequence(ThreadId.make("target")).pipe(Effect.withTracer(tracer)),
+      1,
+    );
+    const absentCommandEvents = yield* store
+      .readAgentEvents({ commandId: CommandId.make("absent-command"), limit: 10 })
+      .pipe(Stream.runCollect, Effect.withTracer(tracer));
+    assert.equal(absentCommandEvents.length, 0);
+    assert.equal(statements.length, 3);
+    const applicationPlan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${statements[0]}`,
+    );
+    const agentPlan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${statements[1]}`,
+      ["target"],
+    );
+    const commandPlan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${statements[2]}`,
+      [0, Number.MAX_SAFE_INTEGER, "absent-command", 10],
+    );
+    assert.match(
+      applicationPlan.map((row) => row.detail).join("\n"),
+      /SEARCH orchestration_events USING INDEX idx_orchestration_events_application_high_water/,
+    );
+    assert.match(
+      agentPlan.map((row) => row.detail).join("\n"),
+      /USING COVERING INDEX idx_orchestration_events_agent_stream_sequence \(stream_id=\?\)/,
+    );
+    assert.match(
+      commandPlan.map((row) => row.detail).join("\n"),
+      /USING INDEX idx_orch_events_command_id/,
+    );
+    for (const row of [...applicationPlan, ...agentPlan, ...commandPlan]) {
+      assert.notMatch(row.detail, /MULTI-INDEX OR|TEMP B-TREE/);
+    }
+  }).pipe(
+    Effect.provide(
+      OrchestrationEventStore.layer.pipe(
+        Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+      ),
+    ),
+  ),
+);
+
+it.effect("replays a command's events through the command index, not the sequence range", () =>
+  Effect.gen(function* () {
+    const store = yield* OrchestrationEventStore.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    yield* sql`
+      WITH RECURSIVE history(n) AS (
+        SELECT 1 UNION ALL SELECT n + 1 FROM history WHERE n < 25000
+      )
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+        command_id, actor_kind, payload_json, metadata_json, application_event_version
+      )
+      SELECT 'history:' || n, 'thread', 'thread', n, 'provider-session.detached', ${occurredAt},
+        CASE WHEN n IN (12, 24990) THEN 'retried-command' ELSE 'command:' || n END,
+        'server',
+        '{"providerSessionId":"session","detachedAt":"' || ${occurredAt} || '"}',
+        '{}', 2
+      FROM history
+    `;
+    const statements: Array<string> = [];
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options);
+        const end = span.end.bind(span);
+        span.end = (endTime, exit) => {
+          end(endTime, exit);
+          const query = span.attributes.get("db.query.text");
+          if (typeof query === "string") statements.push(query);
+        };
+        return span;
+      },
+    });
+    const replayed = yield* store
+      .readAgentEvents({ commandId: CommandId.make("retried-command") })
+      .pipe(Stream.runCollect, Effect.withTracer(tracer));
+    assert.deepEqual(
+      replayed.map((event) => event.sequence),
+      [12, 24990],
+    );
+    assert.equal(statements.length, 1);
+    const plan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${statements[0]}`,
+      [0, Number.MAX_SAFE_INTEGER, "retried-command", 500],
+    );
+    assert.match(
+      plan.map((row) => row.detail).join("\n"),
+      /SEARCH orchestration_events USING INDEX idx_orch_events_command_id \(command_id=\?/,
+    );
+  }).pipe(
+    Effect.provide(
+      OrchestrationEventStore.layer.pipe(
+        Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+      ),
+    ),
+  ),
 );
