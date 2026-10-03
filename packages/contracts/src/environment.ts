@@ -101,6 +101,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server enforces `threadSubagentRosters` in delegate_task; older servers ignore the key. */
+  threadSubagentRosters: Schema.optionalKey(Schema.Boolean),
   /**
    * Older
       servers decode the key away (unknown fields are stripped, not
