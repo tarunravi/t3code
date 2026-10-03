@@ -37,6 +37,7 @@ import {
   ProviderOptionSelectionValue,
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { SubagentRole } from "./settings.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
@@ -495,6 +496,26 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
+export const OrchestratorMcpThreadRosterEntry = Schema.Struct({
+  /** Pass as delegate_task `target` unchanged, or vary `options` within it. */
+  target: Schema.Struct({
+    providerInstanceId: ProviderInstanceId,
+    model: Schema.String,
+    options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+  }),
+  label: Schema.NullOr(Schema.String),
+  role: Schema.NullOr(SubagentRole),
+  available: Schema.Boolean,
+});
+export type OrchestratorMcpThreadRosterEntry = typeof OrchestratorMcpThreadRosterEntry.Type;
+
+/** Present when the user picked this thread's subagents; providers then lists only these. */
+export const OrchestratorMcpThreadRoster = Schema.Struct({
+  guidance: Schema.String,
+  entries: Schema.Array(OrchestratorMcpThreadRosterEntry),
+});
+export type OrchestratorMcpThreadRoster = typeof OrchestratorMcpThreadRoster.Type;
+
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
@@ -504,6 +525,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  threadRoster: Schema.optional(OrchestratorMcpThreadRoster),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,

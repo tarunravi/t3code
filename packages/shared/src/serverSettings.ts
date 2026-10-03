@@ -283,6 +283,10 @@ export function applyServerSettingsPatch(
     // Per-instance replacement. `null` removes an entry; deepMerge would keep
     // hidden slugs the client meant to clear.
     subagentModelPreferences: subagentModelPreferencesPatch,
+    // Whole-list replacement; deepMerge would merge arrays index by index.
+    subagentHotlist: subagentHotlistPatch,
+    // Per-thread replacement. `null` returns a thread to the environment allowlist.
+    threadSubagentRosters: threadSubagentRostersPatch,
     usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
@@ -435,6 +439,15 @@ export function applyServerSettingsPatch(
           subagentModelPreferences: mergeSettingsEntries(
             current.subagentModelPreferences,
             subagentModelPreferencesPatch,
+          ),
+        }
+      : {}),
+    ...(subagentHotlistPatch !== undefined ? { subagentHotlist: subagentHotlistPatch } : {}),
+    ...(threadSubagentRostersPatch !== undefined
+      ? {
+          threadSubagentRosters: mergeSettingsEntries(
+            current.threadSubagentRosters,
+            threadSubagentRostersPatch,
           ),
         }
       : {}),
