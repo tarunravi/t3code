@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadId,
   UsageLimitSourceId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -599,6 +600,31 @@ describe("serverSettings helpers", () => {
     expect(cleared.subagentModelPreferences).toEqual({
       [cursorId]: { hiddenModels: ["grok-4.6"] },
     });
+  });
+
+  it("replaces the subagent hotlist whole and one thread's roster at a time", () => {
+    const opus = createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5");
+    const glm = createModelSelection(ProviderInstanceId.make("zcode"), "default");
+    const withHotlist = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      subagentHotlist: [{ selection: opus }, { selection: glm, role: "overnight" }],
+    });
+    const shortened = applyServerSettingsPatch(withHotlist, {
+      subagentHotlist: [{ selection: glm }],
+    });
+    expect(shortened.subagentHotlist).toEqual([{ selection: glm }]);
+
+    const threadA = ThreadId.make("thread-a");
+    const threadB = ThreadId.make("thread-b");
+    const both = applyServerSettingsPatch(shortened, {
+      threadSubagentRosters: {
+        [threadA]: { entries: [{ selection: opus, role: "default" }] },
+        [threadB]: { entries: [] },
+      },
+    });
+    const inherited = applyServerSettingsPatch(both, {
+      threadSubagentRosters: { [threadA]: null },
+    });
+    expect(inherited.threadSubagentRosters).toEqual({ [threadB]: { entries: [] } });
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {
