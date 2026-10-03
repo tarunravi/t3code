@@ -54,6 +54,7 @@ import {
   type ServerProvider,
   type ServerSettings,
   ThreadId,
+  type ThreadSubagentRoster,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
@@ -63,6 +64,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -80,6 +82,7 @@ import {
   type McpThreadInvocationScope,
   requireThreadScope,
 } from "./McpInvocationContext.ts";
+import { resolveRosterTarget, THREAD_ROSTER_GUIDANCE } from "./threadSubagentRoster.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -256,6 +259,23 @@ function modelsAllowedForSubagents(
 }
 
 const NO_SUBAGENT_MODELS = "No models are allowed for subagents.";
+const NOT_IN_THREAD_ROSTER = "Not in this thread's subagent roster.";
+
+/** Roster models on this provider; a provider without a catalog keeps the roster's ids. */
+function modelsInRoster(
+  provider: ServerProvider,
+  roster: ThreadSubagentRoster,
+): ReadonlyArray<Pick<ServerProvider["models"][number], "slug" | "name" | "capabilities">> {
+  const slugs = new Set(
+    roster.entries
+      .filter((entry) => entry.selection.instanceId === provider.instanceId)
+      .map((entry) => entry.selection.model),
+  );
+  if (provider.models.length === 0) {
+    return [...slugs].map((slug) => ({ slug, name: slug, capabilities: null }));
+  }
+  return provider.models.filter((model) => slugs.has(model.slug));
+}
 
 /**
  * Checks requested option selections for duplicates and, when the model
@@ -1499,7 +1519,11 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const providers = yield* loadProviders;
         const settings = yield* loadSubagentSettings;
+        const roster =
+          parent === undefined ? undefined : settings.threadSubagentRosters[parent.thread.id];
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+        const constraintsFor = (provider: ServerProvider) =>
+          providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId));
         return {
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
@@ -1507,15 +1531,17 @@ const make = Effect.gen(function* () {
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
           providers: providers.map((provider) => {
-            const hidden = hiddenSubagentModels(settings, provider.instanceId);
-            const allowedModels = modelsAllowedForSubagents(provider, hidden);
-            const constraints = [
-              ...providerConstraints(
-                provider,
-                orchestrationCapableInstanceIds.has(provider.instanceId),
-              ),
-            ];
-            if (
+            const allowedModels =
+              roster === undefined
+                ? modelsAllowedForSubagents(
+                    provider,
+                    hiddenSubagentModels(settings, provider.instanceId),
+                  )
+                : modelsInRoster(provider, roster);
+            const constraints = [...constraintsFor(provider)];
+            if (roster !== undefined && allowedModels.length === 0) {
+              constraints.push(NOT_IN_THREAD_ROSTER);
+            } else if (
               constraints.length === 0 &&
               provider.models.length > 0 &&
               allowedModels.length === 0
@@ -1538,6 +1564,36 @@ const make = Effect.gen(function* () {
               constraints: [...constraints],
             };
           }),
+          ...(roster === undefined
+            ? {}
+            : {
+                threadRoster: {
+                  guidance: THREAD_ROSTER_GUIDANCE,
+                  entries: roster.entries.map((entry) => {
+                    const provider = providers.find(
+                      (candidate) => candidate.instanceId === entry.selection.instanceId,
+                    );
+                    const model = provider?.models.find(
+                      (candidate) => candidate.slug === entry.selection.model,
+                    );
+                    return {
+                      target: {
+                        providerInstanceId: entry.selection.instanceId,
+                        model: entry.selection.model,
+                        ...(entry.selection.options === undefined
+                          ? {}
+                          : { options: entry.selection.options }),
+                      },
+                      label: model?.name ?? null,
+                      role: entry.role ?? null,
+                      available:
+                        provider !== undefined &&
+                        constraintsFor(provider).length === 0 &&
+                        (model !== undefined || provider.models.length === 0),
+                    };
+                  }),
+                },
+              }),
           features: {
             appOwnedSubagents: true,
             asyncPolling: true,
@@ -1567,11 +1623,24 @@ const make = Effect.gen(function* () {
           );
         }
         const providers = yield* loadProviders;
+        const roster = (yield* loadSubagentSettings).threadSubagentRosters[scope.thread.threadId];
+        const requestedTarget =
+          roster === undefined
+            ? input.target
+            : yield* Result.match(
+                resolveRosterTarget({ roster, target: input.target, providers }),
+                {
+                  onFailure: (message) => failure("model_unavailable", message),
+                  onSuccess: (target) => Effect.succeed(target),
+                },
+              );
+        // A thread roster is the user's explicit pick, so it replaces the
+        // environment-wide hidden-model list rather than intersecting it.
         const target = yield* resolveTarget({
           parent,
-          target: input.target,
+          target: requestedTarget,
           providers,
-          enforceSubagentAllowlist: true,
+          enforceSubagentAllowlist: roster === undefined,
         });
         const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         const interactionMode = yield* resolveInteractionMode(
