@@ -224,22 +224,22 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </ThreadDetailsSection>
           ) : null}
 
-          {density === "full" && !props.draftId ? (
+          {!props.draftId ? (
             <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}
 
-          {density === "full" && !props.draftId ? (
+          {!props.draftId ? (
             <ThreadBackgroundTasksSection
               environmentId={props.environmentId}
               threadId={props.threadId}
             />
           ) : null}
 
-          {density === "full" && !props.draftId ? (
+          {!props.draftId ? (
             <ThreadSubagentsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}
 
-          {density === "full" && !props.draftId ? (
+          {!props.draftId ? (
             <ThreadRelationshipsPanel
               environmentId={props.environmentId}
               threadId={props.threadId}
