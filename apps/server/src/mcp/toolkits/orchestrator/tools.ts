@@ -53,7 +53,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List the provider instances and models allowed for subagents, including custom models, runtime options, and constraints. This allowlist is independent of the composer picker. Use search to find more models.",
+    "List the provider instances and models allowed for subagents, including custom models, runtime options, and constraints. This allowlist is independent of the composer picker. Use search to find more models. providerUsage contains awareness-only account quotas and reset times; it does not gate delegation.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
