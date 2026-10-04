@@ -47,7 +47,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List the V2 provider instances and the models allowed for subagents on each, including configured custom models. That allowlist is independent of the composer model picker. When the user picked this thread's subagents, threadRoster lists them with role hints and providers lists only those models. Also returns inherited runtime settings and app-owned orchestration features available to this caller. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy.",
+    "List the V2 provider instances and the models allowed for subagents on each, including configured custom models. That allowlist is independent of the composer model picker. When the user picked this thread's subagents, threadRoster lists them with role hints and providers lists only those models. Also returns inherited runtime settings and app-owned orchestration features available to this caller. providerUsage, when present, is awareness-only quota per provider instance: plan around mostConstrained and its reset times (windows include when quota resets so you can judge whether it returns in time), but usage is not a hard gate and delegation is never refused because of it. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy.",
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
