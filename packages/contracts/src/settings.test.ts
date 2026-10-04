@@ -1167,6 +1167,54 @@ describe("subagent presets", () => {
   });
 });
 
+describe("thread subagent rosters", () => {
+  const entries = [
+    {
+      selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+      role: "hard",
+      description: "For the hardest work.",
+    },
+    { selection: { instanceId: "zcode", model: "default" } },
+  ];
+  const roster = { "thread-1": { entries } };
+
+  it("round-trips entries with descriptions through settings snapshots and writes", () => {
+    const input = { threadSubagentRosters: roster };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+
+  it("trims descriptions and keeps them optional", () => {
+    const decoded = decodeServerSettings({
+      threadSubagentRosters: {
+        "thread-1": {
+          entries: [{ ...entries[0]!, description: "  spaced  " }, entries[1]!],
+        },
+      },
+    });
+    expect(Object.values(decoded.threadSubagentRosters)[0]).toEqual({
+      entries: [
+        {
+          selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+          role: "hard",
+          description: "spaced",
+        },
+        { selection: { instanceId: "zcode", model: "default" } },
+      ],
+    });
+  });
+
+  it("rejects an invalid roster description", () => {
+    expect(() =>
+      decodeServerSettings({
+        threadSubagentRosters: {
+          "thread-1": [{ ...entries[0]!, description: 42 }],
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings.removeAgentCreditsOnMerge", () => {
   it("keeps agent credits by default and accepts opt-in patches", () => {
     expect(decodeServerSettings({}).removeAgentCreditsOnMerge).toBe(false);
