@@ -1879,6 +1879,7 @@ const make = Effect.gen(function* () {
                       },
                       label: model?.name ?? null,
                       role: entry.role ?? null,
+                      description: entry.description ?? null,
                       available:
                         provider !== undefined &&
                         constraintsFor(provider).length === 0 &&
