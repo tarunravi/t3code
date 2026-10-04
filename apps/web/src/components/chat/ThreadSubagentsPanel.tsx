@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { GlobeIcon, Settings2Icon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 
+import { type DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { serverEnvironment } from "../../state/server";
 import { Switch } from "../ui/switch";
@@ -24,7 +25,13 @@ import {
 } from "./SubagentRosterList";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
-import { appendRosterEntries, resolvePreset, SUBAGENT_PRESETS } from "./threadSubagentRoster.logic";
+import {
+  appendRosterEntries,
+  resolvePreset,
+  resolveRosterEntry,
+  rosterEntryKey,
+  SUBAGENT_PRESETS,
+} from "./threadSubagentRoster.logic";
 import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
@@ -44,6 +51,7 @@ const MANUAL_PRESET = "manual";
 export function ThreadSubagentsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly draftId?: DraftId;
 }) {
   const supported =
     useAtomValue(serverEnvironment.configValueAtom(props.environmentId))?.environment.capabilities
@@ -55,17 +63,30 @@ export function ThreadSubagentsPanel(props: {
   );
   const navigate = useNavigate();
   const [manualChoice, setManualChoice] = useState<boolean | null>(null);
+  const draftEntries = useComposerDraftStore((store) =>
+    props.draftId ? store.getDraftThread(props.draftId)?.subagentRoster : undefined,
+  );
+  const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   if (!supported) return null;
 
-  const roster = settings.threadSubagentRosters[props.threadId];
+  const roster = props.draftId
+    ? draftEntries == null
+      ? undefined
+      : { entries: draftEntries }
+    : settings.threadSubagentRosters[props.threadId];
   const hotlist = settings.subagentHotlist;
   const presets = settings.subagentPresets;
-  const saveRoster = (entries: ReadonlyArray<SubagentRosterEntry> | null) =>
+  const saveRoster = (entries: ReadonlyArray<SubagentRosterEntry> | null) => {
+    if (props.draftId) {
+      setDraftThreadContext(props.draftId, { subagentRoster: entries });
+      return;
+    }
     void updateSettings({
       threadSubagentRosters: {
         [props.threadId]: entries === null ? null : { entries: [...entries] },
       },
     });
+  };
   const seedEntries = () => {
     if (hotlist.length > 0) return [...hotlist];
     for (const preset of SUBAGENT_PRESETS) {
@@ -169,19 +190,57 @@ export function ThreadSubagentsPanel(props: {
     >
       {presets.length > 0 ? (
         <Menu>
-          <MenuTrigger
-            render={
-              <ThreadDetailsControl part="row" tone="muted" aria-label="Choose a subagent preset" />
-            }
-          >
-            <SparklesIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-foreground/80">
-                {activePreset?.name ?? "Subagent presets"}
-              </span>
-              <p className="truncate text-2xs text-muted-foreground">{presetSummary}</p>
-            </span>
-          </MenuTrigger>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <MenuTrigger
+                  render={
+                    <ThreadDetailsControl
+                      part="row"
+                      tone="muted"
+                      aria-label="Choose a subagent preset"
+                    />
+                  }
+                >
+                  <SparklesIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-foreground/80">
+                      {activePreset?.name ?? "Subagent presets"}
+                    </span>
+                    <p className="truncate text-2xs text-muted-foreground">{presetSummary}</p>
+                  </span>
+                </MenuTrigger>
+              }
+            />
+            <TooltipPopup>
+              {roster === undefined ? (
+                "Environment subagents"
+              ) : roster.entries.length === 0 ? (
+                "No subagents: this thread's agent cannot delegate."
+              ) : (
+                <ul
+                  className="m-0 flex list-none flex-col gap-2 p-0"
+                  aria-label="Current subagent roster"
+                >
+                  {roster.entries.map((entry) => {
+                    const resolved = resolveRosterEntry(entry, instances);
+                    return (
+                      <li key={rosterEntryKey(entry)}>
+                        <span className="block font-medium">{resolved.modelLabel}</span>
+                        <span className="block">
+                          {resolved.instance?.displayName ?? entry.selection.instanceId}
+                          {resolved.effortLabel ? ` · ${resolved.effortLabel}` : ""}
+                        </span>
+                        {entry.description ? (
+                          <span className="block">{entry.description}</span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </TooltipPopup>
+          </Tooltip>
           <MenuPopup align="start">
             <MenuRadioGroup
               value={manualChoice === true ? MANUAL_PRESET : (activePreset?.id ?? MANUAL_PRESET)}
