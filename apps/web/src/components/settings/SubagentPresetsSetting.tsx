@@ -1,33 +1,12 @@
-import type {
-  EnvironmentId,
-  SubagentPreset,
-  SubagentPresetEntry,
-  SubagentRole,
-} from "@t3tools/contracts";
+import type { EnvironmentId, SubagentPreset, SubagentPresetEntry } from "@t3tools/contracts";
 import { PlusIcon, SparklesIcon, Trash2Icon } from "lucide-react";
 
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { randomUUID } from "../../lib/utils";
 import { SubagentRosterAddControls, useSubagentInstances } from "../chat/SubagentRosterList";
-import {
-  resolveRosterEntry,
-  rosterEntryKey,
-  SUBAGENT_ROLES,
-  SUBAGENT_ROLE_META,
-} from "../chat/threadSubagentRoster.logic";
-import { Badge } from "../ui/badge";
+import { resolveRosterEntry, rosterEntryKey } from "../chat/threadSubagentRoster.logic";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
-import {
-  Menu,
-  MenuGroup,
-  MenuGroupLabel,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuRadioItemIndicator,
-  MenuTrigger,
-} from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
@@ -35,12 +14,10 @@ import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import {
   applyPresetEntryDescription,
-  applyPresetEntryRole,
   createPreset,
   mergePresetDescriptions,
   presetEntryAsRosterEntry,
   removePreset,
-  renamePreset,
 } from "./subagentPresets.logic";
 import {
   useScopedSettings,
@@ -48,13 +25,9 @@ import {
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 
-const NO_ROLE = "none";
-
 function PresetEntryRow(props: {
   entry: SubagentPresetEntry;
-  index: number;
   instances: ReadonlyArray<ProviderInstanceEntry>;
-  onRole: (role: SubagentRole | null) => void;
   onDescription: (description: string) => void;
   onRemove: () => void;
 }) {
@@ -104,55 +77,6 @@ function PresetEntryRow(props: {
               : `${providerName} · ${resolved.effortLabel}`}
           </p>
         </div>
-        {props.entry.role === undefined ? null : (
-          <Badge size="sm" variant={SUBAGENT_ROLE_META[props.entry.role].badge}>
-            {SUBAGENT_ROLE_META[props.entry.role].label}
-          </Badge>
-        )}
-        <Menu>
-          <MenuTrigger
-            render={
-              <Button
-                variant="ghost-muted"
-                size="icon-xs"
-                aria-label={`Options for ${resolved.modelLabel}`}
-              />
-            }
-          >
-            <span className="text-xs text-muted-foreground">Role</span>
-          </MenuTrigger>
-          <MenuPopup align="end">
-            <MenuGroup>
-              <MenuGroupLabel>Role</MenuGroupLabel>
-              <MenuRadioGroup
-                value={props.entry.role ?? NO_ROLE}
-                onValueChange={(value) =>
-                  props.onRole(value === NO_ROLE ? null : (value as SubagentRole))
-                }
-              >
-                {SUBAGENT_ROLES.map((role) => (
-                  <MenuRadioItem key={role} value={role}>
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="min-w-0 flex-1">
-                        <span className="block">{SUBAGENT_ROLE_META[role].label}</span>
-                        <span className="block text-xs text-muted-foreground">
-                          {SUBAGENT_ROLE_META[role].description}
-                        </span>
-                      </span>
-                      <MenuRadioItemIndicator />
-                    </span>
-                  </MenuRadioItem>
-                ))}
-                <MenuRadioItem value={NO_ROLE}>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1">No role</span>
-                    <MenuRadioItemIndicator />
-                  </span>
-                </MenuRadioItem>
-              </MenuRadioGroup>
-            </MenuGroup>
-          </MenuPopup>
-        </Menu>
         <Button
           variant="ghost-muted"
           size="icon-xs"
@@ -167,7 +91,7 @@ function PresetEntryRow(props: {
         className="w-full"
         value={props.entry.description ?? ""}
         onCommit={props.onDescription}
-        placeholder="When should an agent pick this subagent?"
+        placeholder="Notes: when should an agent pick this model?"
         aria-label={`When to use ${resolved.modelLabel}`}
       />
     </li>
@@ -190,7 +114,7 @@ function PresetEditor(props: {
       <div className="flex items-center gap-1 px-1.5 pt-1">
         <DraftInput
           size="sm"
-          className="flex-1 font-medium"
+          className="flex-1"
           value={props.preset.name}
           aria-label="Preset name"
           onCommit={(name) => props.onChange({ ...props.preset, name })}
@@ -217,9 +141,7 @@ function PresetEditor(props: {
             <PresetEntryRow
               key={rosterEntryKey(presetEntryAsRosterEntry(entry))}
               entry={entry}
-              index={index}
               instances={instances}
-              onRole={(role) => props.onChange(applyPresetEntryRole(props.preset, index, role))}
               onDescription={(description) =>
                 props.onChange(applyPresetEntryDescription(props.preset, index, description))
               }

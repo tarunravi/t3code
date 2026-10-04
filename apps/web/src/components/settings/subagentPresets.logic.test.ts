@@ -3,12 +3,15 @@ import {
   ServerSettings,
   ServerSettingsPatch,
   ProviderInstanceId,
+  ThreadId,
   type SubagentPreset,
   type SubagentPresetEntry,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  draftSubagentRosterPatch,
+  withSubagentDescription,
   applyPresetEntryDescription,
   applyPresetEntryRole,
   applyPresetToRoster,
@@ -19,6 +22,8 @@ import {
   removePreset,
   renamePreset,
 } from "./subagentPresets.logic";
+
+const decodeSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const OPUS: SubagentPresetEntry = {
   selection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
@@ -32,6 +37,37 @@ const GLM: SubagentPresetEntry = {
 const PRESET: SubagentPreset = { id: "hard", name: "Hard work", entries: [OPUS, GLM] };
 
 describe("subagent preset helpers", () => {
+  it("targets first-submit and multi-model destination ids without changing legacy entries", () => {
+    const first = ThreadId.make("first-submit");
+    const second = ThreadId.make("multi-submit");
+    const patch = draftSubagentRosterPatch(applyPresetToRoster(PRESET), [first, second]);
+    expect(decodeSettingsPatch(patch)).toEqual({
+      threadSubagentRosters: {
+        [first]: { entries: PRESET.entries },
+        [second]: { entries: PRESET.entries },
+      },
+    });
+    expect(draftSubagentRosterPatch(undefined, [first])).toBeNull();
+    expect(draftSubagentRosterPatch(null, [first])).toEqual({
+      threadSubagentRosters: { [first]: null },
+    });
+    expect(draftSubagentRosterPatch([], [first])).toEqual({
+      threadSubagentRosters: { [first]: { entries: [] } },
+    });
+  });
+
+  it("edits and clears roster notes without destructively migrating a legacy role or options", () => {
+    const legacy = {
+      ...OPUS,
+      selection: { ...OPUS.selection, options: [{ id: "effort", value: "medium" }] },
+    };
+    const edited = withSubagentDescription(legacy, "  New notes.  ");
+    expect(edited).toEqual({ ...legacy, description: "New notes." });
+    const cleared = withSubagentDescription(edited, "  ");
+    expect(cleared).toEqual({ selection: legacy.selection, role: legacy.role });
+    expect(OPUS.description).toBe("Tricky bugs.");
+  });
+
   it("preserves descriptions when converting entries to roster entries", () => {
     expect(presetEntryAsRosterEntry(OPUS)).toEqual({
       selection: OPUS.selection,
@@ -110,12 +146,15 @@ describe("subagent preset helpers", () => {
     const patch = {
       threadSubagentRosters: { "thread:preset": { entries: applyPresetToRoster(PRESET) } },
     };
-    const decodedPatch = Schema.decodeUnknownSync(ServerSettingsPatch)(patch);
+    const decodedPatch = decodeSettingsPatch(patch);
     const persisted = Schema.encodeSync(ServerSettings)(
       Schema.decodeUnknownSync(ServerSettings)(JSON.parse(JSON.stringify(decodedPatch))),
     );
     expect(persisted).toMatchObject(patch);
-    expect(decodedPatch.threadSubagentRosters?.["thread:preset"]?.entries).toEqual([OPUS, GLM]);
+    expect(decodedPatch.threadSubagentRosters?.[ThreadId.make("thread:preset")]?.entries).toEqual([
+      OPUS,
+      GLM,
+    ]);
   });
 
   it("finds the preset whose entries match a roster in order", () => {

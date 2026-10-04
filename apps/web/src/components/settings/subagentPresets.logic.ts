@@ -1,4 +1,6 @@
 import type {
+  ServerSettingsPatch,
+  ThreadId,
   SubagentPreset,
   SubagentPresetEntry,
   SubagentRole,
@@ -102,13 +104,34 @@ export function applyPresetEntryDescription(
   index: number,
   description: string,
 ): SubagentPreset {
-  const trimmed = description.trim();
   return {
     ...preset,
     entries: preset.entries.map((entry, entryIndex) => {
       if (entryIndex !== index) return entry;
-      const { description: _previous, ...rest } = entry;
-      return trimmed === "" ? rest : { ...rest, description: trimmed };
+      return withSubagentDescription(entry, description);
     }),
   };
+}
+
+/** Drafts carry intent locally; save it under the real destination ids before starting turns. */
+export function draftSubagentRosterPatch(
+  entries: ReadonlyArray<SubagentRosterEntry> | null | undefined,
+  threadIds: ReadonlyArray<ThreadId>,
+): ServerSettingsPatch | null {
+  if (entries === undefined) return null;
+  return {
+    threadSubagentRosters: Object.fromEntries(
+      threadIds.map((threadId) => [threadId, entries === null ? null : { entries: [...entries] }]),
+    ),
+  };
+}
+
+/** Editing notes must not strip legacy roles or model options from saved entries. */
+export function withSubagentDescription(
+  entry: SubagentRosterEntry,
+  description: string,
+): SubagentRosterEntry {
+  const { description: _previous, ...rest } = entry;
+  const trimmed = description.trim();
+  return trimmed === "" ? rest : { ...rest, description: trimmed };
 }
