@@ -115,6 +115,7 @@ import {
   composerDraftHasUserContent,
   composerTargetKey,
   hydrateImagesFromPersisted,
+  resolveComposerDraftKey,
   useComposerDraftStore,
   useComposerThreadDraft,
   useEffectiveComposerModelState,
@@ -2394,8 +2395,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     resetTrigger: resetComposerTrigger,
   } = useComposerTriggerState(() => detectComposerTrigger(prompt, prompt.length));
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  // Lets a transcript that finishes after a thread switch reach its original draft.
+  const voiceDraftTargetsRef = useRef(new Map<string, typeof composerDraftTarget>());
+  voiceDraftTargetsRef.current.set(composerDraftTargetKey, composerDraftTarget);
   const voiceInput = useCodexVoiceInput({
-    ownerKey: composerTargetKey(composerDraftTarget),
+    ownerKey: composerDraftTargetKey,
     draftText: prompt,
     cursor: composerCursor,
     onCommit: (text, cursor) => {
@@ -2407,6 +2411,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setComposerCursor(nextCursor);
       setComposerTrigger(detectComposerTrigger(text, cursor));
       scheduleComposerFocus();
+    },
+    updateOwnerDraft: (ownerKey, update) => {
+      const target = voiceDraftTargetsRef.current.get(ownerKey);
+      const store = useComposerDraftStore.getState();
+      if (!target || !resolveComposerDraftKey(store, target)) return false;
+      store.setPrompt(target, update(store.getComposerDraft(target)?.prompt ?? ""));
+      return true;
     },
   });
   const isVoiceRecordingBar =
@@ -2421,20 +2432,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
     if (voiceErrorToastedRef.current === voiceInput.state.error) return;
-    voiceErrorToastedRef.current = voiceInput.state.error;
-    const toastId = toastManager.add({
-      type: "error",
-      title: "Voice input failed",
-      description: voiceInput.state.error,
-      actionProps: {
-        children: "View recordings",
-        onClick: () => {
-          toastManager.close(toastId);
-          void navigate({ to: "/settings/voice-recordings" });
+    const error = voiceInput.state.error;
+    voiceErrorToastedRef.current = error;
+    void voiceInput.failedRecordingId().then((recordingId) => {
+      const toastId = toastManager.add({
+        type: "error",
+        title: "Voice input failed",
+        description: error,
+        actionProps: {
+          children: recordingId ? "View recording" : "View recordings",
+          onClick: () => {
+            toastManager.close(toastId);
+            void navigate({
+              to: "/settings/voice-recordings",
+              search: recordingId ? { recording: recordingId } : {},
+            });
+          },
         },
-      },
+      });
     });
-  }, [navigate, voiceInput.state]);
+  }, [navigate, voiceInput]);
   const composerSuggestionId = useId();
   const composerSuggestionListId = `${composerSuggestionId}-${encodeURIComponent(draftId ?? activeThreadId ?? "new")}-suggestions`;
   // Active ArrowUp recall. Cleared on edit and on thread switch.
