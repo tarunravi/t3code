@@ -8,6 +8,7 @@ import {
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
+  OrchestratorMcpThreadRoster,
   OrchestratorMcpThreadSendInput,
   OrchestratorMcpThreadWaitInput,
 } from "./orchestratorMcp.ts";
@@ -20,6 +21,8 @@ const decodeThreadListInput = Schema.decodeUnknownSync(OrchestratorMcpThreadList
 const decodeThreadReadInput = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
 const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
+const decodeThreadRoster = Schema.decodeUnknownSync(OrchestratorMcpThreadRoster);
+const encodeThreadRoster = Schema.encodeSync(OrchestratorMcpThreadRoster);
 
 describe("orchestrator MCP contracts", () => {
   it("decodes cross-provider delegated task requests and durable results", () => {
@@ -106,6 +109,52 @@ describe("orchestrator MCP contracts", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("round-trips thread roster entries with and without descriptions", () => {
+    const roster = decodeThreadRoster({
+      guidance: "The user chose these subagents for this thread.",
+      entries: [
+        {
+          target: { providerInstanceId: "claudeAgent", model: "claude-opus-5-5" },
+          label: "Opus 5.5",
+          role: "hard",
+          description: "For the hardest work.",
+          available: true,
+        },
+        {
+          target: { providerInstanceId: "zcode", model: "default" },
+          label: null,
+          role: null,
+          description: null,
+          available: false,
+        },
+      ],
+    });
+
+    expect(roster.entries.map((entry) => entry.description)).toEqual([
+      "For the hardest work.",
+      null,
+    ]);
+    expect(encodeThreadRoster(roster)).toEqual({
+      guidance: "The user chose these subagents for this thread.",
+      entries: [
+        {
+          target: { providerInstanceId: "claudeAgent", model: "claude-opus-5-5" },
+          label: "Opus 5.5",
+          role: "hard",
+          description: "For the hardest work.",
+          available: true,
+        },
+        {
+          target: { providerInstanceId: "zcode", model: "default" },
+          label: null,
+          role: null,
+          description: null,
+          available: false,
+        },
+      ],
+    });
   });
 
   it("decodes mixed prompted and empty thread batches", () => {
