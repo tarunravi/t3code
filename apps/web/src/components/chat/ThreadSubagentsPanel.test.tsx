@@ -60,6 +60,7 @@ vi.mock("../ui/tooltip", () => ({
 vi.mock("../ui/menu", async () => {
   const { createContext, useContext } = await import("react");
   const RadioGroupContext = createContext<{
+    value: string;
     onValueChange?: (value: string) => void;
   } | null>(null);
   return {
@@ -72,17 +73,28 @@ vi.mock("../ui/menu", async () => {
     ),
     MenuPopup: ({ children }: { children?: ReactNode }) => children,
     MenuRadioGroup: ({
+      value,
       onValueChange,
       children,
     }: {
+      value: string;
       onValueChange: (value: string) => void;
       children?: ReactNode;
     }) => (
-      <RadioGroupContext.Provider value={{ onValueChange }}>{children}</RadioGroupContext.Provider>
+      <RadioGroupContext.Provider value={{ value, onValueChange }}>
+        {children}
+      </RadioGroupContext.Provider>
     ),
     MenuRadioItem: ({ value, children }: { value: string; children?: ReactNode }) => {
       const group = useContext(RadioGroupContext);
-      return <button value={value} onClick={() => group?.onValueChange?.(value)} />;
+      return (
+        <button
+          role="menuitemradio"
+          aria-checked={group?.value === value}
+          value={value}
+          onClick={() => group?.onValueChange?.(value)}
+        />
+      );
     },
     MenuRadioItemIndicator: () => null,
     MenuSeparator: () => null,
@@ -102,14 +114,13 @@ const PRESET = {
   id: "hard",
   name: "Hard work",
   entries: [
-    { selection: OPUS_SELECTION, role: "hard" as const },
+    { selection: OPUS_SELECTION, role: "hard" as const, description: "Tricky bugs." },
     { selection: GLM_SELECTION },
   ],
 };
 const PANEL = () => <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} />;
 // react-test-renderer's act requires this to update state outside React events.
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean;
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -208,7 +219,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
       threadSubagentRosters: {
         [THREAD]: {
           entries: [
-            { selection: OPUS_SELECTION, role: "hard" },
+            { selection: OPUS_SELECTION, role: "hard", description: "Tricky bugs." },
             { selection: GLM_SELECTION },
           ],
         },
@@ -229,7 +240,10 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
     const root = renderPanel();
+    expect(button(root, (props) => props.value === "hard").props["aria-checked"]).toBe(true);
     applyPreset(root, "manual");
+    expect(button(root, (props) => props.value === "manual").props["aria-checked"]).toBe(true);
+    expect(button(root, (props) => props.value === "hard").props["aria-checked"]).toBe(false);
 
     expect(testState.updateSettings).not.toHaveBeenCalled();
     expect(root.root.findByProps({ "data-testid": "roster-list" })).toBeDefined();
