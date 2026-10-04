@@ -35,15 +35,36 @@ async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
   await act(async () => root.render(<TokenRateLabel providerTurn={providerTurn} />));
 }
 describe("TokenRateLabel", () => {
-  it("hides unsupported telemetry instead of advertising live context-delta speed", async () => {
+  it("explains pending and unsupported telemetry without claiming live context speed", async () => {
     await render({ ...completed, status: "running", completedAt: null });
-    expect(container.textContent).toBe("");
+    expect(container.textContent).toBe("tok/s —");
+    expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
+      "Awaiting turn completion",
+    );
     await render({
       ...completed,
       turnTokenUsage: undefined,
       tokenUsage: { usedTokens: 10100, outputTokens: 100, updatedAt: "2026-10-03T10:00:00Z" },
     });
-    expect(container.textContent).toBe("");
+    expect(container.textContent).toBe("tok/s —");
+  });
+  it("makes unavailable explanations keyboard-accessible", async () => {
+    await render(null);
+    const label = container.querySelector("span");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      label?.focus();
+    });
+    expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
+      "supported output-token totals and timing",
+    );
+    expect(document.activeElement).toBe(label);
+    expect(label?.getAttribute("aria-description")).toContain(
+      "supported output-token totals and timing",
+    );
+    expect(label?.getAttribute("aria-description")).toContain(
+      "Input/context usage is not generation speed",
+    );
   });
   it("labels a completed-turn average and explains its denominator", async () => {
     await render(completed);
@@ -61,10 +82,10 @@ describe("TokenRateLabel", () => {
       status: "pending",
       turnTokenUsage: undefined,
     });
-    expect(container.textContent).toBe("");
+    expect(container.textContent).toBe("tok/s —");
     await render(completed);
     await render(null);
-    expect(container.textContent).toBe("");
+    expect(container.textContent).toBe("tok/s —");
     await render({
       ...completed,
       id: "turn:three" as never,
