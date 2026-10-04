@@ -1,5 +1,5 @@
 import { CheckIcon, CopyIcon, PlayIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DesktopBridge,
   VoiceRecordingAudio,
@@ -10,6 +10,7 @@ import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { cn } from "~/lib/utils";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 interface VoiceRecordingsBridge {
@@ -60,11 +61,13 @@ function formatTimestamp(iso: string): string {
 function VoiceRecordingRow({
   recording,
   bridge,
+  focused,
   onChanged,
   onDeleted,
 }: {
   readonly recording: VoiceRecordingMetadata;
   readonly bridge: VoiceRecordingsBridge;
+  readonly focused: boolean;
   readonly onChanged: (recording: VoiceRecordingMetadata) => void;
   readonly onDeleted: (id: string) => void;
 }) {
@@ -128,9 +131,21 @@ function VoiceRecordingRow({
   }, [bridge, deleting, onDeleted, recording.id, retrying]);
 
   const failed = recording.status === "error";
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView({ block: "center" });
+  }, [focused]);
 
   return (
-    <div className="border-b border-border/60 px-3 py-3 last:border-b-0 sm:px-4">
+    <div
+      ref={rowRef}
+      data-voice-recording-id={recording.id}
+      aria-current={focused ? "true" : undefined}
+      className={cn(
+        "border-b border-border/60 px-3 py-3 last:border-b-0 sm:px-4",
+        focused && "bg-accent/40",
+      )}
+    >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <Badge variant={failed ? "error" : "success"}>{failed ? "Failed" : "Transcribed"}</Badge>
         <span className="text-xs text-muted-foreground">
@@ -214,7 +229,7 @@ type VoiceRecordingsState =
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "ready"; readonly recordings: VoiceRecordingMetadata[] };
 
-export function VoiceRecordingsSettingsPanel() {
+export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingId?: string }) {
   const [bridge] = useState<VoiceRecordingsBridge | null>(() => readBridge());
   const [state, setState] = useState<VoiceRecordingsState>(() =>
     bridge ? { status: "loading" } : { status: "unsupported" },
@@ -319,6 +334,7 @@ export function VoiceRecordingsSettingsPanel() {
                 key={recording.id}
                 recording={recording}
                 bridge={bridge}
+                focused={recording.id === props.focusedRecordingId}
                 onChanged={handleChanged}
                 onDeleted={handleDeleted}
               />
