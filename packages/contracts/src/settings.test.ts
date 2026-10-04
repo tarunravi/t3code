@@ -1105,3 +1105,63 @@ describe("branch naming settings", () => {
     },
   );
 });
+
+describe("subagent presets", () => {
+  const preset = {
+    id: "hard-work",
+    name: "Hard work",
+    entries: [
+      {
+        selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+        role: "hard",
+        description: "For design, polish, and tricky bugs.",
+      },
+      { selection: { instanceId: "zcode", model: "default" } },
+    ],
+  };
+
+  it("defaults to no presets", () => {
+    expect(decodeServerSettings({}).subagentPresets).toEqual([]);
+  });
+
+  it("round-trips presets through settings snapshots and writes", () => {
+    const input = { subagentPresets: [preset] };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+
+  it("keeps entries without roles or descriptions optional", () => {
+    const decoded = decodeServerSettings({
+      subagentPresets: [{ id: "p", name: "P", entries: [preset.entries[1]] }],
+    });
+    expect(decoded.subagentPresets[0]?.entries[0]).toEqual({
+      selection: { instanceId: "zcode", model: "default" },
+    });
+  });
+
+  it("trims names, ids, and descriptions", () => {
+    const decoded = decodeServerSettings({
+      subagentPresets: [
+        {
+          id: "  padded  ",
+          name: "  Padded  ",
+          entries: [{ selection: preset.entries[0]!.selection, description: "  spaced  " }],
+        },
+      ],
+    });
+    expect(decoded.subagentPresets[0]).toMatchObject({
+      id: "padded",
+      name: "Padded",
+      entries: [{ description: "spaced" }],
+    });
+  });
+
+  it.each([
+    { ...preset, id: "" },
+    { ...preset, name: "" },
+    { ...preset, entries: [{ ...preset.entries[0], role: "aggressive" }] },
+  ])("rejects an invalid preset (%#)", (invalid) => {
+    expect(() => decodeServerSettings({ subagentPresets: [invalid] })).toThrow();
+    expect(() => decodeServerSettingsPatch({ subagentPresets: [invalid] })).toThrow();
+  });
+});
