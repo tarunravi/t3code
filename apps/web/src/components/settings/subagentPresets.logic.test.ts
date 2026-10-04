@@ -1,4 +1,7 @@
+import * as Schema from "effect/Schema";
 import {
+  ServerSettings,
+  ServerSettingsPatch,
   ProviderInstanceId,
   type SubagentPreset,
   type SubagentPresetEntry,
@@ -29,10 +32,11 @@ const GLM: SubagentPresetEntry = {
 const PRESET: SubagentPreset = { id: "hard", name: "Hard work", entries: [OPUS, GLM] };
 
 describe("subagent preset helpers", () => {
-  it("strips descriptions when converting entries to roster entries", () => {
+  it("preserves descriptions when converting entries to roster entries", () => {
     expect(presetEntryAsRosterEntry(OPUS)).toEqual({
       selection: OPUS.selection,
       role: "hard",
+      description: "Tricky bugs.",
     });
   });
 
@@ -98,16 +102,26 @@ describe("subagent preset helpers", () => {
     expect(cleared.entries[0]?.description).toBeUndefined();
   });
 
-  it("copies a preset into a roster with selections and roles but no descriptions", () => {
-    expect(applyPresetToRoster(PRESET)).toEqual([
-      { selection: OPUS.selection, role: "hard" },
-      { selection: GLM.selection },
-    ]);
+  it("copies all preset metadata into a roster", () => {
+    expect(applyPresetToRoster(PRESET)).toEqual([OPUS, GLM]);
+  });
+
+  it("persists applied descriptions through settings patches and snapshots", () => {
+    const patch = {
+      threadSubagentRosters: { "thread:preset": { entries: applyPresetToRoster(PRESET) } },
+    };
+    const decodedPatch = Schema.decodeUnknownSync(ServerSettingsPatch)(patch);
+    const persisted = Schema.encodeSync(ServerSettings)(
+      Schema.decodeUnknownSync(ServerSettings)(JSON.parse(JSON.stringify(decodedPatch))),
+    );
+    expect(persisted).toMatchObject(patch);
+    expect(decodedPatch.threadSubagentRosters?.["thread:preset"]?.entries).toEqual([OPUS, GLM]);
   });
 
   it("finds the preset whose entries match a roster in order", () => {
     expect(findPresetForRoster([PRESET], applyPresetToRoster(PRESET))).toBe(PRESET);
     expect(findPresetForRoster([PRESET], [])).toBeNull();
+    expect(findPresetForRoster([PRESET], [{ ...OPUS, description: "Changed" }, GLM])).toBeNull();
   });
 
   it("rejects rosters that differ from every preset in selection, role, or order", () => {
@@ -116,10 +130,10 @@ describe("subagent preset helpers", () => {
     expect(findPresetForRoster([PRESET], [roster[0]!, { ...roster[1]!, role: "bulk" }])).toBeNull();
     expect(findPresetForRoster([PRESET], [{ ...roster[1]!, role: "bulk" }, roster[0]!])).toBeNull();
     expect(
-      findPresetForRoster([PRESET], [
-        roster[0]!,
-        { ...roster[1]!, selection: { ...roster[1]!.selection, model: "other" } },
-      ]),
+      findPresetForRoster(
+        [PRESET],
+        [roster[0]!, { ...roster[1]!, selection: { ...roster[1]!.selection, model: "other" } }],
+      ),
     ).toBeNull();
   });
 
@@ -128,11 +142,20 @@ describe("subagent preset helpers", () => {
     const hard: SubagentPreset = {
       id: "hard",
       name: "Hard",
-      entries: [{ ...shared, role: "hard" }, { ...shared, role: "bulk" }],
+      entries: [
+        { ...shared, role: "hard" },
+        { ...shared, role: "bulk" },
+      ],
     };
     expect(findPresetForRoster([hard], [{ ...shared, role: "hard" }, { ...shared }])).toBeNull();
     expect(
-      findPresetForRoster([hard], [{ ...shared, role: "hard" }, { ...shared, role: "bulk" }]),
+      findPresetForRoster(
+        [hard],
+        [
+          { ...shared, role: "hard" },
+          { ...shared, role: "bulk" },
+        ],
+      ),
     ).toBe(hard);
   });
 });
