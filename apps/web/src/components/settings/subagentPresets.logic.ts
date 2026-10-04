@@ -50,6 +50,30 @@ export function removePreset(presets: ReadonlyArray<SubagentPreset>, id: string)
   return presets.filter((preset) => preset.id !== id);
 }
 
+/** Copies a preset into a thread roster: selection and role, as rosters persist today. */
+export function applyPresetToRoster(preset: SubagentPreset): SubagentRosterEntry[] {
+  return preset.entries.map(presetEntryAsRosterEntry);
+}
+
+/** The preset whose entries exactly match a roster in order, for labeling the compact panel. */
+export function findPresetForRoster(
+  presets: ReadonlyArray<SubagentPreset>,
+  entries: ReadonlyArray<SubagentRosterEntry>,
+): SubagentPreset | null {
+  const keys = entries.map((entry) => `${rosterEntryKey(entry)}\u0000${entry.role ?? ""}`);
+  return (
+    presets.find(
+      (preset) =>
+        preset.entries.length === keys.length &&
+        preset.entries.every(
+          (entry, index) =>
+            `${rosterEntryKey(presetEntryAsRosterEntry(entry))}\u0000${entry.role ?? ""}` ===
+            keys[index],
+        ),
+    ) ?? null
+  );
+}
+
 /** A role names one entry at a time within a preset, so assigning it clears it elsewhere. */
 export function applyPresetEntryRole(
   preset: SubagentPreset,
