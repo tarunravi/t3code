@@ -113,7 +113,7 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
 }
 
 /** Prefer the reported email; use an identical credential when no email is available. */
-function accountKey(
+export function accountKey(
   driver: ServerProvider["driver"],
   email: string | undefined,
   limits?: ServerProviderUsageLimits,

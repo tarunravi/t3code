@@ -34,6 +34,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import { usageSourcesTestLayer } from "../usage/UsageLimitSources.testkit.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
@@ -137,6 +138,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-ack"),
@@ -236,6 +238,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-restart"),
@@ -321,6 +324,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel"),
@@ -398,6 +402,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-failed"),
@@ -483,6 +488,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
@@ -947,6 +953,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          usageSourcesTestLayer,
         );
 
         yield* Effect.gen(function* () {
@@ -1095,6 +1102,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          usageSourcesTestLayer,
         );
 
         yield* Effect.gen(function* () {
@@ -1193,6 +1201,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
 
       yield* Effect.gen(function* () {
@@ -1242,6 +1251,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
 
       yield* Effect.gen(function* () {
@@ -1508,6 +1518,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            usageSourcesTestLayer,
           );
 
           yield* Effect.gen(function* () {
@@ -1922,6 +1933,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([codexInstanceId, antigravityInstanceId, claudeInstanceId]),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
 
       yield* Effect.gen(function* () {
@@ -2020,6 +2032,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
 
       yield* Effect.gen(function* () {
