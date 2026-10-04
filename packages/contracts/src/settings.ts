@@ -1263,6 +1263,26 @@ export const ThreadSubagentRoster = Schema.Struct({
 });
 export type ThreadSubagentRoster = typeof ThreadSubagentRoster.Type;
 
+/**
+ * One subagent in a named preset: a model, its role, and when an agent should
+ * pick it. The `description` is free text ("when to use this subagent") shown
+ * in tooltips and later exposed to agents; stored but not consumed yet.
+ */
+export const SubagentPresetEntry = Schema.Struct({
+  selection: ModelSelection,
+  role: Schema.optionalKey(SubagentRole),
+  description: Schema.optionalKey(TrimmedString),
+});
+export type SubagentPresetEntry = typeof SubagentPresetEntry.Type;
+
+/** A user-named subagent set offered when composing a thread's roster. */
+export const SubagentPreset = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  entries: Schema.Array(SubagentPresetEntry),
+});
+export type SubagentPreset = typeof SubagentPreset.Type;
+
 export const ServerSettings = Schema.Struct({
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
@@ -1465,6 +1485,10 @@ export const ServerSettings = Schema.Struct({
   /** Per-thread subagent rosters. A thread without an entry uses the allowlist above. */
   threadSubagentRosters: Schema.Record(ThreadId, ThreadSubagentRoster).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /** Named subagent sets the user saves; entries carry "when to use" descriptions. */
+  subagentPresets: Schema.Array(SubagentPreset).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
    * The merge method pull requests start with; `null` reuses the method
@@ -1794,6 +1818,8 @@ export const ServerSettingsPatch = Schema.Struct({
   threadSubagentRosters: Schema.optionalKey(
     Schema.Record(ThreadId, Schema.NullOr(ThreadSubagentRoster)),
   ),
+  /** Replaces the whole preset list. */
+  subagentPresets: Schema.optionalKey(Schema.Array(SubagentPreset)),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(
     Schema.Struct({
