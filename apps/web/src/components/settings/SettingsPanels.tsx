@@ -171,6 +171,7 @@ import {
 import { searchableSetting } from "./settingsSearch";
 import { SideChatModelSetting } from "./SideChatModelSetting";
 import { SubagentHotlistSetting } from "./SubagentHotlistSetting";
+import { SubagentPresetsSetting } from "./SubagentPresetsSetting";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 
@@ -3108,6 +3109,7 @@ export function GeneralSettingsPanel() {
         />
         <SideChatModelSetting />
         <SubagentHotlistSetting />
+        <SubagentPresetsSetting />
       </SettingsSection>
 
       <SettingsSection id="confirmations" title="Confirmations">
