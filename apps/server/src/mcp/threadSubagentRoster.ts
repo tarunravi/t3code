@@ -7,7 +7,7 @@ import type {
 import * as Result from "effect/Result";
 
 export const THREAD_ROSTER_GUIDANCE =
-  "The user chose these subagents for this thread, in order of preference. Delegate only to these targets; match each task to an entry's role (default = everyday work, hard = the most difficult work, bulk = quick mechanical work, overnight = long unattended runs). Omitting target.model uses the default entry.";
+  "The user chose these subagents for this thread, in order of preference. Delegate only to these targets; match each task to an entry's role (default = everyday work, hard = the most difficult work, bulk = quick mechanical work, overnight = long unattended runs) and prefer entries whose description matches the task — descriptions are user-authored intent for when to pick that subagent. Omitting target.model uses the default entry.";
 
 export function describeRosterEntry(entry: SubagentRosterEntry): string {
   const details = [
