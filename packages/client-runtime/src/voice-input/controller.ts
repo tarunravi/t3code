@@ -58,6 +58,12 @@ export type VoiceInputControllerDependencies = {
     text: string,
     selection: { readonly start: number; readonly end: number },
   ) => void;
+  /**
+   * Applies a transcript to a draft that is no longer shown, such as the
+   * original thread after a thread switch. Returns false when that draft is gone.
+   * Without it, an owner change cancels transcription.
+   */
+  readonly updateOwnerDraft?: (ownerKey: string, update: (text: string) => string) => boolean;
   readonly onStateChange: (state: VoiceInputState) => void;
 };
 
@@ -67,7 +73,7 @@ type TranscriptCommitResult =
       readonly text: string;
       readonly selection: { readonly start: number; readonly end: number };
     }
-  | { readonly kind: "stale" }
+  | { readonly kind: "owner-changed" }
   | { readonly kind: "empty" };
 
 export function resolveTranscriptCommit(
@@ -76,15 +82,27 @@ export function resolveTranscriptCommit(
   transcript: string,
   locale: string,
 ): TranscriptCommitResult {
-  if (
-    !current ||
-    current.ownerKey !== captured.ownerKey ||
-    current.text !== captured.text ||
-    current.revision !== captured.revision
-  ) {
-    return { kind: "stale" };
+  if (!current || current.ownerKey !== captured.ownerKey) {
+    return { kind: "owner-changed" };
   }
+  const draftUnchanged = current.text === captured.text && current.revision === captured.revision;
+  return insertTranscript(
+    draftUnchanged ? captured : appendTarget(current.text),
+    transcript,
+    locale,
+  );
+}
 
+function appendTarget(text: string): Pick<VoiceDraftSnapshot, "text" | "selection"> {
+  return { text, selection: { start: text.length, end: text.length } };
+}
+
+/** Inserts at the recorded selection, or appends when the draft changed since recording began. */
+function insertTranscript(
+  captured: Pick<VoiceDraftSnapshot, "text" | "selection">,
+  transcript: string,
+  locale: string,
+): Exclude<TranscriptCommitResult, { readonly kind: "owner-changed" }> {
   const replacement = transcript.trim();
   if (replacement.length === 0) {
     return { kind: "empty" };
@@ -195,6 +213,8 @@ export class VoiceInputController {
   private readonly ownedRecordingUris = new Set<string>();
   private recordingConfigured = false;
   private finishing = false;
+  /** Set when the owner changed mid-transcription; the result goes to the original draft. */
+  private detached = false;
 
   constructor(dependencies: VoiceInputControllerDependencies) {
     this.dependencies = dependencies;
@@ -351,11 +371,12 @@ export class VoiceInputController {
   }
 
   ownerChanged(): void {
-    if (this.state.phase === "idle") return;
+    if (this.state.phase === "idle" || this.detachTranscription()) return;
     this.cancel();
   }
 
   dispose(): void {
+    if (this.detachTranscription()) return;
     if (this.state.phase === "recording") {
       this.discardRecording(null);
       return;
@@ -408,17 +429,16 @@ export class VoiceInputController {
       }
       if (!this.isCurrent(operationToken)) return;
 
-      const result = resolveTranscriptCommit(
-        capturedDraft,
-        this.dependencies.readDraft(),
-        transcript,
-        transcription.locale,
-      );
-      if (result.kind === "stale") {
-        this.setError(
-          "The draft changed while voice input was running. The transcript was not added.",
-          "retry",
-        );
+      const result = this.detached
+        ? ({ kind: "owner-changed" } as const)
+        : resolveTranscriptCommit(
+            capturedDraft,
+            this.dependencies.readDraft(),
+            transcript,
+            transcription.locale,
+          );
+      if (result.kind === "owner-changed") {
+        this.commitToOwner(capturedDraft.ownerKey, transcript, transcription.locale);
         return;
       }
       if (result.kind === "empty") {
@@ -434,7 +454,35 @@ export class VoiceInputController {
       }
     } finally {
       this.finishing = false;
+      this.detached = false;
       await this.releaseResources();
+    }
+  }
+
+  private detachTranscription(): boolean {
+    if (this.state.phase !== "transcribing" || !this.dependencies.updateOwnerDraft) return false;
+    this.detached = true;
+    this.setState(IDLE_STATE);
+    return true;
+  }
+
+  private commitToOwner(ownerKey: string, transcript: string, locale: string): void {
+    if (transcript.trim().length === 0) {
+      this.setError("No speech was detected.", "retry");
+      return;
+    }
+    const updated =
+      this.dependencies.updateOwnerDraft?.(ownerKey, (text) => {
+        const result = insertTranscript(appendTarget(text), transcript, locale);
+        return result.kind === "commit" ? result.text : text;
+      }) ?? false;
+    if (!updated) {
+      this.setError(
+        "The draft closed before the transcript was ready. The transcript was not added.",
+        "retry",
+      );
+    } else if (!this.detached) {
+      this.setState(IDLE_STATE);
     }
   }
 

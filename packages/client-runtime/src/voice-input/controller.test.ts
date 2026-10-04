@@ -92,18 +92,27 @@ describe("resolveTranscriptCommit", () => {
     });
   });
 
-  it("does not replace text after the owner, text, or revision changes", () => {
+  it("reports an owner change instead of committing into another draft", () => {
     const captured = draft();
     expect(
       resolveTranscriptCommit(captured, draft({ ownerKey: "other" }), "text", "en-US"),
-    ).toEqual({
-      kind: "stale",
+    ).toEqual({ kind: "owner-changed" });
+    expect(resolveTranscriptCommit(captured, null, "text", "en-US")).toEqual({
+      kind: "owner-changed",
     });
+  });
+
+  it("appends to the end after the draft text or revision changes", () => {
+    const captured = draft();
     expect(resolveTranscriptCommit(captured, draft({ text: "newer" }), "text", "en-US")).toEqual({
-      kind: "stale",
+      kind: "commit",
+      text: "newer text",
+      selection: { start: 10, end: 10 },
     });
     expect(resolveTranscriptCommit(captured, draft({ revision: 2 }), "text", "en-US")).toEqual({
-      kind: "stale",
+      kind: "commit",
+      text: "hello world text",
+      selection: { start: 16, end: 16 },
     });
   });
 
@@ -429,27 +438,96 @@ describe("VoiceInputController", () => {
     expect(harness.controller.currentState.error).toContain("finish voice recording");
   });
 
-  it("ignores a late transcript after the draft owner changes", async () => {
+  function pausedTranscriptionHarness(overrides: Partial<VoiceInputControllerDependencies> = {}) {
     const transcription = deferred<string>();
-    const transcriptionEntered = deferred<void>();
+    const transcriptionEntered = deferred<AbortSignal>();
     const harness = createHarness({
       getTranscriber: () => ({
         prepare: async () =>
-          preparedTranscription(() => {
-            transcriptionEntered.resolve(undefined);
+          preparedTranscription((_uri, { signal }) => {
+            transcriptionEntered.resolve(signal);
             return transcription.promise;
           }),
       }),
+      ...overrides,
+    });
+    return { ...harness, transcription, transcriptionEntered };
+  }
+
+  it("appends a transcript when the draft changed during transcription", async () => {
+    const harness = pausedTranscriptionHarness();
+    await harness.controller.start();
+    const stopping = harness.controller.stop();
+    await harness.transcriptionEntered.promise;
+    harness.setDraft(draft({ text: "typed meanwhile", revision: 2 }));
+    harness.transcription.resolve("late text");
+    await stopping;
+
+    expect(harness.commits).toEqual([
+      { text: "typed meanwhile late text", selection: { start: 25, end: 25 } },
+    ]);
+    expect(harness.controller.currentState.phase).toBe("idle");
+  });
+
+  it("writes a late transcript into the original draft after the owner changes", async () => {
+    const ownerDrafts = new Map([["environment:thread", "original draft"]]);
+    const harness = pausedTranscriptionHarness({
+      updateOwnerDraft: (ownerKey, update) => {
+        const text = ownerDrafts.get(ownerKey);
+        if (text === undefined) return false;
+        ownerDrafts.set(ownerKey, update(text));
+        return true;
+      },
     });
     await harness.controller.start();
     const stopping = harness.controller.stop();
-    await transcriptionEntered.promise;
+    const signal = await harness.transcriptionEntered.promise;
     harness.setDraft(draft({ ownerKey: "environment:other-thread" }));
-    transcription.resolve("late text");
+    harness.controller.ownerChanged();
+
+    expect(signal.aborted).toBe(false);
+    expect(harness.controller.currentState.phase).toBe("idle");
+
+    harness.transcription.resolve("late text");
     await stopping;
 
     expect(harness.commits).toEqual([]);
-    expect(harness.controller.currentState.error).toContain("draft changed");
+    expect(ownerDrafts.get("environment:thread")).toBe("original draft late text");
+    expect(harness.controller.currentState.phase).toBe("idle");
+  });
+
+  it("writes a late transcript into the original draft after the composer unmounts", async () => {
+    const updates: Array<{ ownerKey: string; text: string }> = [];
+    const harness = pausedTranscriptionHarness({
+      updateOwnerDraft: (ownerKey, update) => {
+        updates.push({ ownerKey, text: update("") });
+        return true;
+      },
+    });
+    await harness.controller.start();
+    const stopping = harness.controller.stop();
+    await harness.transcriptionEntered.promise;
+    harness.controller.dispose();
+    harness.transcription.resolve("late text");
+    await stopping;
+
+    expect(updates).toEqual([{ ownerKey: "environment:thread", text: "late text" }]);
+  });
+
+  it("reports a late transcript it cannot deliver after the owner changes", async () => {
+    const harness = pausedTranscriptionHarness({ updateOwnerDraft: () => false });
+    await harness.controller.start();
+    const stopping = harness.controller.stop();
+    await harness.transcriptionEntered.promise;
+    harness.setDraft(draft({ ownerKey: "environment:other-thread" }));
+    harness.transcription.resolve("late text");
+    await stopping;
+
+    expect(harness.commits).toEqual([]);
+    expect(harness.controller.currentState).toMatchObject({
+      phase: "error",
+      error: expect.stringContaining("transcript was not added"),
+    });
   });
 
   it("queues the next recording until canceled preparation settles", async () => {
