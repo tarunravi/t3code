@@ -42,6 +42,7 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { ServerProviderUsageWindow } from "./providerUsageLimits.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -135,16 +136,6 @@ export const OrchestratorMcpInteractionMode = Schema.Union([
 ]);
 export type OrchestratorMcpInteractionMode = typeof OrchestratorMcpInteractionMode.Type;
 
-export const OrchestratorMcpTaskRole = Schema.Literals([
-  "implementation",
-  "research",
-  "review",
-  "design",
-  "test",
-  "general",
-]);
-export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
-
 export const OrchestratorMcpDelegatedTaskStatus = Schema.Literals([
   "queued",
   "running",
@@ -169,7 +160,6 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
-  role: Schema.optional(OrchestratorMcpTaskRole),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
@@ -607,6 +597,33 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
+/**
+ * Awareness-only quota view for one provider instance, folded from the
+ * server's existing usage snapshots (its own account plus any pooled hub
+ * accounts the driver routes through). Not a hard gate: an agent should plan
+ * around `mostConstrained` and the reset times, but delegation is never
+ * refused because of usage. Omitted entirely when the server holds no usage
+ * data for the instance.
+ */
+export const OrchestratorMcpProviderUsage = Schema.Struct({
+  /** When the winning account's snapshot was read; stale data is still included. */
+  checkedAt: IsoDateTime,
+  /** The fullest window across the combined accounts, or null when none report windows. */
+  mostConstrained: Schema.NullOr(ServerProviderUsageWindow),
+  /** Windows of the most-constrained account, so an agent can see the rest of its quota. */
+  windows: Schema.Array(ServerProviderUsageWindow),
+  /** Present only when more than one account was combined into this view. */
+  accountsCombined: Schema.optional(NonNegativeInt),
+  /** Present when accounts exist but none report windows (never-reporting or failed probe). */
+  unavailable: Schema.optional(
+    Schema.Struct({
+      reason: Schema.Literals(["unsupported", "probeFailed"]),
+      message: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
+});
+export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
+
 export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   environmentId: EnvironmentId,
   label: Schema.String,
@@ -636,6 +653,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  providerUsage: Schema.optional(Schema.Record(ProviderInstanceId, OrchestratorMcpProviderUsage)),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
