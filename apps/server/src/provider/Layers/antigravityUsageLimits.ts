@@ -7,6 +7,8 @@
  *
  * @module provider/Layers/antigravityUsageLimits
  */
+import * as NodeCrypto from "node:crypto";
+
 import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -58,9 +60,15 @@ const QuotaBucket = Schema.Struct({
   displayName: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
-  remainingFraction: Schema.optional(Schema.Number),
+  remainingFraction: Schema.optional(Schema.NullOr(Schema.Number)),
   remaining: Schema.optional(
-    Schema.Struct({ remainingFraction: Schema.optional(Schema.Number) }),
+    Schema.NullOr(
+      Schema.Struct({
+        remainingFraction: Schema.optional(Schema.NullOr(Schema.Number)),
+        case: Schema.optional(Schema.NullOr(Schema.String)),
+        value: Schema.optional(Schema.NullOr(Schema.Number)),
+      }),
+    ),
   ),
   resetTime: Schema.optional(Schema.String),
   window: Schema.optional(Schema.String),
@@ -70,13 +78,15 @@ const QuotaGroup = Schema.Struct({
   name: Schema.optional(Schema.String),
   buckets: Schema.optional(Schema.Array(QuotaBucket)),
 });
-const QuotaPayload = Schema.Struct({ groups: Schema.optional(Schema.Array(QuotaGroup)) });
+const QuotaPayload = Schema.Struct({
+  groups: Schema.optional(Schema.NullOr(Schema.Array(QuotaGroup))),
+});
 // The HTTP endpoint returns `groups` at the top level; the CLI and LSP
 // sources wrap the same payload under `summary` or `response`.
 const QuotaSummaryResponse = Schema.Struct({
-  groups: Schema.optional(Schema.Array(QuotaGroup)),
-  summary: Schema.optional(QuotaPayload),
-  response: Schema.optional(QuotaPayload),
+  groups: Schema.optional(Schema.NullOr(Schema.Array(QuotaGroup))),
+  summary: Schema.optional(Schema.NullOr(QuotaPayload)),
+  response: Schema.optional(Schema.NullOr(QuotaPayload)),
 });
 
 const LoadCodeAssistResponse = Schema.Struct({
@@ -142,8 +152,7 @@ function groupTitle(displayName: string | undefined): string {
  * The full quota summary into usage windows keyed by bucket id, so per-group
  * buckets (a 5-hour and a weekly limit per model family) each get a row.
  * Buckets without a usable remaining fraction are skipped; a summary that
- * decodes but yields nothing means the account has no metered quota rather
- * than a failed probe.
+ * decodes but yields nothing means no measured quota is available.
  */
 export function antigravityQuotaSummaryToLimits(
   summary: unknown,
@@ -155,14 +164,17 @@ export function antigravityQuotaSummaryToLimits(
   } catch {
     return makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" });
   }
-  const groups = payload.groups ?? payload.summary?.groups ?? payload.response?.groups ?? [];
+  const groups = (payload.response ?? payload.summary ?? payload).groups ?? [];
   const windows = new Map<string, ServerProviderUsageWindow>();
   for (const group of groups) {
     const title = groupTitle(group.displayName ?? group.name);
     for (const bucket of group.buckets ?? []) {
       const bucketId = (bucket.bucketId ?? bucket.id ?? "").trim();
       const displayName = (bucket.displayName ?? bucket.name ?? "").trim() || bucketId;
-      const remainingFraction = bucket.remainingFraction ?? bucket.remaining?.remainingFraction;
+      const remainingFraction =
+        bucket.remainingFraction ??
+        bucket.remaining?.remainingFraction ??
+        (bucket.remaining?.case === "remainingFraction" ? bucket.remaining.value : undefined);
       if (
         !bucketId ||
         bucket.disabled === true ||
@@ -176,7 +188,8 @@ export function antigravityQuotaSummaryToLimits(
         bucketId,
         displayName,
       });
-      const bucketTitle = kind === "session" ? "5-hour" : kind === "weekly" ? "Weekly" : displayName;
+      const bucketTitle =
+        kind === "session" ? "5-hour" : kind === "weekly" ? "Weekly" : displayName;
       const reset = bucket.resetTime ? DateTime.make(bucket.resetTime) : Option.none();
       windows.set(bucketId, {
         id: bucketId,
@@ -199,6 +212,7 @@ export function antigravityQuotaSummaryToLimits(
 }
 
 interface CachedAccessToken {
+  readonly credentialIdentity: string;
   readonly token: string;
   readonly expiresAtMs: number;
 }
@@ -218,9 +232,9 @@ function refreshAccessToken(input: {
             client_secret: input.credentials.client_secret,
           }).toString(),
           "application/x-www-form-urlencoded",
-          ),
         ),
-      )
+      ),
+    )
     .pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap(HttpClientResponse.schemaBodyJson(TokenGrant)),
@@ -251,12 +265,8 @@ function loadQuotaProject(input: {
       Effect.flatMap((body) => {
         const project = body.cloudaicompanionProject;
         const id =
-          typeof project === "string"
-            ? project
-            : (project?.id ?? project?.projectId ?? "").trim();
-        return id
-          ? Effect.succeed(id)
-          : Effect.fail(new AntigravityQuotaProjectMissingError());
+          typeof project === "string" ? project : (project?.id ?? project?.projectId ?? "").trim();
+        return id ? Effect.succeed(id) : Effect.fail(new AntigravityQuotaProjectMissingError());
       }),
     );
 }
@@ -307,11 +317,23 @@ export const makeAntigravityUsageLimitsReader = (input: {
       // No stored grant means this instance never signed in with a Google
       // account, so it has no subscription quota to report at all.
       if (!(yield* fs.exists(input.tokenPath))) {
+        cachedToken = undefined;
         return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
       }
-      const credentials = yield* fs.readFileString(input.tokenPath).pipe(
-        Effect.flatMap(decodeTokenFile),
-      );
+      const credentials = yield* fs
+        .readFileString(input.tokenPath)
+        .pipe(Effect.flatMap(decodeTokenFile));
+      const credentialIdentity = NodeCrypto.createHash("sha256")
+        .update(
+          JSON.stringify([
+            credentials.client_id,
+            credentials.client_secret,
+            credentials.refresh_token,
+            credentials.token_uri,
+          ]),
+        )
+        .digest("hex");
+      if (cachedToken?.credentialIdentity !== credentialIdentity) cachedToken = undefined;
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const cached = cachedToken;
       let accessToken: string;
@@ -321,9 +343,9 @@ export const makeAntigravityUsageLimitsReader = (input: {
         const grant = yield* refreshAccessToken({ client, credentials });
         accessToken = grant.access_token;
         cachedToken = {
+          credentialIdentity,
           token: accessToken,
-          expiresAtMs:
-            nowMs + (grant.expires_in ?? DEFAULT_TOKEN_TTL_SECONDS) * 1000,
+          expiresAtMs: nowMs + (grant.expires_in ?? DEFAULT_TOKEN_TTL_SECONDS) * 1000,
         };
       }
       const project = yield* loadQuotaProject({ client, accessToken });

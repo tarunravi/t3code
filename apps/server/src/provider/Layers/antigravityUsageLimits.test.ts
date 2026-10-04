@@ -42,14 +42,172 @@ const liveSummary = {
       displayName: "Claude and GPT models",
       description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
       buckets: [
-        { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 1 },
-        { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1 },
+        {
+          bucketId: "3p-weekly",
+          displayName: "Weekly Limit Remaining",
+          window: "weekly",
+          remainingFraction: 1,
+        },
+        {
+          bucketId: "3p-5h",
+          displayName: "Five Hour Limit Remaining",
+          window: "5h",
+          remainingFraction: 1,
+        },
       ],
     },
   ],
 };
 
 describe("antigravityQuotaSummaryToLimits", () => {
+  it.each(["root", "summary", "response"])(
+    "reads fraction encodings in the %s wrapper",
+    (wrapper) => {
+      const summary = {
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              { bucketId: "direct", window: "weekly", remainingFraction: 0.75 },
+              { bucketId: "nested", window: "weekly", remaining: { remainingFraction: 0.75 } },
+              {
+                bucketId: "oneof",
+                window: "weekly",
+                remaining: { case: "remainingFraction", value: 0.75 },
+              },
+              { bucketId: "zero-direct", window: "weekly", remainingFraction: 0 },
+              { bucketId: "zero-nested", window: "weekly", remaining: { remainingFraction: 0 } },
+              {
+                bucketId: "zero-oneof",
+                window: "weekly",
+                remaining: { case: "remainingFraction", value: 0 },
+              },
+            ],
+          },
+        ],
+      };
+      const limits = antigravityQuotaSummaryToLimits(
+        wrapper === "root" ? summary : { [wrapper]: summary },
+        checkedAt,
+      );
+      expect(limits.unavailable).toBeUndefined();
+      expect(limits.windows.map(({ id, usedPercent }) => ({ id, usedPercent }))).toEqual([
+        { id: "direct", usedPercent: 25 },
+        { id: "nested", usedPercent: 25 },
+        { id: "oneof", usedPercent: 25 },
+        { id: "zero-direct", usedPercent: 100 },
+        { id: "zero-nested", usedPercent: 100 },
+        { id: "zero-oneof", usedPercent: 100 },
+      ]);
+    },
+  );
+
+  it("prefers the response wrapper, then summary, over root groups", () => {
+    const groups = liveSummary.groups;
+    expect(
+      antigravityQuotaSummaryToLimits(
+        { groups: [], summary: { groups: [] }, response: { groups } },
+        checkedAt,
+      ),
+    ).toEqual(antigravityQuotaSummaryToLimits({ groups }, checkedAt));
+    expect(
+      antigravityQuotaSummaryToLimits(
+        { groups: [], summary: { groups }, response: null },
+        checkedAt,
+      ),
+    ).toEqual(antigravityQuotaSummaryToLimits({ groups }, checkedAt));
+    expect(
+      antigravityQuotaSummaryToLimits({ groups, summary: null, response: null }, checkedAt),
+    ).toEqual(antigravityQuotaSummaryToLimits({ groups }, checkedAt));
+  });
+
+  it("keeps both untouched weekly-only Starter groups without inventing session windows", () => {
+    expect(
+      antigravityQuotaSummaryToLimits(
+        {
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [
+                {
+                  bucketId: "gemini-weekly",
+                  window: "weekly",
+                  remaining: { case: "remainingFraction", value: 1 },
+                },
+              ],
+            },
+            {
+              displayName: "Claude and GPT models",
+              buckets: [
+                { bucketId: "3p-weekly", window: "weekly", remaining: { remainingFraction: 1 } },
+              ],
+            },
+          ],
+        },
+        checkedAt,
+      ),
+    ).toEqual({
+      checkedAt,
+      windows: [
+        {
+          id: "3p-weekly",
+          kind: "weekly",
+          label: "Claude/GPT Weekly",
+          usedPercent: 0,
+          windowDurationMins: 10080,
+        },
+        {
+          id: "gemini-weekly",
+          kind: "weekly",
+          label: "Gemini Weekly",
+          usedPercent: 0,
+          windowDurationMins: 10080,
+        },
+      ],
+    });
+  });
+
+  it("does not turn absent or null fractions into free quota or discard measured siblings", () => {
+    const unknownBuckets = [
+      { bucketId: "missing" },
+      { bucketId: "null-direct", remainingFraction: null },
+      { bucketId: "null-remaining", remaining: null },
+      { bucketId: "null-nested", remaining: { remainingFraction: null } },
+      { bucketId: "missing-oneof", remaining: { case: "remainingFraction" } },
+      { bucketId: "null-oneof", remaining: { case: "remainingFraction", value: null } },
+      { bucketId: "other-oneof", remaining: { case: "remainingAmount", value: 1 } },
+    ];
+    const unknown = { groups: [{ buckets: unknownBuckets }] };
+    expect(antigravityQuotaSummaryToLimits(unknown, checkedAt)).toEqual({
+      checkedAt,
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    });
+    expect(
+      antigravityQuotaSummaryToLimits(
+        {
+          groups: [
+            {
+              buckets: [
+                ...unknownBuckets,
+                { bucketId: "measured", window: "weekly", remainingFraction: 0.75 },
+              ],
+            },
+          ],
+        },
+        checkedAt,
+      ).windows,
+    ).toEqual([
+      {
+        id: "measured",
+        kind: "weekly",
+        label: "Quota Weekly",
+        usedPercent: 25,
+        windowDurationMins: 10080,
+      },
+    ]);
+  });
+
   it("maps every group's buckets with window kind, math, and reset time", () => {
     expect(antigravityQuotaSummaryToLimits(liveSummary, checkedAt)).toEqual({
       checkedAt,
@@ -178,9 +336,8 @@ describe("antigravityQuotaSummaryToLimits", () => {
   });
 });
 
-const withNodeServices = <A, E>(
-  effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
-) => effect.pipe(Effect.provide(NodeServices.layer));
+const withNodeServices = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
+  effect.pipe(Effect.provide(NodeServices.layer));
 
 const tokenFile = JSON.stringify({
   client_id: "client-id",
@@ -192,6 +349,68 @@ const tokenFile = JSON.stringify({
 });
 
 describe("makeAntigravityUsageLimitsReader", () => {
+  it.effect(
+    "refreshes for account B when credentials rotate while account A's token is valid",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profile = yield* fs.makeTempDirectoryScoped();
+        const tokenPath = path.join(profile, "acp_token.json");
+        yield* fs.writeFileString(tokenPath, tokenFile);
+        let tokenRequests = 0;
+        const authorizations: string[] = [];
+        const client = HttpClient.make((request) => {
+          if (request.url === "https://accounts.google.com/o/oauth2/token") {
+            tokenRequests += 1;
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ access_token: `at-${tokenRequests}`, expires_in: 3600 }),
+              ),
+            );
+          }
+          if (request.url === "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") {
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ cloudaicompanionProject: "test-project" }),
+              ),
+            );
+          }
+          authorizations.push(request.headers.authorization!);
+          const remainingFraction = request.headers.authorization === "Bearer at-1" ? 0.25 : 0.75;
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                response: {
+                  groups: [
+                    {
+                      displayName: "Gemini Models",
+                      buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction }],
+                    },
+                  ],
+                },
+              }),
+            ),
+          );
+        });
+        const read = makeAntigravityUsageLimitsReader({ tokenPath }).pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
+        expect((yield* read).windows[0]?.usedPercent).toBe(75);
+        yield* fs.writeFileString(
+          tokenPath,
+          JSON.stringify({ ...JSON.parse(tokenFile), refresh_token: "account-b-refresh-token" }),
+        );
+        expect((yield* read).windows[0]?.usedPercent).toBe(25);
+        expect((yield* read).windows[0]?.usedPercent).toBe(25);
+        expect(tokenRequests).toBe(2);
+        expect(authorizations).toEqual(["Bearer at-1", "Bearer at-2", "Bearer at-2"]);
+      }).pipe(Effect.scoped, withNodeServices),
+  );
+
   it.effect("refreshes the grant once, then probes Cloud Code with the hub identity", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -207,7 +426,12 @@ describe("makeAntigravityUsageLimitsReader", () => {
         if (url === "https://accounts.google.com/o/oauth2/token") {
           tokenRequests += 1;
           expect(request.method).toBe("POST");
-          return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ access_token: "at-1", expires_in: 3600 })));
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({ access_token: "at-1", expires_in: 3600 }),
+            ),
+          );
         }
         expect(request.headers["user-agent"]).toBe("antigravity/hub/2.9.1 darwin/arm64");
         expect(request.headers.authorization).toBe("Bearer at-1");
@@ -251,7 +475,10 @@ describe("makeAntigravityUsageLimitsReader", () => {
       const tokenPath = path.join(profile, "antigravity-acp", "acp_token.json");
       expect(
         (yield* makeAntigravityUsageLimitsReader({ tokenPath }).pipe(
-          Effect.provideService(HttpClient.HttpClient, HttpClient.make(() => Effect.die("no requests expected"))),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("no requests expected")),
+          ),
         )).unavailable?.reason,
       ).toBe("unsupported");
 
