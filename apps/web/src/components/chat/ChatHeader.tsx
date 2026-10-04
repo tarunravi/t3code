@@ -1,3 +1,4 @@
+import type { OrchestrationV2ProviderTurn } from "@t3tools/contracts";
 import { type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -43,8 +44,8 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
-  /** Latest provider-reported usage for the active thread, for the tok/s readout. */
-  tokenUsage?: { readonly usedTokens: number } | null | undefined;
+  /** Current provider turn, for completed-turn output throughput. */
+  tokenRateTurn?: OrchestrationV2ProviderTurn | null | undefined;
 }
 
 /**
@@ -77,7 +78,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
-  tokenUsage,
+  tokenRateTurn,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -336,7 +337,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      <TokenRateLabel tokenUsage={tokenUsage} resetKey={activeThreadId} className="shrink-0" />
+      <TokenRateLabel providerTurn={tokenRateTurn} className="shrink-0" />
     </div>
   );
 });
