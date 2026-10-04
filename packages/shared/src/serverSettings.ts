@@ -385,6 +385,8 @@ export function applyServerSettingsPatch(
     subagentModelPreferences: subagentModelPreferencesPatch,
     // Whole-list replacement; deepMerge would merge arrays index by index.
     subagentHotlist: subagentHotlistPatch,
+    // Whole-list replacement; deepMerge would merge arrays index by index.
+    subagentPresets: subagentPresetsPatch,
     // Per-thread replacement. `null` returns a thread to the environment allowlist.
     threadSubagentRosters: threadSubagentRostersPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -604,6 +606,7 @@ export function applyServerSettingsPatch(
         }
       : {}),
     ...(subagentHotlistPatch !== undefined ? { subagentHotlist: subagentHotlistPatch } : {}),
+    ...(subagentPresetsPatch !== undefined ? { subagentPresets: subagentPresetsPatch } : {}),
     ...(threadSubagentRostersPatch !== undefined
       ? {
           threadSubagentRosters: mergeSettingsEntries(
