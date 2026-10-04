@@ -44,8 +44,28 @@ sha="$(git -C "$repo" rev-parse HEAD)"
 pkg_version="$(node -p "require('$repo/apps/desktop/package.json').version")"
 version="${T3_BUILD_VERSION:-$pkg_version-fork.${sha:0:10}}"
 arch="${T3_ARCH:-arm64}"
-data_home="${T3_ORCH_HOME:-$HOME/.t3-pr-2829}"
-app_name="T3 Code (Orchestrator)"
+flavor="${T3_FLAVOR:-}"
+if [[ -z "$flavor" ]]; then
+  if [[ "${T3_ORCH:-0}" == 1 || -n "${T3_ORCH_HOME:-}" ]]; then
+    flavor="orchestrator"
+  elif [[ "$(scutil --get ComputerName 2>/dev/null || hostname)" == "SGMD6RQH4RH6J" ]]; then
+    flavor="orchestrator"
+  else
+    flavor="normal"
+  fi
+fi
+
+if [[ "$flavor" == "orchestrator" ]]; then
+  app_name="T3 Code (Orchestrator)"
+  bundle_id="com.t3tools.t3code.orchestrator"
+  data_home="${T3_ORCH_HOME:-$HOME/.t3-pr-2829}"
+  patch_file="$here/overlay.patch"
+else
+  app_name="T3 Code"
+  bundle_id="com.t3tools.t3code"
+  data_home="${T3_HOME:-$HOME/.t3}"
+  patch_file="$here/normal-overlay.patch"
+fi
 
 work="$out/work"
 src="$work/src"
@@ -62,9 +82,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> scratch worktree at $sha"
+echo "==> scratch worktree at $sha (flavor: $flavor)"
 git -C "$repo" worktree add --detach "$src" "$sha" >>"$log" 2>&1
-sed "s#__T3CODE_HOME__#$data_home#" "$here/overlay.patch" | git -C "$src" apply -
+sed "s#__T3CODE_HOME__#$data_home#" "$patch_file" | git -C "$src" apply -
 
 echo "==> pnpm install (log: $log)"
 (cd "$src" && pnpm install --frozen-lockfile) >>"$log" 2>&1
@@ -95,10 +115,12 @@ osx_sign="$(find "$src/node_modules/.pnpm" -maxdepth 1 -type d -name '@electron+
   T3_SIGNING_IDENTITY="$identity" node "$here/sign-app.cjs" "$app") >>"$log" 2>&1
 
 echo "==> verify"
-"$here/verify-signature.sh" "$app"
+"$here/verify-signature.sh" "$app" "$bundle_id"
 
 cat >"$out/BUILD-INFO.txt" <<EOF
 app: $app
+flavor: $flavor
+bundle_id: $bundle_id
 version: $version
 commit: $sha
 identity: $identity
