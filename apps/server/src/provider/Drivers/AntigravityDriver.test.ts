@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -246,6 +247,14 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-antigravity-driver-config-",
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
+  // The usage-limits probe only runs for authenticated accounts, which no
+  // test reaches; any client here must never be consulted.
+  Layer.provideMerge(
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("Antigravity usage probe must not run in driver tests")),
+    ),
+  ),
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({

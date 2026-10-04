@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { HttpClient } from "effect/http";
 import type { AcpError } from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -52,6 +53,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import { makeAntigravityAdapterV2 } from "../../orchestration-v2/Adapters/AntigravityAdapterV2.ts";
 import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeLogging";
 import { ProviderDriverError } from "../Errors.ts";
+import { makeAntigravityUsageLimitsReader } from "../antigravityUsageLimits.ts";
 import { makeAntigravityProvider } from "../AntigravityProvider.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
@@ -74,6 +76,7 @@ export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | ModelCatalog.ModelCatalog
@@ -97,6 +100,7 @@ export const AntigravityDriver: ProviderDriver<
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const httpClient = yield* HttpClient.HttpClient;
       const host = yield* ProviderHost.ProviderHost;
       const selfInvocation = yield* resolveSelfInvocation();
       const installation = yield* AntigravityInstallation.AntigravityInstallation;
@@ -392,6 +396,12 @@ export const AntigravityDriver: ProviderDriver<
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.orElseSucceed(() => false),
+        ),
+        readUsageLimits: makeAntigravityUsageLimitsReader({
+          tokenPath: path.join(profileDirectory, "antigravity-acp", "acp_token.json"),
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
         ),
       }).pipe(
         Effect.mapError(
