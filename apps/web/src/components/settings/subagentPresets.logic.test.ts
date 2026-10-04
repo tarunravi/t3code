@@ -8,7 +8,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyPresetEntryDescription,
   applyPresetEntryRole,
+  applyPresetToRoster,
   createPreset,
+  findPresetForRoster,
   mergePresetDescriptions,
   presetEntryAsRosterEntry,
   removePreset,
@@ -94,5 +96,43 @@ describe("subagent preset helpers", () => {
 
     const cleared = applyPresetEntryDescription(written, 0, "   ");
     expect(cleared.entries[0]?.description).toBeUndefined();
+  });
+
+  it("copies a preset into a roster with selections and roles but no descriptions", () => {
+    expect(applyPresetToRoster(PRESET)).toEqual([
+      { selection: OPUS.selection, role: "hard" },
+      { selection: GLM.selection },
+    ]);
+  });
+
+  it("finds the preset whose entries match a roster in order", () => {
+    expect(findPresetForRoster([PRESET], applyPresetToRoster(PRESET))).toBe(PRESET);
+    expect(findPresetForRoster([PRESET], [])).toBeNull();
+  });
+
+  it("rejects rosters that differ from every preset in selection, role, or order", () => {
+    const roster = applyPresetToRoster(PRESET);
+    expect(findPresetForRoster([PRESET], [...roster].reverse())).toBeNull();
+    expect(findPresetForRoster([PRESET], [roster[0]!, { ...roster[1]!, role: "bulk" }])).toBeNull();
+    expect(findPresetForRoster([PRESET], [{ ...roster[1]!, role: "bulk" }, roster[0]!])).toBeNull();
+    expect(
+      findPresetForRoster([PRESET], [
+        roster[0]!,
+        { ...roster[1]!, selection: { ...roster[1]!.selection, model: "other" } },
+      ]),
+    ).toBeNull();
+  });
+
+  it("distinguishes same-selection entries by role", () => {
+    const shared = { selection: OPUS.selection };
+    const hard: SubagentPreset = {
+      id: "hard",
+      name: "Hard",
+      entries: [{ ...shared, role: "hard" }, { ...shared, role: "bulk" }],
+    };
+    expect(findPresetForRoster([hard], [{ ...shared, role: "hard" }, { ...shared }])).toBeNull();
+    expect(
+      findPresetForRoster([hard], [{ ...shared, role: "hard" }, { ...shared, role: "bulk" }]),
+    ).toBe(hard);
   });
 });
