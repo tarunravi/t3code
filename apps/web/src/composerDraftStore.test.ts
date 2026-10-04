@@ -1258,6 +1258,46 @@ describe("composerDraftStore project draft thread mapping", () => {
     resetComposerDraftStore();
   });
 
+  it("keeps a selected preset roster through draft retargeting, reload, and promotion", () => {
+    const store = useComposerDraftStore.getState();
+    const entries = [
+      {
+        selection: { instanceId: CLAUDE_AGENT_INSTANCE, model: "claude-opus-5-5" },
+        role: "hard" as const,
+        description: "Tricky bugs.",
+      },
+    ];
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setDraftThreadContext(draftId, { subagentRoster: entries });
+    store.setPrompt(draftId, "first message");
+    store.setDraftThreadContext(draftId, { projectRef: remoteProjectRef });
+    store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), remoteProjectRef, draftId, {
+      threadId,
+    });
+    expect(store.getDraftThread(draftId)?.subagentRoster).toEqual(entries);
+    const persisted = JSON.parse(
+      JSON.stringify(partializeComposerDraftStoreState(useComposerDraftStore.getState())),
+    );
+    const merged = useComposerDraftStore.persist.getOptions().merge!(
+      persisted,
+      useComposerDraftStore.getState(),
+    );
+    useComposerDraftStore.setState(merged);
+    expect(store.getDraftThread(draftId)?.subagentRoster).toEqual(entries);
+    markPromotedDraftThreadByRef(scopeThreadRef(OTHER_TEST_ENVIRONMENT_ID, threadId));
+    expect(store.getDraftThread(draftId)?.subagentRoster).toEqual(entries);
+  });
+
+  it("distinguishes disabling a draft override from a roster that forbids all delegation", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    expect(store.getDraftThread(draftId)?.subagentRoster).toBeUndefined();
+    store.setDraftThreadContext(draftId, { subagentRoster: [] });
+    expect(store.getDraftThread(draftId)?.subagentRoster).toEqual([]);
+    store.setDraftThreadContext(draftId, { subagentRoster: null });
+    expect(store.getDraftThread(draftId)?.subagentRoster).toBeNull();
+  });
+
   it("clears composer data for one environment without touching another", () => {
     const store = useComposerDraftStore.getState();
     const localThreadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);

@@ -185,9 +185,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             />
           ) : null}
 
-          {!props.draftId ? (
-            <ThreadSubagentsPanel environmentId={props.environmentId} threadId={props.threadId} />
-          ) : null}
+          <ThreadSubagentsPanel
+            environmentId={props.environmentId}
+            threadId={props.threadId}
+            {...(props.draftId ? { draftId: props.draftId } : {})}
+          />
 
           {!props.draftId ? (
             <ThreadRelationshipsPanel

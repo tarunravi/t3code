@@ -8,6 +8,16 @@ const testState = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   updateSettings: vi.fn(),
   navigate: vi.fn(),
+  draftEntries: undefined as unknown,
+  setDraftThreadContext: vi.fn(),
+}));
+
+vi.mock("../../composerDraftStore", () => ({
+  useComposerDraftStore: (select: (store: unknown) => unknown) =>
+    select({
+      getDraftThread: () => ({ subagentRoster: testState.draftEntries }),
+      setDraftThreadContext: testState.setDraftThreadContext,
+    }),
 }));
 
 vi.mock("@effect/atom-react", () => ({
@@ -54,7 +64,7 @@ vi.mock("../ui/tooltip", () => ({
       {children}
     </>
   ),
-  TooltipPopup: () => null,
+  TooltipPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 // Radio items route clicks through the group's onValueChange, like Base UI does.
 vi.mock("../ui/menu", async () => {
@@ -118,6 +128,8 @@ const PRESET = {
     { selection: GLM_SELECTION },
   ],
 };
+import type { DraftId } from "../../composerDraftStore";
+const DRAFT = "draft:subagents-panel" as DraftId;
 const PANEL = () => <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} />;
 // react-test-renderer's act requires this to update state outside React events.
 declare global {
@@ -164,6 +176,8 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     renderer?.unmount();
     testState.updateSettings.mockReset();
     testState.navigate.mockReset();
+    testState.setDraftThreadContext.mockReset();
+    testState.draftEntries = undefined;
   });
 
   function renderPanel() {
@@ -172,6 +186,52 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     });
     return renderer!;
   }
+
+  it("lets a draft choose and disable a preset locally, before it has a server thread", () => {
+    testState.settings = settingsWith({ subagentPresets: [PRESET] });
+    act(() => {
+      renderer = create(
+        <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />,
+      );
+    });
+    applyPreset(renderer!, "hard");
+    expect(testState.setDraftThreadContext).toHaveBeenCalledWith(DRAFT, {
+      subagentRoster: PRESET.entries,
+    });
+    expect(testState.updateSettings).not.toHaveBeenCalled();
+
+    testState.draftEntries = PRESET.entries;
+    act(() =>
+      renderer!.update(
+        <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />,
+      ),
+    );
+    expect(hasText(renderer!, "Hard work")).toBe(true);
+    expect(hasText(renderer!, "Tricky bugs.")).toBe(true);
+    act(() => button(renderer!, (props) => props.role === "switch").props.onClick());
+    expect(testState.setDraftThreadContext).toHaveBeenLastCalledWith(DRAFT, {
+      subagentRoster: null,
+    });
+  });
+
+  it("previews the saved thread entries, not an edited preset or its old notes", () => {
+    testState.settings = settingsWith({
+      subagentPresets: [PRESET],
+      threadSubagentRosters: {
+        [THREAD]: {
+          entries: [{ selection: GLM_SELECTION, description: "Actual override notes." }],
+        },
+      },
+    });
+    const root = renderPanel();
+    const preview = root.root.findByProps({ "aria-label": "Current subagent roster" });
+    expect(preview.findAllByType("li")).toHaveLength(1);
+    expect(hasText(root, "default")).toBe(true);
+    expect(hasText(root, "zcode")).toBe(true);
+    expect(hasText(root, "Actual override notes.")).toBe(true);
+    expect(hasText(root, "Tricky bugs.")).toBe(false);
+    expect(hasText(root, "claude-opus-5-5")).toBe(false);
+  });
 
   it("renders today's editor when the environment has no presets", () => {
     testState.settings = settingsWith({
