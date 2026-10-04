@@ -15,7 +15,7 @@ import {
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
   type OrchestratorMcpCreatedThread,
-  type OrchestratorMcpDelegateTaskInput,
+  OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpInteractionMode,
   type OrchestratorMcpDeleteScheduledTaskInput,
@@ -77,6 +77,7 @@ import * as ServerSettingsService from "../serverSettings.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import { providerCapabilityUsage } from "../usage/providerCapabilityUsage.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import { delegateTaskCorrection } from "./delegateTaskCorrection.ts";
 import { resolveRosterTarget, THREAD_ROSTER_GUIDANCE } from "./threadSubagentRoster.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -100,9 +101,10 @@ export interface OrchestratorMcpServiceShape {
   readonly capabilities: (
     scope: McpInvocationScope,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
+  /** Takes raw tool arguments so malformed calls get the same corrective error as invalid targets. */
   readonly delegateTask: (
     scope: McpInvocationScope,
-    input: OrchestratorMcpDelegateTaskInput,
+    input: unknown,
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
   readonly taskStatus: (
     scope: McpInvocationScope,
@@ -251,6 +253,22 @@ function modelsAllowedForSubagents(
   if (hidden.size === 0) return provider.models;
   return provider.models.filter((model) => !hidden.has(model.slug));
 }
+
+const CORRECTABLE_DELEGATE_TASK_CODES: ReadonlySet<OrchestratorMcpFailure["code"]> = new Set([
+  "invalid_request",
+  "provider_unavailable",
+  "model_unavailable",
+  "runtime_mode_escalation_denied",
+  "interaction_mode_escalation_denied",
+]);
+
+const decodeDelegateTaskArguments = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
+const decodeDelegateTaskInput = (input: unknown) =>
+  decodeDelegateTaskArguments(input).pipe(
+    Effect.mapError((error) =>
+      failure("invalid_request", `Invalid delegate_task arguments: ${error.message}`),
+    ),
+  );
 
 const NO_SUBAGENT_MODELS = "No models are allowed for subagents.";
 const NOT_IN_THREAD_ROSTER = "Not in this thread's subagent roster.";
@@ -592,12 +610,6 @@ function threadTitle(input: {
   const detail = input.title?.trim() || input.prompt?.trim();
   if (!detail) return `${input.parentTitle} thread ${input.index + 1}`;
   return detail.length > 80 ? `${detail.slice(0, 77)}...` : detail;
-}
-
-function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.role === undefined || input.role === "general"
-    ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
 }
 
 function threadSettlement(
@@ -1257,6 +1269,129 @@ const make = Effect.gen(function* () {
       return task;
     });
 
+  const capabilities = (
+    scope: McpInvocationScope,
+  ): Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      yield* requireCapability(scope);
+      const parent = yield* loadProjection(scope.threadId);
+      const providers = yield* loadProviders;
+      const sources = yield* usageLimitSources.current;
+      const settings = yield* loadSubagentSettings;
+      const roster = settings.threadSubagentRosters[scope.threadId];
+      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+      const constraintsFor = (provider: ServerProvider) =>
+        providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId));
+      const providerUsage = providerCapabilityUsage(providers, sources);
+      return {
+        parentThreadId: scope.threadId,
+        inheritedProviderInstanceId: parent.thread.modelSelection.instanceId,
+        inheritedModel: parent.thread.modelSelection.model,
+        runtimeMode: parent.thread.runtimeMode,
+        interactionMode: parent.thread.interactionMode,
+        providers: providers.map((provider) => {
+          const allowedModels =
+            roster === undefined
+              ? modelsAllowedForSubagents(
+                  provider,
+                  hiddenSubagentModels(settings, provider.instanceId),
+                )
+              : modelsInRoster(provider, roster);
+          const constraints = [...constraintsFor(provider)];
+          if (roster !== undefined && allowedModels.length === 0) {
+            constraints.push(NOT_IN_THREAD_ROSTER);
+          } else if (
+            constraints.length === 0 &&
+            provider.models.length > 0 &&
+            allowedModels.length === 0
+          ) {
+            constraints.push(NO_SUBAGENT_MODELS);
+          }
+          return {
+            providerInstanceId: provider.instanceId,
+            driverKind: provider.driver,
+            displayName: provider?.displayName ?? null,
+            models: allowedModels.map((model) => ({
+              id: model.slug,
+              label: model.name ?? null,
+              ...(model.capabilities?.optionDescriptors === undefined
+                ? {}
+                : { options: model.capabilities.optionDescriptors }),
+            })),
+            canRunChildTask: constraints.length === 0,
+            canRunCrossProviderChildTask: constraints.length === 0,
+            constraints: [...constraints],
+          };
+        }),
+        ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
+        ...(roster === undefined
+          ? {}
+          : {
+              threadRoster: {
+                guidance: THREAD_ROSTER_GUIDANCE,
+                entries: roster.entries.map((entry) => {
+                  const provider = providers.find(
+                    (candidate) => candidate.instanceId === entry.selection.instanceId,
+                  );
+                  const model = provider?.models.find(
+                    (candidate) => candidate.slug === entry.selection.model,
+                  );
+                  return {
+                    target: {
+                      providerInstanceId: entry.selection.instanceId,
+                      model: entry.selection.model,
+                      ...(entry.selection.options === undefined
+                        ? {}
+                        : { options: entry.selection.options }),
+                    },
+                    label: model?.name ?? null,
+                    role: entry.role ?? null,
+                    description: entry.description ?? null,
+                    available:
+                      provider !== undefined &&
+                      constraintsFor(provider).length === 0 &&
+                      (model !== undefined || provider.models.length === 0),
+                  };
+                }),
+              },
+            }),
+        features: {
+          appOwnedSubagents: true,
+          asyncPolling: true,
+          cancellation: true,
+          batchThreadCreation: true,
+          threadManagement: true,
+          incrementalThreadRead: true,
+          scheduledTasks: true,
+          maxBatchThreads: 20,
+        },
+      };
+    });
+
+  /** Failures a caller can fix by changing its arguments, so they carry a corrected call. */
+  const withDelegateTaskCorrection = <A>(
+    scope: McpInvocationScope,
+    effect: Effect.Effect<A, OrchestratorMcpFailure>,
+  ) =>
+    effect.pipe(
+      Effect.catchIf(
+        (error) => CORRECTABLE_DELEGATE_TASK_CODES.has(error.code),
+        (error) =>
+          Effect.option(capabilities(scope)).pipe(
+            Effect.flatMap((current) =>
+              Effect.fail(
+                Option.isNone(current)
+                  ? error
+                  : failure(
+                      error.code,
+                      `${error.message}\n\n${delegateTaskCorrection(current.value)}`,
+                    ),
+              ),
+            ),
+          ),
+      ),
+    );
+
   return OrchestratorMcpService.of({
     scheduleTask: (scope, input) =>
       Effect.gen(function* () {
@@ -1380,105 +1515,11 @@ const make = Effect.gen(function* () {
           );
         return { scheduledTaskId: existing.id, deleted: true };
       }),
-    capabilities: (scope) =>
+    capabilities,
+    delegateTask: (scope, rawInput) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
-        const parent = yield* loadProjection(scope.threadId);
-        const providers = yield* loadProviders;
-        const sources = yield* usageLimitSources.current;
-        const settings = yield* loadSubagentSettings;
-        const roster = settings.threadSubagentRosters[scope.threadId];
-        const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-        const constraintsFor = (provider: ServerProvider) =>
-          providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId));
-        const providerUsage = providerCapabilityUsage(providers, sources);
-        return {
-          parentThreadId: scope.threadId,
-          inheritedProviderInstanceId: parent.thread.modelSelection.instanceId,
-          inheritedModel: parent.thread.modelSelection.model,
-          runtimeMode: parent.thread.runtimeMode,
-          interactionMode: parent.thread.interactionMode,
-          providers: providers.map((provider) => {
-            const allowedModels =
-              roster === undefined
-                ? modelsAllowedForSubagents(
-                    provider,
-                    hiddenSubagentModels(settings, provider.instanceId),
-                  )
-                : modelsInRoster(provider, roster);
-            const constraints = [...constraintsFor(provider)];
-            if (roster !== undefined && allowedModels.length === 0) {
-              constraints.push(NOT_IN_THREAD_ROSTER);
-            } else if (
-              constraints.length === 0 &&
-              provider.models.length > 0 &&
-              allowedModels.length === 0
-            ) {
-              constraints.push(NO_SUBAGENT_MODELS);
-            }
-            return {
-              providerInstanceId: provider.instanceId,
-              driverKind: provider.driver,
-              displayName: provider?.displayName ?? null,
-              models: allowedModels.map((model) => ({
-                id: model.slug,
-                label: model.name ?? null,
-                ...(model.capabilities?.optionDescriptors === undefined
-                  ? {}
-                  : { options: model.capabilities.optionDescriptors }),
-              })),
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
-              constraints: [...constraints],
-            };
-          }),
-          ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
-          ...(roster === undefined
-            ? {}
-            : {
-                threadRoster: {
-                  guidance: THREAD_ROSTER_GUIDANCE,
-                  entries: roster.entries.map((entry) => {
-                    const provider = providers.find(
-                      (candidate) => candidate.instanceId === entry.selection.instanceId,
-                    );
-                    const model = provider?.models.find(
-                      (candidate) => candidate.slug === entry.selection.model,
-                    );
-                    return {
-                      target: {
-                        providerInstanceId: entry.selection.instanceId,
-                        model: entry.selection.model,
-                        ...(entry.selection.options === undefined
-                          ? {}
-                          : { options: entry.selection.options }),
-                      },
-                      label: model?.name ?? null,
-                      role: entry.role ?? null,
-                      description: entry.description ?? null,
-                      available:
-                        provider !== undefined &&
-                        constraintsFor(provider).length === 0 &&
-                        (model !== undefined || provider.models.length === 0),
-                    };
-                  }),
-                },
-              }),
-          features: {
-            appOwnedSubagents: true,
-            asyncPolling: true,
-            cancellation: true,
-            batchThreadCreation: true,
-            threadManagement: true,
-            incrementalThreadRead: true,
-            scheduledTasks: true,
-            maxBatchThreads: 20,
-          },
-        };
-      }),
-    delegateTask: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
+        const input = yield* withDelegateTaskCorrection(scope, decodeDelegateTaskInput(rawInput));
         const parent = yield* loadProjection(scope.threadId);
         const parentRun = parent.runs
           .filter(ThreadManagementService.isActiveRun)
@@ -1498,25 +1539,30 @@ const make = Effect.gen(function* () {
         const requestedTarget =
           roster === undefined
             ? input.target
-            : yield* Result.match(
-                resolveRosterTarget({ roster, target: input.target, providers }),
-                {
-                  onFailure: (message) => failure("model_unavailable", message),
+            : yield* withDelegateTaskCorrection(
+                scope,
+                Result.match(resolveRosterTarget({ roster, target: input.target, providers }), {
+                  onFailure: (message) => Effect.fail(failure("model_unavailable", message)),
                   onSuccess: (target) => Effect.succeed(target),
-                },
+                }),
               );
         // A thread roster is the user's explicit pick, so it replaces the
         // environment-wide hidden-model list rather than intersecting it.
-        const target = yield* resolveTarget({
-          parent,
-          target: requestedTarget,
-          providers,
-          enforceSubagentAllowlist: roster === undefined,
-        });
-        const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
-        const interactionMode = yield* resolveInteractionMode(
-          parent.thread.interactionMode,
-          input.interactionMode,
+        const { target, runtimeMode, interactionMode } = yield* withDelegateTaskCorrection(
+          scope,
+          Effect.all({
+            target: resolveTarget({
+              parent,
+              target: requestedTarget,
+              providers,
+              enforceSubagentAllowlist: roster === undefined,
+            }),
+            runtimeMode: resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
+            interactionMode: resolveInteractionMode(
+              parent.thread.interactionMode,
+              input.interactionMode,
+            ),
+          }),
         );
         const key = yield* requestKey(input.clientRequestId);
         const commandId = stableCommandId({
@@ -1533,7 +1579,7 @@ const make = Effect.gen(function* () {
             parentThreadId: scope.threadId,
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
-            task: taskPrompt(input),
+            task: input.task,
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
