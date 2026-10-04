@@ -100,6 +100,7 @@ beforeEach(() => {
     environmentId: id,
     label: id === environmentId ? "ZCode device" : "Other device",
     prices: {},
+    aliases: null,
     unavailable: null,
   }));
   container = document.createElement("div");
