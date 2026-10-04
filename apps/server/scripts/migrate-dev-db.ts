@@ -17,7 +17,7 @@ import { Command, Flag } from "effect/cli";
 
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
-import { migrationManifest, runMigrations } from "../src/persistence/Migrations.ts";
+import { runMigrations, verifyMigrationHistory } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 export class MigrateDevDbNotInWorktreeError extends Schema.TaggedError<MigrateDevDbNotInWorktreeError>()(
@@ -86,19 +86,6 @@ export class MigrateDevDbDestinationBusyError extends Schema.TaggedError<Migrate
         ? "the database is write-locked"
         : "another connection is holding its WAL";
     return `Dev database at '${this.databasePath}' looks in use (${detail}). Stop the dev server first; if none is running, delete the -wal/-shm files next to it.`;
-  }
-}
-
-export class MigrateDevDbSlotCollisionError extends Schema.TaggedError<MigrateDevDbSlotCollisionError>()(
-  "MigrateDevDbSlotCollisionError",
-  {
-    slot: Schema.Number,
-    codeName: Schema.String,
-    appliedName: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `Migration slot collision at ${this.slot}: this checkout registers '${this.codeName}' but the database already applied '${this.appliedName}' in that slot. Renumber the new migration to a free slot.`;
   }
 }
 
@@ -415,19 +402,6 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
   };
 });
 
-const verifyMigrationSlots = Effect.fn("verifyMigrationSlots")(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const applied = yield* sql<{ migration_id: number; name: string }>`
-    SELECT migration_id, name FROM effect_sql_migrations`;
-  const appliedById = new Map(applied.map((row) => [Number(row.migration_id), row.name]));
-  for (const [slot, codeName] of migrationManifest) {
-    const appliedName = appliedById.get(slot);
-    if (appliedName !== undefined && appliedName !== codeName) {
-      return yield* new MigrateDevDbSlotCollisionError({ slot, codeName, appliedName });
-    }
-  }
-});
-
 export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   input: RunMigrateDevDbInput,
   options: RunMigrateDevDbOptions = {},
@@ -509,10 +483,16 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       wrapPhase("migrate", snapshotPath),
     );
 
-    // Detect migration slot collisions before replacing the worktree database.
-    yield* verifyMigrationSlots().pipe(
+    // Verify while the snapshot is still the only thing touched: an
+    // unrecognized history must abort before replacing the old worktree db.
+    // Known legacy layouts retain their ledger and use guarded replay.
+    yield* verifyMigrationHistory().pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       Effect.catchTags({
+        MigrationError: (cause) =>
+          Effect.fail(
+            new MigrateDevDbPhaseError({ phase: "verify", databasePath: snapshotPath, cause }),
+          ),
         SqlError: (cause) =>
           Effect.fail(
             new MigrateDevDbPhaseError({ phase: "verify", databasePath: snapshotPath, cause }),
