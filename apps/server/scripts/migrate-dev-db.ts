@@ -17,7 +17,7 @@ import { Command, Flag } from "effect/cli";
 
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
-import { runMigrations } from "../src/persistence/Migrations.ts";
+import { runMigrations, verifyMigrationHistory } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 export class MigrateDevDbNotInWorktreeError extends Schema.TaggedError<MigrateDevDbNotInWorktreeError>()(
@@ -482,6 +482,23 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     }).pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       wrapPhase("migrate", snapshotPath),
+    );
+
+    // Verify while the snapshot is still the only thing touched: an
+    // unrecognized history must abort before replacing the old worktree db.
+    // Known legacy layouts retain their ledger and use guarded replay.
+    yield* verifyMigrationHistory().pipe(
+      Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+      Effect.catchTags({
+        MigrationError: (cause) =>
+          Effect.fail(
+            new MigrateDevDbPhaseError({ phase: "migrate", databasePath: snapshotPath, cause }),
+          ),
+        SqlError: (cause) =>
+          Effect.fail(
+            new MigrateDevDbPhaseError({ phase: "migrate", databasePath: snapshotPath, cause }),
+          ),
+      }),
     );
 
     yield* Console.log(
