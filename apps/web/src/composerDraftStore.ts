@@ -24,6 +24,7 @@ import {
   type ScopedThreadRef,
   ThreadId,
   SnapShotSource,
+  SubagentRosterEntry,
 } from "@t3tools/contracts";
 import {
   parseScopedProjectKey,
@@ -79,6 +80,7 @@ import { getDefaultServerModel } from "./providerModels";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewCommentContext";
+const isSubagentRoster = Schema.is(Schema.Array(SubagentRosterEntry));
 const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
@@ -322,6 +324,7 @@ const PersistedDraftThreadState = Schema.Struct({
   logicalProjectKey: Schema.optionalKey(Schema.String),
   environmentSelection: Schema.optionalKey(Schema.Literals(["auto", "manual"])),
   loadBalancedEnvironmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  subagentRoster: Schema.optionalKey(Schema.NullOr(Schema.Array(SubagentRosterEntry))),
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -454,6 +457,7 @@ export interface DraftSessionState {
   logicalProjectKey: string;
   environmentSelection?: "auto" | "manual";
   loadBalancedEnvironmentId?: EnvironmentId | null;
+  subagentRoster?: ReadonlyArray<SubagentRosterEntry> | null;
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
@@ -566,6 +570,7 @@ interface ComposerDraftStoreState {
   setDraftThreadContext: (
     threadRef: ComposerThreadTarget,
     options: {
+      subagentRoster?: ReadonlyArray<SubagentRosterEntry> | null;
       branch?: string | null;
       worktreePath?: string | null;
       projectRef?: ScopedProjectRef;
@@ -1629,6 +1634,9 @@ function createDraftThreadState(
               : existingThread.loadBalancedEnvironmentId,
           }
         : {}),
+    ...(existingThread?.subagentRoster !== undefined
+      ? { subagentRoster: existingThread.subagentRoster }
+      : {}),
     createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
@@ -1665,6 +1673,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.logicalProjectKey === right.logicalProjectKey &&
     left.environmentSelection === right.environmentSelection &&
     left.loadBalancedEnvironmentId === right.loadBalancedEnvironmentId &&
+    left.subagentRoster === right.subagentRoster &&
     left.createdAt === right.createdAt &&
     left.runtimeMode === right.runtimeMode &&
     left.interactionMode === right.interactionMode &&
@@ -1830,6 +1839,10 @@ function normalizePersistedDraftThreads(
           : candidateDraftThread.loadBalancedEnvironmentId === null
             ? { loadBalancedEnvironmentId: null }
             : {}),
+        ...(candidateDraftThread.subagentRoster === null ||
+        isSubagentRoster(candidateDraftThread.subagentRoster)
+          ? { subagentRoster: candidateDraftThread.subagentRoster }
+          : {}),
         promotedTo,
       };
     }
@@ -2285,9 +2298,7 @@ export function partializeComposerDraftStoreState(
     };
     persistedDraftsByThreadKey[threadKey] = persistedDraft;
   }
-  const persistedDraftThreadsByThreadKey: DeepMutable<
-    PersistedComposerDraftStoreState["draftThreadsByThreadKey"]
-  > = {};
+  const persistedDraftThreadsByThreadKey: Record<string, PersistedDraftThreadState> = {};
   for (const [threadKey, draftThread] of Object.entries(state.draftThreadsByThreadKey)) {
     if (!keptSessionKeys.has(threadKey)) {
       continue;
@@ -2575,6 +2586,9 @@ function toHydratedDraftThreadState(
           persistedDraftThread.projectId,
         ),
       ),
+    ...(persistedDraftThread.subagentRoster !== undefined
+      ? { subagentRoster: persistedDraftThread.subagentRoster }
+      : {}),
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
@@ -2863,6 +2877,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               (options.branch != null || options.worktreePath != null
                 ? "manual"
                 : existing.environmentSelection);
+            const subagentRoster =
+              options.subagentRoster === undefined
+                ? existing.subagentRoster
+                : options.subagentRoster;
             const nextDraftThread: DraftThreadState = {
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
@@ -2875,6 +2893,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                     ? null
                     : (existing.loadBalancedEnvironmentId ?? null)
                   : options.loadBalancedEnvironmentId,
+              ...(subagentRoster !== undefined ? { subagentRoster } : {}),
               createdAt:
                 options.createdAt === undefined
                   ? existing.createdAt
@@ -2894,6 +2913,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.logicalProjectKey === existing.logicalProjectKey &&
               nextDraftThread.environmentSelection === existing.environmentSelection &&
               nextDraftThread.loadBalancedEnvironmentId === existing.loadBalancedEnvironmentId &&
+              nextDraftThread.subagentRoster === existing.subagentRoster &&
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&

@@ -451,6 +451,7 @@ import {
   RightPanelMaximizeControl,
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import { draftSubagentRosterPatch } from "./settings/subagentPresets.logic";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
@@ -8852,6 +8853,9 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
+    const draftSubagentRoster = isLocalDraftThread
+      ? useComposerDraftStore.getState().getDraftThread(composerDraftTarget)?.subagentRoster
+      : undefined;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
@@ -9172,6 +9176,14 @@ export default function ChatView(props: ChatViewProps) {
               const supportsInlineMessageContext =
                 appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
                   .capabilities.inlineMessageContext === true;
+              const rosterPatch = draftSubagentRosterPatch(draftSubagentRoster, [targetThreadId]);
+              if (rosterPatch) {
+                const saved = await updateProjectScriptSettings({
+                  environmentId,
+                  input: { patch: rosterPatch },
+                });
+                if (saved._tag === "Failure") throw squashAtomCommandFailure(saved);
+              }
               requestMayHaveStarted = true;
               const result = await startThreadTurn({
                 environmentId,
@@ -9483,6 +9495,14 @@ export default function ChatView(props: ChatViewProps) {
     );
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
+    const rosterPatch = draftSubagentRosterPatch(draftSubagentRoster, [threadIdForSend]);
+    if (rosterPatch) {
+      const saved = await updateProjectScriptSettings({
+        environmentId,
+        input: { patch: rosterPatch },
+      });
+      if (saved._tag === "Failure") failure = saved;
+    }
 
     if (failure === null && isServerThread) {
       const settingsResult = await persistThreadSettingsForNextTurn({
