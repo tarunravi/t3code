@@ -1246,10 +1246,15 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 export const SubagentRole = Schema.Literals(["default", "hard", "bulk", "overnight"]);
 export type SubagentRole = typeof SubagentRole.Type;
 
-/** One subagent a thread may delegate to: a model on a provider instance, its options, and its role. */
+/**
+ * One subagent a thread may delegate to: a model on a provider instance, its
+ * options, its role, and when to pick it. Copied entries (for example applied
+ * from a preset) carry the description along so rosters keep that intent.
+ */
 export const SubagentRosterEntry = Schema.Struct({
   selection: ModelSelection,
   role: Schema.optionalKey(SubagentRole),
+  description: Schema.optionalKey(TrimmedString),
 });
 export type SubagentRosterEntry = typeof SubagentRosterEntry.Type;
 
@@ -1266,7 +1271,8 @@ export type ThreadSubagentRoster = typeof ThreadSubagentRoster.Type;
 /**
  * One subagent in a named preset: a model, its role, and when an agent should
  * pick it. The `description` is free text ("when to use this subagent") shown
- * in tooltips and later exposed to agents; stored but not consumed yet.
+ * in tooltips and carried onto thread rosters that copy the entry, where
+ * agents see it.
  */
 export const SubagentPresetEntry = Schema.Struct({
   selection: ModelSelection,
