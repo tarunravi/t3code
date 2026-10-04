@@ -434,6 +434,26 @@ describe("CursorAdapterV2", () => {
         {
           type: "tool-call-completed",
           modelCallId: "native-model-call",
+          callId: "grep-failed",
+          toolCall: {
+            type: "grep",
+            args: { pattern: "TODO", path: "src" },
+            result: { status: "error", error: "search failed" },
+          },
+        },
+        {
+          type: "tool-call-completed",
+          modelCallId: "native-model-call",
+          callId: "glob-failed",
+          toolCall: {
+            type: "glob",
+            args: { globPattern: "*.ts" },
+            result: { status: "error", error: "search failed" },
+          },
+        },
+        {
+          type: "tool-call-completed",
+          modelCallId: "native-model-call",
           callId: "lints",
           toolCall: {
             type: "readLints",
@@ -649,7 +669,17 @@ describe("CursorAdapterV2", () => {
           {
             pattern: path.join(workspace, "missing"),
             status: "failed",
-            results: undefined,
+            results: [{ fileName: path.join(workspace, "missing"), preview: "ENOENT" }],
+          },
+          {
+            pattern: "TODO",
+            status: "failed",
+            results: [{ fileName: "src", preview: "search failed" }],
+          },
+          {
+            pattern: "*.ts",
+            status: "failed",
+            results: [{ fileName: ".", preview: "search failed" }],
           },
           {
             pattern: "src/a.ts, src/b.ts",
@@ -668,7 +698,7 @@ describe("CursorAdapterV2", () => {
           {
             pattern: "src/a.ts",
             status: "failed",
-            results: undefined,
+            results: [{ fileName: "src/a.ts", preview: "lint failed" }],
           },
         ],
       );

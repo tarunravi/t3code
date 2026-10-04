@@ -220,6 +220,7 @@ export function V2LifecycleRow(props: {
         provider={props.providerStatuses.find(
           (provider) => provider.instanceId === item.providerInstanceId,
         )}
+        providers={props.providerStatuses}
         title={formatSubagentDisplayTitle(item.title ?? "Subagent")}
         result={item.result}
         progress={item.progress}
@@ -377,6 +378,7 @@ export function SubagentNotificationLink(props: {
       provider={props.providerStatuses.find(
         (provider) => provider.instanceId === agent.providerInstanceId,
       )}
+      providers={props.providerStatuses}
       title={formatSubagentDisplayTitle(agent.title ?? "Subagent")}
       result={agent.result}
       progress={agent.progress}
@@ -398,6 +400,7 @@ function SubagentTimelineLink(props: {
   readonly subagentId: NodeId;
   readonly driver: ProviderDriverKind;
   readonly provider: ServerProvider | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
   readonly title: string;
   readonly result: string | null;
   readonly progress: string | undefined;
@@ -555,6 +558,7 @@ function SubagentTimelineTooltip(
       title={formatSubagentDisplayTitle(child?.title ?? props.title)}
       model={props.model}
       provider={props.provider}
+      providers={props.providers}
       driver={props.driver}
       elapsed={props.elapsed}
       status={props.status}

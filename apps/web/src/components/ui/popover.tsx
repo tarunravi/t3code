@@ -75,9 +75,10 @@ function PopoverPopup({
         anchor={anchor}
         collisionAvoidance={collisionAvoidance}
         className={cn(
-          "z-[130] h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-transform data-instant:transition-none",
-          variant === "panel" &&
-            "w-[min(var(--thread-details-panel-width),var(--anchor-width))] transition-none",
+          "h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-transform data-instant:transition-none",
+          variant === "panel"
+            ? "z-(--z-sheet) w-[min(var(--thread-details-panel-width),var(--anchor-width))] transition-none"
+            : "z-[130]",
           width === "anchor" && "w-(--anchor-width)",
         )}
         data-slot="popover-positioner"
