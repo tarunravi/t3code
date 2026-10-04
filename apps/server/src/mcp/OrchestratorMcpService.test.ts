@@ -198,6 +198,7 @@ describe("OrchestratorMcpService", () => {
         turnItems: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
