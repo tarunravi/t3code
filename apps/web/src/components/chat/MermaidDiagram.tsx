@@ -92,7 +92,8 @@ async function renderMermaid(
       htmlLabels: false,
       flowchart: { htmlLabels: false },
       theme: theme === "dark" ? "dark" : "default",
-      fontFamily: getComputedStyle(document.body).fontFamily,
+      fontFamily:
+        typeof document !== "undefined" ? getComputedStyle(document.body).fontFamily : undefined,
     });
     const { svg } = await mermaid.render(id, source);
     return { status: "rendered", svg: sanitizeMermaidSvg(svg) };
@@ -100,7 +101,9 @@ async function renderMermaid(
     const message = error instanceof Error ? error.message : "The diagram could not be rendered.";
     return { status: "error", message, retryable: CHUNK_LOAD_ERROR.test(message) };
   } finally {
-    document.getElementById(`d${id}`)?.remove();
+    if (typeof document !== "undefined") {
+      document.getElementById(`d${id}`)?.remove();
+    }
   }
 }
 
