@@ -50,6 +50,8 @@ export function SubagentTooltipContent(props: {
   status: OrchestrationV2TurnItemStatus;
   result?: string | null | undefined;
   progress?: string | null | undefined;
+  /** Live rate readout for the child thread, when one is being measured. */
+  tokenRate?: ReactNode;
 }) {
   const { modelLabel, workspace: metadata } = resolveSubagentMetadata(props);
   const preview = subagentDetailPreview(props);
@@ -168,7 +170,10 @@ export function SubagentTooltipContent(props: {
           <StatusIcon aria-hidden className="size-3 shrink-0" />
           {props.status.replaceAll("_", " ")}
         </span>
-        {props.elapsed}
+        <span className="inline-flex shrink-0 items-center gap-2">
+          {props.elapsed}
+          {props.tokenRate}
+        </span>
       </div>
       {metadata.map(({ label, value }) => {
         const Icon = label === "Branch" ? GitBranchIcon : FolderIcon;
