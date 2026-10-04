@@ -1208,7 +1208,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           threadSubagentRosters: {
             [parentThreadId]: {
               entries: [
-                { selection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" }, role: "hard" },
+                {
+                  selection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
+                  role: "hard",
+                  description: "For the hardest work.",
+                },
                 {
                   selection: {
                     instanceId: antigravityInstanceId,
@@ -1216,6 +1220,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                     options: [{ id: "effort", value: "medium" }],
                   },
                   role: "default",
+                },
+                {
+                  selection: { instanceId: codexInstanceId, model: "does-not-exist" },
+                  description: "Pick me once the model returns.",
                 },
               ],
             },
@@ -1275,11 +1283,13 @@ describe("OrchestratorMcpService provider resolution", () => {
             entry.target.providerInstanceId,
             entry.role,
             entry.label,
+            entry.description,
             entry.available,
           ]),
           [
-            [codexInstanceId, "hard", "GPT-5.6 Sol", true],
-            [antigravityInstanceId, "default", "ant-model", true],
+            [codexInstanceId, "hard", "GPT-5.6 Sol", "For the hardest work.", true],
+            [antigravityInstanceId, "default", "ant-model", null, true],
+            [codexInstanceId, null, null, "Pick me once the model returns.", false],
           ],
         );
 
