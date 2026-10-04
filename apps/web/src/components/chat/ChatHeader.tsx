@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type OrchestrationV2ThreadProjection,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -25,9 +26,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
+import { ThreadCostLabel } from "./ThreadCostLabel";
+import { TokenRateLabel } from "./TokenRateLabel";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
 import { useAtomValue } from "@effect/atom-react";
+import { useThreadProjectionTree } from "../../state/threadProjectionTree";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -55,6 +59,8 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
+  /** Server projection, for live and completed-turn output throughput. */
+  threadProjection?: OrchestrationV2ThreadProjection | null | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
 }
 
@@ -82,6 +88,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
+  threadProjection,
   onFindInThread,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
@@ -90,6 +97,17 @@ export const ChatHeader = memo(function ChatHeader({
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
+  const projectionTree = useThreadProjectionTree(isServerThread ? activeThreadRef : null);
+  const tokenRateSources = [
+    {
+      key: activeThreadId,
+      projection: projectionTree[0]?.projection ?? threadProjection,
+    },
+    ...projectionTree.slice(1).map((entry) => ({
+      key: entry.ref.threadId,
+      projection: entry.projection,
+    })),
+  ];
   const canOperateThread = useEnvironmentScope(
     activeThreadEnvironmentId,
     AuthOrchestrationOperateScope,
@@ -431,6 +449,8 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? <ThreadCostLabel threadRef={activeThreadRef} className="shrink-0" /> : null}
+      <TokenRateLabel sources={tokenRateSources} className="shrink-0" />
     </div>
   );
 });
