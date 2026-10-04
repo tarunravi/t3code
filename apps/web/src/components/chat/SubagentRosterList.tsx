@@ -1,10 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentId,
-  ProviderInstanceId,
-  SubagentRole,
-  SubagentRosterEntry,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProviderInstanceId, SubagentRosterEntry } from "@t3tools/contracts";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -26,7 +21,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
-import { Badge } from "../ui/badge";
+import { DraftInput } from "../ui/draft-input";
 import {
   Menu,
   MenuGroup,
@@ -43,10 +38,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelEsque } from "./providerIconUtils";
+import { withSubagentDescription } from "../settings/subagentPresets.logic";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import {
   appendRosterEntries,
-  assignRosterRole,
   effortDescriptor,
   moveRosterEntry,
   resolvePreset,
@@ -55,12 +50,10 @@ import {
   sameRosterEntry,
   selectedEffort,
   SUBAGENT_PRESETS,
-  SUBAGENT_ROLE_META,
-  SUBAGENT_ROLES,
   withEffort,
 } from "./threadSubagentRoster.logic";
 
-const NO_ROLE = "none";
+const DEFAULT_EFFORT = "default";
 
 /**
  * Provider instances as subagent pickers see them: every configured instance
@@ -88,15 +81,6 @@ export function useSubagentInstances(environmentId: EnvironmentId) {
   }, [providers, settings]);
 }
 
-function RoleBadge({ role }: { role: SubagentRole }) {
-  const meta = SUBAGENT_ROLE_META[role];
-  return (
-    <Badge size="sm" variant={meta.badge}>
-      {meta.label}
-    </Badge>
-  );
-}
-
 function RosterEntryRow(props: {
   entry: SubagentRosterEntry;
   index: number;
@@ -104,7 +88,6 @@ function RosterEntryRow(props: {
   instances: ReadonlyArray<ProviderInstanceEntry>;
   saved: boolean | null;
   onReplace: (entry: SubagentRosterEntry) => void;
-  onRole: (role: SubagentRole | null) => void;
   onMove: (offset: -1 | 1) => void;
   onRemove: () => void;
   onSave: (() => void) | null;
@@ -131,7 +114,7 @@ function RosterEntryRow(props: {
 
   return (
     <li
-      className="flex min-w-0 items-center gap-2.5 rounded-lg py-1.5 ps-2.5 pe-1"
+      className="flex min-w-0 flex-wrap items-center gap-2.5 rounded-lg py-1.5 ps-2.5 pe-1"
       data-subagent-roster-entry={rosterEntryKey(props.entry)}
     >
       <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/72 ring-1 ring-border/60">
@@ -159,7 +142,6 @@ function RosterEntryRow(props: {
             : `${providerName} · ${resolved.effortLabel}`}
         </p>
       </div>
-      {props.entry.role === undefined ? null : <RoleBadge role={props.entry.role} />}
       <Menu>
         <MenuTrigger
           render={
@@ -169,42 +151,12 @@ function RosterEntryRow(props: {
           <EllipsisIcon className="size-3.5" />
         </MenuTrigger>
         <MenuPopup align="end">
-          <MenuGroup>
-            <MenuGroupLabel>Role</MenuGroupLabel>
-            <MenuRadioGroup
-              value={props.entry.role ?? NO_ROLE}
-              onValueChange={(value) =>
-                props.onRole(value === NO_ROLE ? null : (value as SubagentRole))
-              }
-            >
-              {SUBAGENT_ROLES.map((role) => (
-                <MenuRadioItem key={role} value={role}>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1">
-                      <span className="block">{SUBAGENT_ROLE_META[role].label}</span>
-                      <span className="block text-xs text-muted-foreground">
-                        {SUBAGENT_ROLE_META[role].description}
-                      </span>
-                    </span>
-                    <MenuRadioItemIndicator />
-                  </span>
-                </MenuRadioItem>
-              ))}
-              <MenuRadioItem value={NO_ROLE}>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 flex-1">No role</span>
-                  <MenuRadioItemIndicator />
-                </span>
-              </MenuRadioItem>
-            </MenuRadioGroup>
-          </MenuGroup>
           {descriptor === undefined ? null : (
             <>
-              <MenuSeparator />
               <MenuGroup>
                 <MenuGroupLabel>{descriptor.label}</MenuGroupLabel>
                 <MenuRadioGroup
-                  value={effort ?? defaultEffort ?? NO_ROLE}
+                  value={effort ?? defaultEffort ?? DEFAULT_EFFORT}
                   onValueChange={(value) =>
                     props.onReplace({
                       ...props.entry,
@@ -248,11 +200,21 @@ function RosterEntryRow(props: {
           </MenuItem>
         </MenuPopup>
       </Menu>
+      <DraftInput
+        size="sm"
+        className="w-full"
+        value={props.entry.description ?? ""}
+        aria-label={`Notes for ${resolved.modelLabel}`}
+        placeholder="Notes: when should an agent pick this model?"
+        onCommit={(description) =>
+          props.onReplace(withSubagentDescription(props.entry, description))
+        }
+      />
     </li>
   );
 }
 
-/** An editable, ordered list of subagents with their roles and reasoning effort. */
+/** An editable, ordered list of subagents with notes and reasoning effort. */
 export function SubagentRosterList(props: {
   entries: ReadonlyArray<SubagentRosterEntry>;
   instances: ReadonlyArray<ProviderInstanceEntry>;
@@ -283,7 +245,6 @@ export function SubagentRosterList(props: {
               entries.map((current, currentIndex) => (currentIndex === index ? next : current)),
             )
           }
-          onRole={(role) => onChange(assignRosterRole(entries, index, role))}
           onMove={(offset) => onChange(moveRosterEntry(entries, index, offset))}
           onRemove={() => onChange(entries.filter((_, currentIndex) => currentIndex !== index))}
           onSave={props.hotlist === undefined ? null : () => props.hotlist?.onSave(entry)}
@@ -350,7 +311,6 @@ export function SubagentRosterAddControls(props: {
                         ? resolved.modelLabel
                         : `${resolved.modelLabel} · ${resolved.effortLabel}`}
                     </span>
-                    {saved.role === undefined ? null : <RoleBadge role={saved.role} />}
                   </MenuItem>
                 );
               })}
