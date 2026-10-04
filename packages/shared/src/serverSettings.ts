@@ -287,6 +287,7 @@ export function applyServerSettingsPatch(
     subagentHotlist: subagentHotlistPatch,
     // Per-thread replacement. `null` returns a thread to the environment allowlist.
     threadSubagentRosters: threadSubagentRostersPatch,
+    usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     // Already translated into `projectSettingsOverrides` above; the legacy
@@ -398,6 +399,14 @@ export function applyServerSettingsPatch(
           usagePriceOverrides: mergeSettingsEntries(
             current.usagePriceOverrides,
             usagePriceOverridesPatch,
+          ),
+        }
+      : {}),
+    ...(usageModelAliasesPatch !== undefined
+      ? {
+          usageModelAliases: mergeSettingsEntries(
+            current.usageModelAliases,
+            usageModelAliasesPatch,
           ),
         }
       : {}),
