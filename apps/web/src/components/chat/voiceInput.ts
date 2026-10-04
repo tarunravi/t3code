@@ -234,11 +234,73 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-export function getCodexVoiceTranscriber(recorder: WebVoiceRecorder): VoiceTranscriber | null {
+/** 3 attempts total, so a transient failure never reaches the user on the first try. */
+export const VOICE_TRANSCRIBE_ATTEMPTS = 3;
+const VOICE_TRANSCRIBE_RETRY_DELAYS_MS: ReadonlyArray<number> = [750, 1500];
+
+type VoiceRecordingBridge = Pick<
+  NonNullable<Window["desktopBridge"]>,
+  "transcribeVoice" | "listVoiceRecordings" | "retryVoiceRecording"
+>;
+
+/**
+ * The desktop saves every dictation before answering, and voice sessions are
+ * globally exclusive, so the newest saved recording is the one just sent.
+ */
+export async function latestVoiceRecordingId(
+  bridge: VoiceRecordingBridge | undefined,
+): Promise<string | null> {
+  try {
+    const recordings = (await bridge?.listVoiceRecordings?.()) ?? [];
+    return recordings[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Transcribes, retrying failures before surfacing them. Retries reuse the
+ * recording the desktop already saved, so they do not add duplicate entries.
+ */
+export async function transcribeWithRetry(
+  input: { readonly audioBase64: string; readonly mimeType: string },
+  bridge: VoiceRecordingBridge,
+  signal: AbortSignal,
+  sleep: (ms: number) => Promise<void> = defaultSleep,
+): Promise<string> {
+  if (!bridge.transcribeVoice) {
+    throw new VoiceTranscriptionError("unavailable", "Voice transcription is not available.");
+  }
+  let recordingId: string | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= VOICE_TRANSCRIBE_ATTEMPTS; attempt += 1) {
+    throwIfVoiceTranscriptionAborted(signal);
+    try {
+      if (recordingId === null || !bridge.retryVoiceRecording) {
+        return (await bridge.transcribeVoice(input)).text;
+      }
+      const updated = await bridge.retryVoiceRecording(recordingId);
+      if (updated.status === "ok") return updated.transcript ?? "";
+      throw new Error(updated.error ?? "Transcription failed.");
+    } catch (error) {
+      lastError = error;
+      recordingId ??= await latestVoiceRecordingId(bridge);
+      const delay = VOICE_TRANSCRIBE_RETRY_DELAYS_MS[attempt - 1];
+      if (attempt < VOICE_TRANSCRIBE_ATTEMPTS && delay !== undefined) await sleep(delay);
+    }
+  }
+  throw new VoiceTranscriptionError("transcription-failed", errorMessage(lastError));
+}
+
+export function getCodexVoiceTranscriber(
+  recorder: WebVoiceRecorder,
+  onTranscriptionStarted?: () => void,
+): VoiceTranscriber | null {
   if (typeof window === "undefined") return null;
   const bridge = window.desktopBridge;
   if (!bridge?.transcribeVoice) return null;
-  const transcribeVoice = bridge.transcribeVoice.bind(bridge);
   return {
     prepare: async ({ signal }) => {
       throwIfVoiceTranscriptionAborted(signal);
@@ -254,15 +316,12 @@ export function getCodexVoiceTranscriber(recorder: WebVoiceRecorder): VoiceTrans
           }
           const audioBase64 = await blobToBase64(blob);
           throwIfVoiceTranscriptionAborted(signal);
-          try {
-            const result = await transcribeVoice({
-              audioBase64,
-              mimeType: blob.type || "audio/webm",
-            });
-            return result.text;
-          } catch (error) {
-            throw new VoiceTranscriptionError("transcription-failed", errorMessage(error));
-          }
+          onTranscriptionStarted?.();
+          return transcribeWithRetry(
+            { audioBase64, mimeType: blob.type || "audio/webm" },
+            bridge,
+            signal,
+          );
         },
       };
     },
@@ -275,6 +334,8 @@ export function useCodexVoiceInput(input: {
   readonly cursor: number;
   readonly disabled?: boolean;
   readonly onCommit: (text: string, cursor: number) => void;
+  /** Applies a transcript that finished after its draft stopped being shown. */
+  readonly updateOwnerDraft: (ownerKey: string, update: (text: string) => string) => boolean;
 }) {
   const [state, setState] = useState<VoiceInputState>(IDLE_STATE);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -292,6 +353,8 @@ export function useCodexVoiceInput(input: {
   }
   const latestInputRef = useRef(input);
   latestInputRef.current = input;
+  // Set once audio reaches the desktop, which saves it whether or not transcription succeeds.
+  const recordingSavedRef = useRef(false);
 
   if (!recorderRef.current) {
     recorderRef.current = new WebVoiceRecorder();
@@ -307,7 +370,10 @@ export function useCodexVoiceInput(input: {
     };
     controllerRef.current = new VoiceInputController({
       recorder,
-      getTranscriber: () => getCodexVoiceTranscriber(recorder),
+      getTranscriber: () =>
+        getCodexVoiceTranscriber(recorder, () => {
+          recordingSavedRef.current = true;
+        }),
       requestPermission: () => recorder.requestPermission(),
       configureRecording: async () => {},
       releaseRecording: async () => {
@@ -327,6 +393,8 @@ export function useCodexVoiceInput(input: {
       commitDraft: (text, selection) => {
         latestInputRef.current.onCommit(text, selection.start);
       },
+      updateOwnerDraft: (ownerKey, update) =>
+        latestInputRef.current.updateOwnerDraft(ownerKey, update),
       onStateChange: setState,
     });
   }
@@ -360,8 +428,18 @@ export function useCodexVoiceInput(input: {
   }, [state.phase]);
 
   const start = useCallback(() => {
-    if (!latestInputRef.current.disabled) void controller.start();
+    if (latestInputRef.current.disabled) return;
+    recordingSavedRef.current = false;
+    void controller.start();
   }, [controller]);
+  /** The saved recording behind the latest failure, or null if none was saved. */
+  const failedRecordingId = useCallback(
+    (): Promise<string | null> =>
+      recordingSavedRef.current
+        ? latestVoiceRecordingId(window.desktopBridge)
+        : Promise.resolve(null),
+    [],
+  );
   const stop = useCallback(() => controller.stop(), [controller]);
   const cancel = useCallback(() => controller.cancel(), [controller]);
   /**
@@ -383,5 +461,6 @@ export function useCodexVoiceInput(input: {
     stop,
     cancel,
     stopAndAwaitTranscript,
+    failedRecordingId,
   };
 }
