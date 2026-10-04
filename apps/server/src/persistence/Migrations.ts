@@ -146,11 +146,237 @@ export const migrationEntries = [
   [58, "WebhookRelayDeliveries", Migration0058],
 ] as const;
 
-// Safe to replay over an unknown schema: every change is guarded by a
+// Safe to replay over the recognized legacy schema: every change is guarded by a
 // schema check, IF NOT EXISTS, or IF EXISTS, and none backfills rows.
 const replayableMigrationIds: ReadonlySet<number> = new Set([33, 51, 53, 54, 56]);
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+
+// September 8 split V2 migrations are equivalent to today's bundled 055.
+// Keep their original ids/names: rewriting them would erase peer history.
+const legacyV2Names = new Map<number, string>([
+  [33, "ProjectionThreadsRunningBackgroundTaskCount"],
+  [50, "OrchestrationV2"],
+  [51, "OrchestrationV2Subagents"],
+  [52, "OrchestrationV2Foundation"],
+  [53, "OrchestrationV2ProviderSessionBindings"],
+  [54, "OrchestrationV2ThreadLaunchWorkflows"],
+  [55, "ApplicationEventSource"],
+  [56, "OrchestrationV2EffectCancellation"],
+  [57, "ScheduledTasks"],
+  [58, "LegacyV1ImportState"],
+  [59, "ApplicationEventSequenceIndexes"],
+  [60, "OrchestrationV2RecoveryIndexes"],
+  [61, "OrchestrationV2ShellIndexes"],
+]);
+
+// Frozen schema contract for skipped 050/052/055. Generated from their static DDL
+// plus 055 composed steps; tested against fresh migration output. Never replay
+// these migrations to fill gaps: their backfills/table rebuilds are not idempotent.
+const legacySkippedColumns: Readonly<Record<string, string>> = {
+  orchestration_command_receipts: "command_type",
+  orchestration_events: "application_event_version",
+  orchestration_v2_command_receipts:
+    "command_id thread_id command_type accepted_at result_sequence status error",
+  orchestration_v2_effect_outbox:
+    "effect_id command_id thread_id effect_type payload_json status attempt_count available_at lease_owner lease_expires_at created_at updated_at completed_at last_error",
+  orchestration_v2_events:
+    "sequence event_id command_id thread_id run_id node_id provider raw_event_id event_type occurred_at payload_json driver provider_instance_id",
+  orchestration_v2_legacy_imports:
+    "thread_id source_updated_at shell_imported_at transcript_imported_at imported_message_count last_error",
+  orchestration_v2_projection_checkpoint_scopes:
+    "scope_id thread_id run_id node_id parent_scope_id provider_thread_id kind ordinal_within_parent advances_app_run_count created_at payload_json",
+  orchestration_v2_projection_checkpoints:
+    "checkpoint_id thread_id scope_id run_id node_id parent_checkpoint_id ordinal_within_scope app_run_ordinal status captured_at payload_json",
+  orchestration_v2_projection_context_handoffs:
+    "context_handoff_id thread_id target_run_id to_provider_thread_id strategy status updated_at payload_json",
+  orchestration_v2_projection_context_transfers:
+    "context_transfer_id source_thread_id target_thread_id target_run_id type status source_provider target_provider updated_at payload_json source_provider_instance_id target_provider_instance_id",
+  orchestration_v2_projection_messages:
+    "message_id thread_id run_id node_id role streaming created_at updated_at payload_json",
+  orchestration_v2_projection_metadata: "projection_name schema_version last_sequence updated_at",
+  orchestration_v2_projection_nodes:
+    "node_id thread_id run_id parent_node_id root_node_id kind status provider_thread_id provider_turn_id runtime_request_id checkpoint_scope_id started_at completed_at payload_json",
+  orchestration_v2_projection_plans: "plan_id thread_id run_id node_id kind status payload_json",
+  orchestration_v2_projection_provider_session_bindings: "provider_session_id thread_id",
+  orchestration_v2_projection_provider_sessions:
+    "provider_session_id thread_id provider status model updated_at payload_json driver provider_instance_id",
+  orchestration_v2_projection_provider_threads:
+    "provider_thread_id thread_id owner_node_id provider provider_session_id status first_run_ordinal last_run_ordinal updated_at payload_json driver provider_instance_id",
+  orchestration_v2_projection_provider_turns:
+    "provider_turn_id thread_id provider_thread_id node_id run_attempt_id ordinal status started_at completed_at payload_json",
+  orchestration_v2_projection_run_attempts:
+    "attempt_id thread_id run_id attempt_ordinal root_node_id provider provider_thread_id provider_turn_id status payload_json provider_instance_id",
+  orchestration_v2_projection_runs:
+    "run_id thread_id ordinal provider provider_thread_id status requested_at completed_at payload_json provider_instance_id",
+  orchestration_v2_projection_runtime_requests:
+    "runtime_request_id thread_id node_id provider_turn_id kind status created_at resolved_at payload_json",
+  orchestration_v2_projection_subagents:
+    "subagent_id thread_id run_id parent_node_id provider provider_thread_id child_thread_id origin status started_at completed_at updated_at payload_json driver provider_instance_id",
+  orchestration_v2_projection_threads:
+    "thread_id project_id title default_provider runtime_mode interaction_mode active_provider_thread_id created_at updated_at archived_at deleted_at payload_json provider_instance_id",
+  orchestration_v2_projection_turn_items:
+    "turn_item_id thread_id run_id node_id provider_thread_id provider_turn_id parent_item_id ordinal type status updated_at payload_json",
+  orchestration_v2_thread_launch_workflows:
+    "command_id thread_id project_id status title worktree_path branch setup_committed thread_committed message_committed last_error created_at updated_at",
+  orchestration_v2_turn_item_positions: "thread_id turn_item_id ordinal",
+  projection_thread_pull_requests:
+    "thread_id host repository number url source linked_at snapshot_json stack_json",
+  scheduled_tasks:
+    "task_id title prompt enabled schedule_json project_id thread_id workspace_strategy_json model_selection_json runtime_mode interaction_mode created_by creation_source created_at updated_at next_run_at last_run_at last_run_status last_run_error run_count",
+  projection_threads: "title_state_json",
+};
+const legacySkippedIndexes = [
+  "idx_orchestration_events_agent_stream_sequence",
+  "idx_orchestration_events_application_high_water",
+  "idx_orchestration_events_application_sequence",
+  "idx_projection_thread_pull_requests_pr",
+  "idx_scheduled_tasks_due",
+  "idx_scheduled_tasks_project",
+  "orchestration_events_v2_created_threads_idx",
+  "orchestration_v2_command_receipts_thread_sequence_idx",
+  "orchestration_v2_effect_outbox_claim_idx",
+  "orchestration_v2_effect_outbox_command_idx",
+  "orchestration_v2_effect_outbox_thread_status_idx",
+  "orchestration_v2_events_command_idx",
+  "orchestration_v2_events_instance_sequence_idx",
+  "orchestration_v2_events_node_sequence_idx",
+  "orchestration_v2_events_raw_event_idx",
+  "orchestration_v2_events_run_sequence_idx",
+  "orchestration_v2_events_thread_sequence_idx",
+  "orchestration_v2_events_thread_type_sequence_idx",
+  "orchestration_v2_legacy_imports_pending_transcript_idx",
+  "orchestration_v2_projection_checkpoint_scopes_parent_idx",
+  "orchestration_v2_projection_checkpoint_scopes_thread_idx",
+  "orchestration_v2_projection_checkpoints_parent_idx",
+  "orchestration_v2_projection_checkpoints_scope_ordinal_idx",
+  "orchestration_v2_projection_checkpoints_thread_idx",
+  "orchestration_v2_projection_context_handoffs_target_run_idx",
+  "orchestration_v2_projection_context_handoffs_thread_idx",
+  "orchestration_v2_projection_context_transfers_source_thread_idx",
+  "orchestration_v2_projection_context_transfers_target_run_idx",
+  "orchestration_v2_projection_context_transfers_target_thread_idx",
+  "orchestration_v2_projection_messages_latest_user_idx",
+  "orchestration_v2_projection_messages_node_idx",
+  "orchestration_v2_projection_messages_run_idx",
+  "orchestration_v2_projection_messages_thread_created_idx",
+  "orchestration_v2_projection_nodes_parent_idx",
+  "orchestration_v2_projection_nodes_provider_turn_idx",
+  "orchestration_v2_projection_nodes_thread_run_idx",
+  "orchestration_v2_projection_plans_run_idx",
+  "orchestration_v2_projection_plans_thread_idx",
+  "orchestration_v2_projection_provider_session_bindings_thread_idx",
+  "orchestration_v2_projection_provider_sessions_instance_status_idx",
+  "orchestration_v2_projection_provider_sessions_provider_status_idx",
+  "orchestration_v2_projection_provider_sessions_thread_idx",
+  "orchestration_v2_projection_provider_threads_instance_status_idx",
+  "orchestration_v2_projection_provider_threads_owner_idx",
+  "orchestration_v2_projection_provider_threads_session_idx",
+  "orchestration_v2_projection_provider_threads_thread_idx",
+  "orchestration_v2_projection_provider_turns_thread_idx",
+  "orchestration_v2_projection_provider_turns_thread_ordinal_idx",
+  "orchestration_v2_projection_requests_recovery_idx",
+  "orchestration_v2_projection_run_attempts_run_ordinal_idx",
+  "orchestration_v2_projection_run_attempts_thread_idx",
+  "orchestration_v2_projection_runs_provider_thread_idx",
+  "orchestration_v2_projection_runs_recovery_idx",
+  "orchestration_v2_projection_runs_thread_ordinal_idx",
+  "orchestration_v2_projection_runs_thread_status_idx",
+  "orchestration_v2_projection_runtime_requests_provider_turn_idx",
+  "orchestration_v2_projection_runtime_requests_thread_status_idx",
+  "orchestration_v2_projection_subagents_child_thread_idx",
+  "orchestration_v2_projection_subagents_parent_node_idx",
+  "orchestration_v2_projection_subagents_provider_thread_idx",
+  "orchestration_v2_projection_subagents_thread_idx",
+  "orchestration_v2_projection_threads_project_updated_idx",
+  "orchestration_v2_projection_turn_items_node_ordinal_idx",
+  "orchestration_v2_projection_turn_items_provider_turn_idx",
+  "orchestration_v2_projection_turn_items_recovery_idx",
+  "orchestration_v2_projection_turn_items_run_ordinal_idx",
+  "orchestration_v2_projection_turn_items_shell_pending_idx",
+  "orchestration_v2_projection_turn_items_thread_ordinal_idx",
+  "orchestration_v2_projection_turn_items_thread_run_idx",
+];
+
+/** Only published histories may bypass name equality; unknown histories stop before writes. */
+export const verifyMigrationHistory = Effect.fn("verifyMigrationHistory")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables =
+    yield* sql`SELECT name FROM sqlite_master WHERE name = 'effect_sql_migrations' AND type = 'table'`;
+  if (tables.length === 0) return;
+  const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+    SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+  `;
+  const expected = new Map<number, string>(migrationManifest);
+  const legacySlot33 = history.some(
+    (row) => row.migration_id === 33 && row.name === legacyV2Names.get(33),
+  );
+  if (legacySlot33) expected.set(33, "ProjectionThreadsRunningBackgroundTaskCount");
+  const legacy = history.some(
+    (row) => row.migration_id >= 50 && legacyV2Names.get(row.migration_id) === row.name,
+  );
+  if (legacy) {
+    for (const [id, name] of legacyV2Names) expected.set(id, name);
+  } else {
+    // The September 15–16 previews are reconciled transactionally below.
+    const preview = history.find(
+      (row) =>
+        (row.migration_id === 53 || row.migration_id === 54) && row.name === "OrchestrationV2",
+    );
+    if (preview) {
+      expected.set(preview.migration_id, "OrchestrationV2");
+      expected.set(55, "RemoveRedundantProjectionIndexes");
+      for (const row of history) {
+        if (
+          row.migration_id > preview.migration_id &&
+          !(preview.migration_id === 54 && row.migration_id === 55)
+        ) {
+          return yield* new Migrator.MigrationError({
+            kind: "BadState",
+            message: "Unexpected migration after V2 preview",
+          });
+        }
+      }
+    }
+  }
+  const invalid = history.find(
+    (row, index) => row.migration_id !== index + 1 || expected.get(row.migration_id) !== row.name,
+  );
+  if (invalid || (legacy && history.length !== 61)) {
+    return yield* new Migrator.MigrationError({
+      kind: "BadState",
+      message: invalid
+        ? `Unrecognized migration history at ${invalid.migration_id}:${invalid.name}`
+        : "Incomplete September 8 V2 migration history; expected all 61 entries",
+    });
+  }
+  if (legacy) {
+    for (const [table, required] of Object.entries(legacySkippedColumns)) {
+      const columns = yield* sql.unsafe<{ readonly name: string }>(`PRAGMA table_info("${table}")`);
+      const missing = required
+        .split(" ")
+        .find((name) => !columns.some((column) => column.name === name));
+      if (missing) {
+        return yield* new Migrator.MigrationError({
+          kind: "BadState",
+          message: `Incomplete legacy schema: missing ${table}.${missing}; unsafe migration replay refused`,
+        });
+      }
+    }
+    const indexes = yield* sql<{
+      readonly name: string;
+    }>`SELECT name FROM sqlite_master WHERE type = 'index'`;
+    const missingIndex = legacySkippedIndexes.find(
+      (name) => !indexes.some((index) => index.name === name),
+    );
+    if (missingIndex) {
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message: `Incomplete legacy schema: missing index ${missingIndex}; unsafe migration replay refused`,
+      });
+    }
+  }
+});
 
 const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
@@ -184,6 +410,7 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  yield* verifyMigrationHistory();
   const previewMigrations =
     toMigrationInclusive === undefined || toMigrationInclusive >= 55
       ? yield* reconcileV2PreviewMigration()
@@ -221,7 +448,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   });
   if (divergent.length > 0) {
     yield* Effect.logWarning(
-      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
+      "Recognized legacy migration history; preserving recorded ids and replaying only guarded schema changes.",
     ).pipe(Effect.annotateLogs({ divergent }));
   }
 
@@ -238,7 +465,9 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   });
   if (replayable.length > 0) {
     yield* sql.withTransaction(
+      // @effect-diagnostics-next-line anyUnknownInErrorContext:off
       Effect.forEach(replayable, ([id, name, migration]) =>
+        // @effect-diagnostics-next-line anyUnknownInErrorContext:off
         migration.pipe(
           Effect.mapError(
             (cause) =>
