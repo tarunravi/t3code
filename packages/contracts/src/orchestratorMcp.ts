@@ -506,6 +506,8 @@ export const OrchestratorMcpThreadRosterEntry = Schema.Struct({
   }),
   label: Schema.NullOr(Schema.String),
   role: Schema.NullOr(SubagentRole),
+  /** User-authored "when to use this subagent" intent; null when the entry has none. */
+  description: Schema.NullOr(Schema.String),
   available: Schema.Boolean,
 });
 export type OrchestratorMcpThreadRosterEntry = typeof OrchestratorMcpThreadRosterEntry.Type;
