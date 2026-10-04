@@ -627,6 +627,29 @@ describe("serverSettings helpers", () => {
     expect(inherited.threadSubagentRosters).toEqual({ [threadB]: { entries: [] } });
   });
 
+  it("replaces the subagent preset list whole", () => {
+    const opus = createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5");
+    const withPresets = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      subagentPresets: [
+        {
+          id: "hard",
+          name: "Hard work",
+          entries: [{ selection: opus, role: "hard", description: "Tricky bugs." }],
+        },
+      ],
+    });
+    expect(withPresets.subagentPresets).toEqual([
+      {
+        id: "hard",
+        name: "Hard work",
+        entries: [{ selection: opus, role: "hard", description: "Tricky bugs." }],
+      },
+    ]);
+
+    const emptied = applyServerSettingsPatch(withPresets, { subagentPresets: [] });
+    expect(emptied.subagentPresets).toEqual([]);
+  });
+
   it("replaces and removes individual usage prices without clobbering other models", () => {
     const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
     const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

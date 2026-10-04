@@ -528,6 +528,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["subagents delegate workers favorites recommended presets roster models"],
   },
   {
+    id: "subagent-presets",
+    title: "Subagent presets",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["subagents delegate workers named sets when to use description roster models"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",
