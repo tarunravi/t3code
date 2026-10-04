@@ -11,12 +11,11 @@ import {
 
 describe("orchestrator MCP tool guidance", () => {
   it("directs subagent requests to delegation instead of ordinary threads", () => {
-    assert.include(DelegateTaskTool.description ?? "", "child agent/subagent");
-    assert.include(DelegateTaskTool.description ?? "", "cross-provider");
+    assert.include(DelegateTaskTool.description ?? "", "Delegate a subagent");
     assert.include(CreateThreadsTool.description ?? "", "not delegation");
     assert.include(CreateThreadsTool.description ?? "", "call delegate_task");
     assert.include(DelegateTaskTool.description ?? "", "waitTimedOut");
-    assert.include(DelegateTaskTool.description ?? "", "does not cancel the child");
+    assert.include(DelegateTaskTool.description ?? "", "child is still running");
     assert.include(DelegateTaskTool.description ?? "", "keep that taskId");
     assert.include(DelegateTaskTool.description ?? "", "call delegate_task again");
     assert.include(DelegateTaskTool.description ?? "", "childThreadId is backing storage");
@@ -28,6 +27,22 @@ describe("orchestrator MCP tool guidance", () => {
       OrchestratorToolkit.tools.task_cancel.description ?? "",
       "This includes later child-thread runs, even after the task is terminal",
     );
+  });
+
+  it("points agents at models, options, and roster descriptions without a role field", () => {
+    const description = DelegateTaskTool.description ?? "";
+    assert.include(description, "orchestrator_capabilities");
+    assert.include(description, "options (such as reasoning effort");
+    assert.include(description, "when-to-use description");
+    assert.include(description, '"providerInstanceId":"claudeAgent"');
+
+    const schema = Tool.getJsonSchema(DelegateTaskTool) as {
+      readonly properties?: Readonly<Record<string, unknown>>;
+      readonly required?: ReadonlyArray<string>;
+    };
+    assert.notProperty(schema.properties ?? {}, "role");
+    assert.property(schema.properties ?? {}, "target");
+    assert.deepEqual(schema.required, ["task"]);
   });
 
   it("documents wait timeout as a parent budget, not a child failure", () => {
