@@ -6,6 +6,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
@@ -24,6 +25,7 @@ import {
   makeManualOnlyProviderMaintenanceCapabilities,
   type ProviderMaintenanceCapabilities,
 } from "./providerMaintenance.ts";
+import { resolveUsageLimitsAfterProbe } from "./providerUsageLimits.ts";
 import {
   buildServerProvider,
   isCommandMissingCause,
@@ -126,6 +128,12 @@ interface AntigravityProviderOptions {
   readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities;
   /** Auth type and label published once a session authenticates. */
   readonly auth?: { readonly type: string; readonly label: string };
+  /**
+   * Reads Gemini usage windows for the signed-in account. Never fails; a
+   * failed read returns an unavailable snapshot the probe rules keep or
+   * discard. Only run once the account is authenticated.
+   */
+  readonly readUsageLimits?: Effect.Effect<ServerProviderUsageLimits, never>;
 }
 
 /** Health uses initialize only. Session callbacks supply account-specific metadata. */
@@ -193,6 +201,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     const supportsTextGeneration =
       initialized !== undefined ? yield* options.supportsTextGeneration : false;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
+    // Usage windows are only meaningful for an authenticated account, and a
+    // probe that failed to resolve the install has no account to ask about.
+    const usageLimits =
+      initialized !== undefined &&
+      before.draft.auth.status === "authenticated" &&
+      options.readUsageLimits
+        ? yield* options.readUsageLimits
+        : undefined;
     const next = yield* SubscriptionRef.updateAndGet(metadata, (state) => {
       if (state.authRevision !== before.authRevision) return state;
       const { message: _previousMessage, ...draft } = state.draft;
@@ -225,6 +241,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             ? {
                 supportsTextGeneration:
                   supportsTextGeneration && draft.auth.status !== "unauthenticated",
+              }
+            : {}),
+          ...(usageLimits
+            ? {
+                usageLimits: resolveUsageLimitsAfterProbe({
+                  published: draft.usageLimits,
+                  probed: usageLimits,
+                }),
               }
             : {}),
           ...(message ? { message } : {}),
@@ -351,25 +375,25 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
 
   const clearAccountMetadata = Effect.fn("AntigravityProvider.clearAccountMetadata")(function* () {
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* SubscriptionRef.update(
-      metadata,
-      (state) =>
-        ({
-          authRevision: state.authRevision + 1,
-          draft: {
-            ...state.draft,
-            auth: { status: "unauthenticated" },
-            status: settings.enabled ? "warning" : "disabled",
-            message: SIGN_IN_MESSAGE,
-            checkedAt: updatedAt,
-            models: [],
-            slashCommands: [],
-            skills: [],
-            workspaceSnapshots: [],
-            supportsTextGeneration: false,
-          },
-        }) satisfies AntigravityProviderState,
-    );
+    yield* SubscriptionRef.update(metadata, (state) => {
+      // Windows belong to the signed-in account; a new sign-in re-probes them.
+      const { usageLimits: _staleUsageLimits, ...draft } = state.draft;
+      return {
+        authRevision: state.authRevision + 1,
+        draft: {
+          ...draft,
+          auth: { status: "unauthenticated" },
+          status: settings.enabled ? "warning" : "disabled",
+          message: SIGN_IN_MESSAGE,
+          checkedAt: updatedAt,
+          models: [],
+          slashCommands: [],
+          skills: [],
+          workspaceSnapshots: [],
+          supportsTextGeneration: false,
+        },
+      } satisfies AntigravityProviderState;
+    });
     discoveredSkills.clear();
   });
 
