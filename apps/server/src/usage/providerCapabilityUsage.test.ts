@@ -9,7 +9,6 @@ import type {
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
 import {
-  accountsForDriver,
   aggregateProviderUsage,
   providerCapabilityUsage,
   type ProviderUsageAccount,
@@ -134,57 +133,6 @@ describe("aggregateProviderUsage", () => {
   });
 });
 
-describe("accountsForDriver", () => {
-  const sources: UsageLimitSourceSnapshots = [
-    {
-      id: "source:hub" as never,
-      kind: "cliproxy",
-      label: "Hub",
-      checkedAt: "2026-10-03T10:00:00.000Z",
-      accounts: [
-        hubAccount(
-          { ...limits(), windows: [window({ usedPercent: 90 })] },
-          { email: "tarun@example.com" },
-        ),
-        hubAccount(
-          {
-            ...limits(),
-            windows: [window({ id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 30 })],
-          },
-          { id: "b.json", email: "other@example.com" },
-        ),
-        hubAccount(limits(), { id: "c.json", driver: "claudeAgent" }),
-      ],
-    },
-  ];
-
-  it("combines the instance account with same-driver hub accounts", () => {
-    const accounts = accountsForDriver(codex, [provider(limits())], sources);
-    expect(accounts).toHaveLength(2);
-  });
-
-  it("does not double-count an account the instance snapshot already covers", () => {
-    // Same email as the hub's a.json, but the hub read is fresher.
-    const accounts = accountsForDriver(
-      codex,
-      [provider(limits({ checkedAt: "2026-10-03T08:00:00.000Z", windows: [window()] }))],
-      sources,
-    );
-    expect(accounts).toHaveLength(2);
-    expect(
-      accounts.find((candidate) => candidate.email === "tarun@example.com")?.limits.windows[0]
-        ?.usedPercent,
-    ).toBe(90);
-  });
-
-  it("ignores hub accounts of other drivers", () => {
-    const otherDriverOnly: UsageLimitSourceSnapshots = [
-      { ...sources[0]!, accounts: [sources[0]!.accounts[2]!] },
-    ];
-    expect(accountsForDriver(codex, [], otherDriverOnly)).toHaveLength(0);
-  });
-});
-
 describe("providerCapabilityUsage", () => {
   it("omits instances with no usage data at all", () => {
     const usage = providerCapabilityUsage([provider(undefined)], []);
@@ -199,7 +147,7 @@ describe("providerCapabilityUsage", () => {
     expect(usage[instanceId]).toMatchObject({ mostConstrained: { usedPercent: 25 } });
   });
 
-  it("includes hub accounts under the instance's driver", () => {
+  it("does not attribute an unrelated same-driver hub to an instance", () => {
     const usage = providerCapabilityUsage(
       [provider(undefined)],
       [
@@ -212,7 +160,44 @@ describe("providerCapabilityUsage", () => {
         },
       ],
     );
-    expect(usage[instanceId]).toMatchObject({ mostConstrained: { usedPercent: 40 } });
-    expect(usage[instanceId]?.accountsCombined).toBeUndefined();
+    expect(usage[instanceId]).toBeUndefined();
+  });
+  it("does not replace the instance's quota with a fresher unrelated hub report", () => {
+    const own = provider(limits({ windows: [window({ usedPercent: 10 })] }));
+    const sources: UsageLimitSourceSnapshots = [
+      {
+        id: "source:unrelated" as never,
+        kind: "cliproxy",
+        label: "Unrelated hub",
+        checkedAt: "2026-10-03T11:00:00Z",
+        accounts: [
+          hubAccount(
+            limits({ checkedAt: "2026-10-03T11:00:00Z", windows: [window({ usedPercent: 100 })] }),
+            { email: "tarun@example.com" },
+          ),
+        ],
+      },
+    ];
+    expect(providerCapabilityUsage([own], sources)[instanceId]?.mostConstrained?.usedPercent).toBe(
+      10,
+    );
+  });
+
+  it("keeps independent same-driver instance quotas separate and unknowns unknown", () => {
+    const a = {
+      ...provider(limits({ windows: [window({ usedPercent: 10 })] })),
+      instanceId: ProviderInstanceId.make("A"),
+    };
+    const b = {
+      ...provider(limits({ windows: [window({ usedPercent: 100 })] })),
+      instanceId: ProviderInstanceId.make("B"),
+    };
+    const c = { ...provider(undefined), instanceId: ProviderInstanceId.make("C") };
+    const usage = providerCapabilityUsage([a, b, c], []);
+    expect(usage.A?.mostConstrained?.usedPercent).toBe(10);
+    expect(usage.B?.mostConstrained?.usedPercent).toBe(100);
+    expect(usage.C).toBeUndefined();
+    expect(usage.A?.accountsCombined).toBeUndefined();
+    expect(usage.B?.accountsCombined).toBeUndefined();
   });
 });

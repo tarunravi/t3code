@@ -7,10 +7,9 @@ import type {
 
 import { rosterEntryKey } from "../chat/threadSubagentRoster.logic";
 
-/** Drops a preset entry's description so it can ride the shared roster helpers. */
+/** Presets and persisted rosters share selections, roles, and descriptions. */
 export function presetEntryAsRosterEntry(entry: SubagentPresetEntry): SubagentRosterEntry {
-  const { description: _description, ...rest } = entry;
-  return rest;
+  return { ...entry };
 }
 
 /** Re-attaches descriptions to entries the shared roster helpers returned. */
@@ -50,7 +49,7 @@ export function removePreset(presets: ReadonlyArray<SubagentPreset>, id: string)
   return presets.filter((preset) => preset.id !== id);
 }
 
-/** Copies a preset into a thread roster: selection and role, as rosters persist today. */
+/** Copies a preset into a thread roster: selection, role, and description. */
 export function applyPresetToRoster(preset: SubagentPreset): SubagentRosterEntry[] {
   return preset.entries.map(presetEntryAsRosterEntry);
 }
@@ -60,14 +59,16 @@ export function findPresetForRoster(
   presets: ReadonlyArray<SubagentPreset>,
   entries: ReadonlyArray<SubagentRosterEntry>,
 ): SubagentPreset | null {
-  const keys = entries.map((entry) => `${rosterEntryKey(entry)}\u0000${entry.role ?? ""}`);
+  const keys = entries.map(
+    (entry) => `${rosterEntryKey(entry)}\u0000${entry.role ?? ""}\u0000${entry.description ?? ""}`,
+  );
   return (
     presets.find(
       (preset) =>
         preset.entries.length === keys.length &&
         preset.entries.every(
           (entry, index) =>
-            `${rosterEntryKey(presetEntryAsRosterEntry(entry))}\u0000${entry.role ?? ""}` ===
+            `${rosterEntryKey(presetEntryAsRosterEntry(entry))}\u0000${entry.role ?? ""}\u0000${entry.description ?? ""}` ===
             keys[index],
         ),
     ) ?? null

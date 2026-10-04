@@ -1,26 +1,12 @@
-/**
- * ProviderCapabilityUsage — folds the usage snapshots the server already
- * maintains into the awareness block the orchestrator capabilities result
- * exposes per provider instance.
- *
- * Accounts come from two places: a provider instance's own `usageLimits`
- * snapshot and the pooled accounts `UsageLimitSources` reports for the same
- * driver (a hub such as CLIProxyAPI combines several subscription accounts
- * behind one instance). Matching is by driver, the same convention the
- * /usage-limits report uses; an account the instance's own snapshot already
- * covers is not counted twice.
- *
- * @module usage/providerCapabilityUsage
- */
+/** Per-instance quota awareness. Hub snapshots have no instance binding, so
+ * driver equality alone must never attribute their accounts to an instance. */
 import type {
   OrchestratorMcpProviderUsage,
-  ProviderDriverKind,
   ServerProvider,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
   UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
-import { accountKey } from "@t3tools/shared/usageLimits";
 
 export interface ProviderUsageAccount {
   readonly email: string | undefined;
@@ -31,49 +17,6 @@ function resetMillis(window: ServerProviderUsageWindow): number | null {
   if (window.resetsAt === undefined) return null;
   const at = Date.parse(window.resetsAt);
   return Number.isFinite(at) ? at : null;
-}
-
-/**
- * Distinct accounts reporting on one driver. Accounts without a key (no
- * email, no credential fingerprint) cannot be matched against anything and
- * are kept as their own entry.
- */
-export function accountsForDriver(
-  driver: ProviderDriverKind,
-  providers: readonly ServerProvider[],
-  sources: UsageLimitSourceSnapshots,
-): ReadonlyArray<ProviderUsageAccount> {
-  const accounts = new Map<string, ProviderUsageAccount>();
-  const unkeyed: Array<ProviderUsageAccount> = [];
-  const add = (email: string | undefined, limits: ServerProviderUsageLimits) => {
-    const account = { email, limits };
-    const key = accountKey(driver, email, limits);
-    if (key === null) {
-      unkeyed.push(account);
-      return;
-    }
-    const previous = accounts.get(key);
-    if (previous === undefined) {
-      accounts.set(key, account);
-      return;
-    }
-    // The hub may hold a fresher read of the same subscription than the
-    // instance's own snapshot (or vice versa); the fresher one wins.
-    if (Date.parse(limits.checkedAt) > Date.parse(previous.limits.checkedAt)) {
-      accounts.set(key, account);
-    }
-  };
-  for (const provider of providers) {
-    if (provider.driver !== driver || provider.usageLimits === undefined) continue;
-    add(provider.auth.email, provider.usageLimits);
-  }
-  for (const source of sources) {
-    for (const hubAccount of source.accounts) {
-      if (hubAccount.driver !== driver) continue;
-      add(hubAccount.email, hubAccount.usageLimits);
-    }
-  }
-  return [...accounts.values(), ...unkeyed];
 }
 
 /**
@@ -155,12 +98,14 @@ export function aggregateProviderUsage(
  */
 export function providerCapabilityUsage(
   providers: readonly ServerProvider[],
-  sources: UsageLimitSourceSnapshots,
+  _sources: UsageLimitSourceSnapshots,
 ): Record<string, OrchestratorMcpProviderUsage> {
   const usage: Record<string, OrchestratorMcpProviderUsage> = {};
   for (const provider of providers) {
     const aggregated = aggregateProviderUsage(
-      accountsForDriver(provider.driver, providers, sources),
+      provider.usageLimits === undefined
+        ? []
+        : [{ email: provider.auth.email, limits: provider.usageLimits }],
     );
     if (aggregated !== undefined) usage[provider.instanceId] = aggregated;
   }

@@ -29,10 +29,7 @@ import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
 } from "./threadDetailsPanelStyles";
-import {
-  applyPresetToRoster,
-  findPresetForRoster,
-} from "../settings/subagentPresets.logic";
+import { applyPresetToRoster, findPresetForRoster } from "../settings/subagentPresets.logic";
 import { cn } from "../../lib/utils";
 
 const MANUAL_PRESET = "manual";
@@ -87,10 +84,7 @@ export function ThreadSubagentsPanel(props: {
   // survive the switch turning off and presets being edited out from under a
   // roster, not just the explicit "Manual" choice.
   const expanded =
-    presets.length === 0 ||
-    roster === undefined ||
-    activePreset === null ||
-    manualChoice === true;
+    presets.length === 0 || roster === undefined || activePreset === null || manualChoice === true;
 
   const applyPreset = (presetId: string) => {
     const preset = presets.find((candidate) => candidate.id === presetId);
@@ -177,11 +171,7 @@ export function ThreadSubagentsPanel(props: {
         <Menu>
           <MenuTrigger
             render={
-              <ThreadDetailsControl
-                part="row"
-                tone="muted"
-                aria-label="Choose a subagent preset"
-              />
+              <ThreadDetailsControl part="row" tone="muted" aria-label="Choose a subagent preset" />
             }
           >
             <SparklesIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
@@ -194,7 +184,7 @@ export function ThreadSubagentsPanel(props: {
           </MenuTrigger>
           <MenuPopup align="start">
             <MenuRadioGroup
-              value={activePreset?.id ?? MANUAL_PRESET}
+              value={manualChoice === true ? MANUAL_PRESET : (activePreset?.id ?? MANUAL_PRESET)}
               onValueChange={(value) => {
                 if (value === MANUAL_PRESET) {
                   setManualChoice(true);
@@ -248,7 +238,9 @@ export function ThreadSubagentsPanel(props: {
                 Environment subagents
               </span>
               <p className="truncate text-2xs text-muted-foreground">
-                {allowedModelCount === 1 ? "1 allowed model" : `${allowedModelCount} allowed models`}
+                {allowedModelCount === 1
+                  ? "1 allowed model"
+                  : `${allowedModelCount} allowed models`}
               </p>
             </div>
           </div>
