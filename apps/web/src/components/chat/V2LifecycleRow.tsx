@@ -7,6 +7,9 @@ import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails } from "../../state/threads";
+import { useThreadProjection } from "../../state/entities";
+import { latestTokenUsage } from "../../lib/tokenRate";
+import { TokenRateLabel } from "./TokenRateLabel";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import * as DateTime from "effect/DateTime";
 import { WorkLogRow } from "./WorkLog";
@@ -415,6 +418,10 @@ function SubagentTimelineLink(props: {
     (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
   );
   const threadId = props.threadId;
+  const childProjection = useThreadProjection(
+    threadId !== null ? scopeThreadRef(props.parentRef.environmentId, threadId) : null,
+  );
+  const childTokenUsage = latestTokenUsage(childProjection?.projection);
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -468,8 +475,15 @@ function SubagentTimelineLink(props: {
           )}
         </span>
       </span>
-      <span className="shrink-0 font-mono text-3xs text-muted-foreground/80">
-        {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        <span className="font-mono text-3xs text-muted-foreground/80">
+          {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
+        </span>
+        <TokenRateLabel
+          tokenUsage={childTokenUsage}
+          resetKey={threadId}
+          className="font-mono text-3xs"
+        />
       </span>
       {threadId !== null ? (
         <ChevronRightIcon
@@ -515,6 +529,13 @@ function SubagentTimelineLink(props: {
           status={liveStatus}
           result={agent?.result ?? props.result}
           progress={agent?.progress ?? props.progress}
+          tokenRate={
+            <TokenRateLabel
+              tokenUsage={childTokenUsage}
+              resetKey={threadId}
+              className="font-mono text-3xs"
+            />
+          }
         />
       </ThreadHoverCardPopup>
     </Tooltip>
@@ -522,7 +543,11 @@ function SubagentTimelineLink(props: {
 }
 
 function SubagentTimelineTooltip(
-  props: Parameters<typeof SubagentTimelineLink>[0] & { model: string | null; elapsed: ReactNode },
+  props: Parameters<typeof SubagentTimelineLink>[0] & {
+    model: string | null;
+    elapsed: ReactNode;
+    tokenRate?: ReactNode;
+  },
 ) {
   const environmentId = props.parentRef.environmentId;
   const parent = useThreadShell(props.parentRef)?.source;
@@ -543,6 +568,7 @@ function SubagentTimelineTooltip(
       status={props.status}
       result={props.result}
       progress={props.progress}
+      tokenRate={props.tokenRate}
       parentThread={parent}
       childThread={child}
       parentProject={parentProject ?? undefined}
