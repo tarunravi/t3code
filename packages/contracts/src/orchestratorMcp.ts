@@ -36,6 +36,7 @@ import {
   ProviderOptionSelectionValue,
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { ServerProviderUsageWindow } from "./providerUsageLimits.ts";
 import { SubagentRole } from "./settings.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
@@ -504,6 +505,33 @@ export const OrchestratorMcpThreadRoster = Schema.Struct({
 });
 export type OrchestratorMcpThreadRoster = typeof OrchestratorMcpThreadRoster.Type;
 
+/**
+ * Awareness-only quota view for one provider instance, folded from the
+ * server's existing usage snapshots (its own account plus any pooled hub
+ * accounts the driver routes through). Not a hard gate: an agent should plan
+ * around `mostConstrained` and the reset times, but delegation is never
+ * refused because of usage. Omitted entirely when the server holds no usage
+ * data for the instance.
+ */
+export const OrchestratorMcpProviderUsage = Schema.Struct({
+  /** When the winning account's snapshot was read; stale data is still included. */
+  checkedAt: IsoDateTime,
+  /** The fullest window across the combined accounts, or null when none report windows. */
+  mostConstrained: Schema.NullOr(ServerProviderUsageWindow),
+  /** Windows of the most-constrained account, so an agent can see the rest of its quota. */
+  windows: Schema.Array(ServerProviderUsageWindow),
+  /** Present only when more than one account was combined into this view. */
+  accountsCombined: Schema.optional(NonNegativeInt),
+  /** Present when accounts exist but none report windows (never-reporting or failed probe). */
+  unavailable: Schema.optional(
+    Schema.Struct({
+      reason: Schema.Literals(["unsupported", "probeFailed"]),
+      message: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
+});
+export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
+
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
@@ -513,6 +541,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  providerUsage: Schema.optional(Schema.Record(ProviderInstanceId, OrchestratorMcpProviderUsage)),
   threadRoster: Schema.optional(OrchestratorMcpThreadRoster),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
