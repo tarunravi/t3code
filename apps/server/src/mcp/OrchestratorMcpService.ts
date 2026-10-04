@@ -74,6 +74,8 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
+import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
+import { providerCapabilityUsage } from "../usage/providerCapabilityUsage.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { resolveRosterTarget, THREAD_ROSTER_GUIDANCE } from "./threadSubagentRoster.ts";
 
@@ -800,6 +802,7 @@ const make = Effect.gen(function* () {
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const serverSettings = yield* ServerSettingsService.ServerSettingsService;
+  const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
 
   const loadSubagentSettings = serverSettings.getSettings.pipe(
     Effect.mapError((error) =>
@@ -1382,11 +1385,13 @@ const make = Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
         const providers = yield* loadProviders;
+        const sources = yield* usageLimitSources.current;
         const settings = yield* loadSubagentSettings;
         const roster = settings.threadSubagentRosters[scope.threadId];
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
         const constraintsFor = (provider: ServerProvider) =>
           providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId));
+        const providerUsage = providerCapabilityUsage(providers, sources);
         return {
           parentThreadId: scope.threadId,
           inheritedProviderInstanceId: parent.thread.modelSelection.instanceId,
@@ -1427,6 +1432,7 @@ const make = Effect.gen(function* () {
               constraints: [...constraints],
             };
           }),
+          ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
           ...(roster === undefined
             ? {}
             : {
@@ -1449,6 +1455,7 @@ const make = Effect.gen(function* () {
                       },
                       label: model?.name ?? null,
                       role: entry.role ?? null,
+                      description: entry.description ?? null,
                       available:
                         provider !== undefined &&
                         constraintsFor(provider).length === 0 &&
@@ -2080,4 +2087,5 @@ export const layer: Layer.Layer<
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
   | ServerSettingsService.ServerSettingsService
+  | UsageLimitSources.UsageLimitSources
 > = Layer.effect(OrchestratorMcpService, make);
