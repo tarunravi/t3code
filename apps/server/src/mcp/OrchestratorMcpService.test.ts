@@ -923,6 +923,166 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  const delegationLayer = (dispatched: Ref.Ref<ReadonlyArray<unknown>>) => {
+    const task = {
+      id: taskId,
+      threadId: parentThreadId,
+      runId: parentRunId,
+      parentNodeId,
+      origin: "app_owned",
+      createdBy: "agent",
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: codexInstanceId,
+      providerThreadId: null,
+      childThreadId,
+      nativeTaskRef: null,
+      prompt: "Summarize the diff.",
+      title: null,
+      model: "gpt-5.4",
+      status: "running",
+      result: null,
+      startedAt: null,
+      completedAt: null,
+    };
+    let delegated = false;
+    const dependencies = Layer.mergeAll(
+      ServerSettings.layerTest(),
+      NodeServices.layer,
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: (threadId) =>
+          Effect.succeed(
+            threadId === parentThreadId
+              ? parentProjection(delegated ? [task] : [])
+              : childProjection,
+          ),
+        dispatch: (command) =>
+          Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                delegated = true;
+              }),
+            ),
+            Effect.as({
+              sequence: 1,
+              storedEvents: [
+                {
+                  sequence: 1,
+                  commandId: null,
+                  event: { type: "subagent.updated", payload: task },
+                },
+              ],
+            } as never),
+          ),
+      }),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({
+        getProviders: Effect.succeed([
+          {
+            ...providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+            }),
+            models: [
+              {
+                slug: "gpt-5.4",
+                name: "GPT-5.4",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select",
+                      options: [
+                        { id: "low", label: "Low" },
+                        { id: "medium", label: "Medium", isDefault: true },
+                        { id: "high", label: "High" },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          } as ServerProvider,
+        ]),
+      }),
+      adapterRegistryLayer([codexInstanceId]),
+      Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      usageSourcesTestLayer,
+    );
+    return OrchestratorMcpService.layer.pipe(Layer.provide(dependencies));
+  };
+
+  it.effect("ignores a legacy role argument and sends the task unchanged", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          role: "review",
+          clientRequestId: "delegate-legacy-role",
+        });
+        assert.equal(result.status, "running");
+        const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{ task: string }>;
+        assert.equal(request?.task, "Summarize the diff.");
+      }).pipe(Effect.provide(delegationLayer(dispatched)));
+    }),
+  );
+
+  it.effect("explains how to fix an unknown model with a corrected call", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const error = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { providerInstanceId: codexInstanceId, model: "gpt-9" },
+          })
+          .pipe(Effect.flip);
+        assert.equal(error.code, "model_unavailable");
+        assert.include(error.message, "Model gpt-9 is not advertised by provider codex.");
+        assert.include(error.message, "How to fix:");
+        assert.include(error.message, "- codex: gpt-5.4 (reasoningEffort=low|medium|high)");
+        assert.include(
+          error.message,
+          'Example: {"task":"...","target":{"providerInstanceId":"codex","model":"gpt-5.4","options":{"reasoningEffort":"medium"}},"mode":"async"}',
+        );
+        assert.deepEqual(yield* Ref.get(dispatched), []);
+      }).pipe(Effect.provide(delegationLayer(dispatched)));
+    }),
+  );
+
+  it.effect("turns malformed arguments into a corrective invalid_request", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        for (const input of [{ mode: "async" }, { task: "Summarize the diff.", mode: "later" }]) {
+          const error = yield* service.delegateTask(scope, input).pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, "Invalid delegate_task arguments:");
+          assert.include(error.message, "How to fix:");
+          assert.include(error.message, '"providerInstanceId":"codex"');
+        }
+
+        const badOption = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { model: "gpt-5.4", options: { reasoningEffort: "extreme" } },
+          })
+          .pipe(Effect.flip);
+        assert.equal(badOption.code, "invalid_request");
+        assert.include(
+          badOption.message,
+          "Option reasoningEffort must be one of: low, medium, high.",
+        );
+        assert.include(badOption.message, "Example:");
+        assert.deepEqual(yield* Ref.get(dispatched), []);
+      }).pipe(Effect.provide(delegationLayer(dispatched)));
+    }),
+  );
+
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
       const forkOnlyInstanceId = ProviderInstanceId.make("forkOnly");
