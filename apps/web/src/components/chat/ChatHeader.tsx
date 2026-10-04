@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type OrchestrationV2ProviderTurn,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -53,8 +54,8 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
-  /** Latest provider-reported usage for the active thread, for the tok/s readout. */
-  tokenUsage?: { readonly usedTokens: number } | null | undefined;
+  /** Current provider turn, for completed-turn output throughput. */
+  tokenRateTurn?: OrchestrationV2ProviderTurn | null | undefined;
 }
 
 function resolveRenameCommit(input: {
@@ -80,7 +81,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
-  tokenUsage,
+  tokenRateTurn,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -413,7 +414,7 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
-      <TokenRateLabel tokenUsage={tokenUsage} resetKey={activeThreadId} className="shrink-0" />
+      <TokenRateLabel providerTurn={tokenRateTurn} className="shrink-0" />
     </div>
   );
 });
