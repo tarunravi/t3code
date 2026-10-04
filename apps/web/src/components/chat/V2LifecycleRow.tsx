@@ -10,6 +10,8 @@ import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails } from "../../state/threads";
+import { useThreadProjection } from "../../state/entities";
+import { TokenRateLabel } from "./TokenRateLabel";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import * as DateTime from "effect/DateTime";
@@ -385,6 +387,9 @@ function SubagentTimelineLink(props: {
   const remoteEnvironment = useEnvironment(remote?.environmentId ?? null);
   const navigate = useNavigate();
   const threadId = props.threadId;
+  const childProjection = useThreadProjection(
+    threadId !== null ? scopeThreadRef(props.parentRef.environmentId, threadId) : null,
+  );
   // A task in a linked environment opens there, if this client is connected to it.
   const open =
     threadId !== null
@@ -451,8 +456,11 @@ function SubagentTimelineLink(props: {
           {statusLabel}
         </span>
       ) : null}
-      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-        {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
+        </span>
+        <TokenRateLabel projection={childProjection?.projection} />
       </span>
       {open !== null ? (
         <ChevronRightIcon
@@ -499,6 +507,7 @@ function SubagentTimelineLink(props: {
           status={liveStatus}
           result={agent?.result ?? props.result}
           progress={agent?.progress ?? props.progress}
+          tokenRate={<TokenRateLabel projection={childProjection?.projection} />}
         />
       </ThreadHoverCardPopup>
     </Tooltip>
@@ -510,6 +519,7 @@ function SubagentTimelineTooltip(
     model: string | null;
     modelSelection: OrchestrationV2Subagent["modelSelection"];
     elapsed: ReactNode;
+    tokenRate?: ReactNode;
   },
 ) {
   const environmentId = props.parentRef.environmentId;
@@ -538,6 +548,7 @@ function SubagentTimelineTooltip(
       status={props.status}
       result={props.result}
       progress={props.progress}
+      tokenRate={props.tokenRate}
       parentThread={parent}
       childThread={child}
       parentProject={parentProject ?? undefined}
