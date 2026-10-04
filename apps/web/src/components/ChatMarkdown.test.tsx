@@ -661,8 +661,17 @@ describe("ChatMarkdown math and Mermaid", () => {
     );
 
     expect(html).toContain('data-language="mermaid"');
-    expect(html).toContain('aria-label="Show Mermaid code"');
-    expect(html).toContain("Rendering diagram");
+    expect(html).toContain('aria-label="Show code"');
+  });
+
+  it("renders a closed Mermaid fence while the rest of the message streams", () => {
+    const render = (text: string) =>
+      renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
+
+    expect(render("```mermaid\ngraph TD\n  A --> B\n```\n\nStill writing")).toContain(
+      'data-language="mermaid"',
+    );
+    expect(render("```mermaid\ngraph TD\n  A --> B")).toContain('data-language="mermaid"');
   });
 });
 
