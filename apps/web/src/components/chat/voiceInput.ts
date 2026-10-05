@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { VoiceInputDevice } from "@t3tools/contracts";
 import {
   VoiceInputController,
   voiceInputBlocksSubmission,
@@ -19,6 +20,10 @@ import {
   throwIfVoiceTranscriptionAborted,
   type VoiceTranscriber,
 } from "@t3tools/client-runtime/voice-input";
+
+import { getClientSettings } from "~/hooks/useSettings";
+import { toastManager } from "../ui/toast";
+import { openVoiceStream } from "./voiceMicrophone";
 
 const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 
@@ -38,6 +43,14 @@ function blobToBase64(blob: Blob): Promise<string> {
     };
     reader.onerror = () => reject(new Error("Failed to read the recording."));
     reader.readAsDataURL(blob);
+  });
+}
+
+function notifyMicrophoneUnavailable(device: VoiceInputDevice): void {
+  toastManager.add({
+    type: "warning",
+    title: "Microphone not found",
+    description: `${device.label || "The selected microphone"} is unavailable, so voice input is using the system default. Change it in Settings.`,
   });
 }
 
@@ -68,7 +81,7 @@ export class WebVoiceRecorder implements VoiceRecorder {
     try {
       // Acquire the stream here so prepareToRecordAsync can reuse it without
       // a second permission round-trip.
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.stream = await this.openStream();
       return { granted: true, canAskAgain: true };
     } catch (error) {
       const denied =
@@ -79,7 +92,7 @@ export class WebVoiceRecorder implements VoiceRecorder {
   }
 
   async prepareToRecordAsync(): Promise<void> {
-    this.stream ??= await navigator.mediaDevices.getUserMedia({ audio: true });
+    this.stream ??= await this.openStream();
     const mimeType =
       PREFERRED_MIME_TYPES.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
     const recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
@@ -109,6 +122,15 @@ export class WebVoiceRecorder implements VoiceRecorder {
         url: this.uri,
       });
     };
+  }
+
+  private async openStream(): Promise<MediaStream> {
+    const { stream, unavailableDevice } = await openVoiceStream(
+      navigator.mediaDevices,
+      getClientSettings().voiceInputDevice,
+    );
+    if (unavailableDevice) notifyMicrophoneUnavailable(unavailableDevice);
+    return stream;
   }
 
   record(options: { readonly forDuration: number }): void {
