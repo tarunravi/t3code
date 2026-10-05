@@ -13,6 +13,9 @@ import {
   moveRosterEntry,
   resolvePreset,
   resolveRosterEntry,
+  rosterEntrySummary,
+  rosterOptionChips,
+  rosterSpeedLabel,
   SUBAGENT_PRESETS,
 } from "./threadSubagentRoster.logic";
 
@@ -120,5 +123,125 @@ describe("roster edits", () => {
     const instances = deriveProviderInstanceEntries([provider("claudeAgent", [{ slug: "other" }])]);
     expect(resolveRosterEntry(opus, instances).unavailableReason).toContain("no longer offers");
     expect(resolveRosterEntry(glm, instances).unavailableReason).toContain("not configured");
+  });
+});
+
+describe("rosterOptionChips", () => {
+  const fast = { id: "fastMode", label: "Fast Mode", type: "boolean" as const };
+  const model = {
+    slug: "gpt",
+    name: "gpt",
+    isCustom: false,
+    capabilities: { optionDescriptors: [effort, fast] },
+  };
+  const selection = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "gpt",
+    options: [
+      { id: "effort", value: "high" },
+      { id: "fastMode", value: true },
+      { id: "contextWindow", value: "1m" },
+      { id: "thinking", value: false },
+    ],
+  };
+
+  it("labels described options, drops switched-off booleans, and ends with speed", () => {
+    expect(rosterOptionChips(selection, model)).toEqual([
+      { id: "effort", label: "High", title: "Reasoning" },
+      { id: "contextWindow", label: "1m", title: null },
+      { id: "speed", label: "Fast", title: "Speed" },
+    ]);
+  });
+
+  it("keeps the speed chip when fast mode is off", () => {
+    expect(
+      rosterOptionChips({ ...selection, options: [{ id: "fastMode", value: false }] }, model),
+    ).toEqual([{ id: "speed", label: "Standard", title: "Speed" }]);
+  });
+});
+
+describe("rosterSpeedLabel", () => {
+  const claude = {
+    slug: "opus",
+    name: "opus",
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [effort, { id: "fastMode", label: "Fast Mode", type: "boolean" as const }],
+    },
+  };
+  const codex = {
+    slug: "gpt",
+    name: "gpt",
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "serviceTier",
+          label: "Service Tier",
+          type: "select" as const,
+          options: [
+            { id: "default", label: "Standard", isDefault: true },
+            { id: "fast", label: "Fast" },
+            { id: "ultrafast", label: "Ultrafast" },
+          ],
+        },
+      ],
+    },
+  };
+  const at = (options?: ReadonlyArray<{ id: string; value: string | boolean }>) => ({
+    instanceId: ProviderInstanceId.make("any"),
+    model: "m",
+    ...(options === undefined ? {} : { options: [...options] }),
+  });
+
+  it("reads Claude fast mode as Fast, Standard, or the provider default", () => {
+    expect(rosterSpeedLabel(at([{ id: "fastMode", value: true }]), claude)).toBe("Fast");
+    expect(rosterSpeedLabel(at([{ id: "fastMode", value: false }]), claude)).toBe("Standard");
+    expect(rosterSpeedLabel(at(), claude)).toBe("Default speed");
+  });
+
+  it("reads the Codex service tier by its label", () => {
+    expect(rosterSpeedLabel(at([{ id: "serviceTier", value: "ultrafast" }]), codex)).toBe(
+      "Ultrafast",
+    );
+    expect(rosterSpeedLabel(at([{ id: "serviceTier", value: "default" }]), codex)).toBe("Standard");
+    expect(rosterSpeedLabel(at(), codex)).toBe("Default speed");
+  });
+
+  it("is absent for models without a speed option, but keeps an explicit one", () => {
+    const plain = { slug: "glm", name: "glm", isCustom: false, capabilities: {} };
+    expect(rosterSpeedLabel(at(), plain)).toBeNull();
+    expect(rosterSpeedLabel(at([{ id: "fastMode", value: true }]), undefined)).toBe("Fast");
+  });
+});
+
+describe("rosterEntrySummary", () => {
+  it("joins provider, effort, and speed, skipping what is unset", () => {
+    const instances = deriveProviderInstanceEntries([
+      provider("claudeAgent", [{ slug: "claude-opus-5-5", withEffort: true }]),
+    ]);
+    const entry = (options: ReadonlyArray<{ id: string; value: string | boolean }>) =>
+      resolveRosterEntry(
+        {
+          selection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+            options: [...options],
+          },
+        },
+        instances,
+      );
+    expect(
+      rosterEntrySummary(
+        "Claude",
+        entry([
+          { id: "effort", value: "medium" },
+          { id: "fastMode", value: true },
+        ]),
+      ),
+    ).toBe("Claude · Medium · Fast");
+    expect(rosterEntrySummary("Claude", entry([{ id: "effort", value: "low" }]))).toBe(
+      "Claude · Low",
+    );
   });
 });
