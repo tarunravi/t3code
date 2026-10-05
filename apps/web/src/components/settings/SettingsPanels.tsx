@@ -76,6 +76,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DevboxPanelSetting } from "./DevboxPanelSetting";
+import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -756,6 +757,7 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      {isElectron ? <SettingsSection id="voice" title="Voice"><VoiceMicrophoneSetting /></SettingsSection> : null}
       <SettingsSection id="notifications" title="Notifications">
         <NotificationSettings />
         <SettingsRow
