@@ -1,7 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
-  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2ThreadProjection,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -50,8 +50,8 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
-  /** Current provider turn, for completed-turn output throughput. */
-  tokenRateTurn?: OrchestrationV2ProviderTurn | null | undefined;
+  /** Server projection, for live and completed-turn output throughput. */
+  threadProjection?: OrchestrationV2ThreadProjection | null | undefined;
 }
 
 /**
@@ -84,7 +84,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
-  tokenRateTurn,
+  threadProjection,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -360,7 +360,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      <TokenRateLabel providerTurn={tokenRateTurn} className="shrink-0" />
+      <TokenRateLabel projection={threadProjection} className="shrink-0" />
     </div>
   );
 });
