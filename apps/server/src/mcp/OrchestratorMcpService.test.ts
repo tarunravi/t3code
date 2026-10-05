@@ -533,6 +533,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: parentThreadId },
       },
       runs: [
         {
@@ -1487,6 +1488,194 @@ describe("OrchestratorMcpService provider resolution", () => {
           },
           { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
         ]);
+      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
+  it.effect("inherits the nearest ancestor's roster across delegated subagent depths", () =>
+    Effect.gen(function* () {
+      const delegatedChildThreadId = ThreadId.make("thread:mcp-providers-delegated-child");
+      const grandchildThreadId = ThreadId.make("thread:mcp-providers-grandchild");
+      const unrosteredRootThreadId = ThreadId.make("thread:mcp-providers-unrostered-root");
+      const unrosteredChildThreadId = ThreadId.make("thread:mcp-providers-unrostered-child");
+      const codex = {
+        ...providerSnapshot({
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+        }),
+        models: [
+          { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null },
+          { slug: "gpt-6-luna", name: "GPT-6 Luna", isCustom: false, capabilities: null },
+        ],
+      };
+      const antigravity = providerSnapshot({
+        instanceId: antigravityInstanceId,
+        driver: ProviderDriverKind.make("antigravity"),
+        model: "ant-model",
+      });
+      // Delegated children run on an explicitly chosen target that differs
+      // from the roster default; that must not change what they inherit.
+      const lunaSelection = { instanceId: codexInstanceId, model: "gpt-6-luna" };
+      const subagentThread = (
+        id: ThreadId,
+        parent: ThreadId | null,
+        subagents: ReadonlyArray<unknown> = [],
+      ): OrchestrationV2ThreadProjection => {
+        const projection = parentProjection(subagents, lunaSelection);
+        return {
+          ...projection,
+          thread: {
+            ...projection.thread,
+            id,
+            lineage: {
+              parentThreadId: parent,
+              relationshipToParent: parent === null ? null : "subagent",
+              rootThreadId: parentThreadId,
+            },
+          },
+        } as OrchestrationV2ThreadProjection;
+      };
+      const task = {
+        id: taskId,
+        threadId: grandchildThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("antigravity"),
+        providerInstanceId: antigravityInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Summarize the diff.",
+        title: null,
+        model: "ant-model",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      let delegated = false;
+      const projections = (threadId: ThreadId): OrchestrationV2ThreadProjection => {
+        switch (threadId) {
+          case parentThreadId:
+            return parentProjection([]);
+          case delegatedChildThreadId:
+            return subagentThread(delegatedChildThreadId, parentThreadId);
+          case grandchildThreadId:
+            return subagentThread(
+              grandchildThreadId,
+              delegatedChildThreadId,
+              delegated ? [task] : [],
+            );
+          case unrosteredRootThreadId:
+            return subagentThread(unrosteredRootThreadId, null);
+          case unrosteredChildThreadId:
+            return subagentThread(unrosteredChildThreadId, unrosteredRootThreadId);
+          default:
+            return childProjection;
+        }
+      };
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest({
+          subagentModelPreferences: { [codexInstanceId]: { hiddenModels: ["gpt-5.4"] } },
+          threadSubagentRosters: {
+            [parentThreadId]: {
+              entries: [
+                {
+                  selection: {
+                    instanceId: antigravityInstanceId,
+                    model: "ant-model",
+                    options: [{ id: "effort", value: "medium" }],
+                  },
+                  role: "default",
+                  description: "Most work.",
+                },
+                { selection: lunaSelection, role: "bulk" },
+              ],
+            },
+          },
+        }),
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) => Effect.succeed(projections(threadId)),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  delegated = true;
+                }),
+              ),
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([codex, antigravity]),
+        }),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const rootRoster = (yield* service.capabilities(scope)).threadRoster;
+        assert.isDefined(rootRoster);
+        for (const threadId of [delegatedChildThreadId, grandchildThreadId]) {
+          const inherited = yield* service.capabilities({ ...scope, threadId });
+          assert.deepEqual(inherited.threadRoster, rootRoster, threadId);
+        }
+
+        const grandchildScope = { ...scope, threadId: grandchildThreadId };
+        const outside = yield* service
+          .delegateTask(grandchildScope, {
+            task: "Look at the diff.",
+            target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" },
+            mode: "async",
+          })
+          .pipe(Effect.flip);
+        assert.equal(outside.code, "model_unavailable");
+        assert.isTrue(outside.message.includes("not in this thread's subagent roster"));
+
+        yield* service.delegateTask(grandchildScope, {
+          task: "Summarize the diff.",
+          mode: "async",
+          clientRequestId: "inherited-roster-default",
+        });
+        assert.deepEqual(
+          (yield* Ref.get(dispatched)).map(
+            (command) => (command as { modelSelection: unknown }).modelSelection,
+          ),
+          [
+            {
+              instanceId: antigravityInstanceId,
+              model: "ant-model",
+              options: [{ id: "effort", value: "medium" }],
+            },
+          ],
+        );
+
+        const unrostered = yield* service.capabilities({
+          ...scope,
+          threadId: unrosteredChildThreadId,
+        });
+        assert.isUndefined(unrostered.threadRoster);
+        assert.deepEqual(
+          unrostered.providers
+            .find((provider) => provider.providerInstanceId === codexInstanceId)
+            ?.models.map((model) => model.id),
+          ["gpt-6-luna"],
+        );
       }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
     }),
   );

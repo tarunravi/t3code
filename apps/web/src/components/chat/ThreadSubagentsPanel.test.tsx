@@ -66,6 +66,16 @@ vi.mock("../ui/tooltip", () => ({
   ),
   TooltipPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
+vi.mock("../ui/preview-card", () => ({
+  PreviewCard: ({ children }: { children?: ReactNode }) => children,
+  PreviewCardTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) => (
+    <>
+      {render}
+      {children}
+    </>
+  ),
+  PreviewCardPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
 // Radio items route clicks through the group's onValueChange, like Base UI does.
 vi.mock("../ui/menu", async () => {
   const { createContext, useContext } = await import("react");
