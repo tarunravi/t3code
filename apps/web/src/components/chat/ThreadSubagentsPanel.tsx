@@ -32,7 +32,11 @@ import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
 } from "./threadDetailsPanelStyles";
-import { applyPresetToRoster, findPresetForRoster } from "../settings/subagentPresets.logic";
+import {
+  applyPresetToRoster,
+  draftRosterWithDefaultPreset,
+  findPresetForRoster,
+} from "../settings/subagentPresets.logic";
 import { cn } from "../../lib/utils";
 
 const MANUAL_PRESET = "manual";
@@ -67,13 +71,16 @@ export function ThreadSubagentsPanel(props: {
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   if (!supported) return null;
 
-  const roster = props.draftId
-    ? draftEntries == null
-      ? undefined
-      : { entries: draftEntries }
-    : settings.threadSubagentRosters[props.threadId];
   const hotlist = settings.subagentHotlist;
   const presets = settings.subagentPresets;
+  const draftRoster = props.draftId
+    ? draftRosterWithDefaultPreset(draftEntries, presets, settings.defaultSubagentPresetId)
+    : undefined;
+  const roster = props.draftId
+    ? draftRoster == null
+      ? undefined
+      : { entries: draftRoster }
+    : settings.threadSubagentRosters[props.threadId];
   const saveRoster = (entries: ReadonlyArray<SubagentRosterEntry> | null) => {
     if (props.draftId) {
       setDraftThreadContext(props.draftId, { subagentRoster: entries });
