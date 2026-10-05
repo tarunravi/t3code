@@ -328,3 +328,26 @@ export class UsageReadError extends Schema.TaggedError<UsageReadError>()("UsageR
     return `Usage read failed (${this.reason}): ${this.detail}`;
   }
 }
+
+export const UsageModelRatesInput = Schema.Struct({
+  models: Schema.Array(TrimmedNonEmptyString),
+});
+export type UsageModelRatesInput = typeof UsageModelRatesInput.Type;
+
+/** Standard-speed rates in USD per token, after price overrides and "Map to" aliases. */
+export const UsageModelRate = Schema.Struct({
+  inputCostPerToken: Schema.Number,
+  outputCostPerToken: Schema.Number,
+  cacheReadCostPerToken: Schema.Number,
+  cacheCreationCostPerToken: Schema.Number,
+});
+export type UsageModelRate = typeof UsageModelRate.Type;
+
+export const UsageModelRates = Schema.Struct({
+  /** One entry per requested model; `rate` is null when the model is unpriced. */
+  models: Schema.Array(
+    Schema.Struct({ model: TrimmedNonEmptyString, rate: Schema.NullOr(UsageModelRate) }),
+  ),
+  pricing: UsagePricing,
+});
+export type UsageModelRates = typeof UsageModelRates.Type;
