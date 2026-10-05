@@ -24,6 +24,7 @@ import {
 } from "./settingsLayout";
 
 const POLL_MS = 1_500;
+const MAC = "mac";
 
 // The desktop bridge is fixed for the window's lifetime, so handlers read it directly.
 const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
@@ -119,13 +120,18 @@ function Progress({ login }: { readonly login: DesktopDevboxLogin }) {
 export function MachinesSettings() {
   const [state, setState] = useState<DesktopDevboxState | null>(null);
   const [profiles, setProfiles] = useState<readonly DesktopAwsProfile[]>([]);
-  const [target, setTarget] = useState<DesktopDevboxLoginTarget>("mac");
+  const [selected, setTarget] = useState<DesktopDevboxLoginTarget>(MAC);
   const handled = useRef(new Set<string>());
   const nowMs = useRelativeTimeTick(60_000);
 
   const available = bridge?.getDevboxState !== undefined && bridge.startDevboxLogin !== undefined;
-  const devboxRunning = state?.instance?.state === "running";
   const hasDevbox = state?.config != null;
+  const instances = hasDevbox ? (state?.instances ?? []) : [];
+  const isRunning = (name: string) =>
+    instances.some((instance) => instance.name === name && instance.state === "running");
+  // A devbox that stopped or disappeared falls back to this Mac.
+  const target = selected === MAC || isRunning(selected) ? selected : MAC;
+  const onMac = target === MAC;
   const busy = state?.checking === true || (state?.logins.some(isActive) ?? false);
   const checks = state?.checks[target] ?? null;
 
@@ -190,16 +196,20 @@ export function MachinesSettings() {
             value={[target]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "mac" || value === "devbox") setTarget(value);
+              if (value) setTarget(value);
             }}
           >
-            <Toggle value="mac">This Mac</Toggle>
-            {hasDevbox ? (
-              <Toggle value="devbox" disabled={!devboxRunning}>
-                {state?.sshAlias ?? "devbox"}
-                {devboxRunning ? null : ` · ${state?.instance?.state ?? "none"}`}
+            <Toggle value={MAC}>This Mac</Toggle>
+            {instances.map((instance) => (
+              <Toggle
+                key={instance.instanceId}
+                value={instance.name}
+                disabled={instance.state !== "running"}
+              >
+                {instance.name}
+                {instance.state === "running" ? null : ` · ${instance.state}`}
               </Toggle>
-            ) : null}
+            ))}
           </ToggleGroup>
           <Button
             size="xs"
@@ -212,8 +222,8 @@ export function MachinesSettings() {
           </Button>
         </div>
 
-        <SettingsSection title={target === "mac" ? "This Mac" : "Devbox"}>
-          {!hasDevbox && target === "mac" ? (
+        <SettingsSection title={onMac ? "This Mac" : target}>
+          {!hasDevbox && onMac ? (
             <SettingsRow
               title="AWS profile"
               description="Profile used for AWS SSO on this Mac."
@@ -288,17 +298,18 @@ export function MachinesSettings() {
               />
             );
           })}
-          {target === "devbox" && checks ? (
+          {!onMac && checks ? (
             <SettingsRow
               title="Brain vault"
               description={<span className="text-xs">{checks.brain.detail}</span>}
             />
           ) : null}
         </SettingsSection>
-        {target === "devbox" ? (
+        {!onMac ? (
           <p className="px-1 text-xs text-muted-foreground">
             Devbox sign-ins open their approval page on this Mac and tunnel the callback back to the
-            devbox. GitHub and Claude reuse this Mac's session.
+            devbox. GitHub and Claude reuse this Mac's session. One Codex sign-in runs at a time
+            because its callback port is fixed.
           </p>
         ) : null}
       </SettingsUnavailableGroup>
