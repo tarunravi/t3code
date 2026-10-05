@@ -861,6 +861,32 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  // A delegated child has no roster of its own; it inherits the nearest
+  // subagent ancestor's, so every depth of a delegation tree keeps the pick.
+  const loadThreadRoster = (
+    settings: ServerSettings,
+    thread: OrchestrationV2ThreadProjection["thread"],
+  ): Effect.Effect<ThreadSubagentRoster | undefined, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      let current = thread;
+      while (true) {
+        const roster = settings.threadSubagentRosters[current.id];
+        if (roster !== undefined) return roster;
+        const { parentThreadId, relationshipToParent } = current.lineage;
+        if (relationshipToParent !== "subagent" || parentThreadId === null) return undefined;
+        current = (yield* threadManagement
+          .getThreadRecords(parentThreadId, [])
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Unable to read thread ${parentThreadId}: ${errorMessage(error)}`,
+              ),
+            ),
+          )).thread;
+      }
+    });
+
   const projects = yield* ProjectService.ProjectService;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
@@ -1474,7 +1500,7 @@ const make = Effect.gen(function* () {
       const sources = yield* usageLimitSources.current;
       const settings = yield* loadSubagentSettings;
       const roster =
-        parent === undefined ? undefined : settings.threadSubagentRosters[parent.thread.id];
+        parent === undefined ? undefined : yield* loadThreadRoster(settings, parent.thread);
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const constraintsFor = (provider: ServerProvider) =>
         providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId));
@@ -1886,7 +1912,7 @@ const make = Effect.gen(function* () {
           );
         }
         const providers = yield* loadProviders;
-        const roster = (yield* loadSubagentSettings).threadSubagentRosters[scope.thread.threadId];
+        const roster = yield* loadThreadRoster(yield* loadSubagentSettings, parent.thread);
         const requestedTarget =
           roster === undefined
             ? input.target
