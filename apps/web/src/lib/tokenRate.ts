@@ -78,10 +78,98 @@ export function latestTokenRateTurn(
   return latest;
 }
 
+type TokenRateProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "runs" | "attempts" | "providerTurns" | "turnItems"
+>;
+
+/** Rough tokenizer-agnostic estimate; good enough for a fluctuating speed readout. */
+export const ESTIMATED_CHARS_PER_TOKEN = 4;
+export const LIVE_TOKEN_RATE_WINDOW_MS = 5_000;
+const MIN_LIVE_SPAN_MS = 1_000;
+
+export interface TokenRateSample {
+  readonly tokens: number;
+  readonly atMs: number;
+}
+
+/**
+ * Providers only report trustworthy output totals when a turn completes, so live
+ * speed is estimated from the root agent's streamed assistant and reasoning text.
+ * Tool-call arguments are not streamed as text and are therefore not counted.
+ */
+export function liveTokenRateSource(
+  projection: TokenRateProjection | null | undefined,
+): { readonly key: string; readonly estimatedTokens: number } | null {
+  if (!projection) return null;
+  let run: TokenRateProjection["runs"][number] | null = null;
+  for (const candidate of projection.runs) {
+    if (
+      (candidate.status === "preparing" ||
+        candidate.status === "starting" ||
+        candidate.status === "running" ||
+        candidate.status === "waiting") &&
+      (run === null || candidate.ordinal > run.ordinal)
+    )
+      run = candidate;
+  }
+  if (!run) return null;
+  const rootNodeIds = new Set<string>();
+  if (run.rootNodeId !== null) rootNodeIds.add(run.rootNodeId);
+  for (const attempt of projection.attempts)
+    if (attempt.runId === run.id && attempt.rootNodeId !== null)
+      rootNodeIds.add(attempt.rootNodeId);
+  let chars = 0;
+  for (const item of projection.turnItems) {
+    if (item.runId !== run.id || item.nodeId === null || !rootNodeIds.has(item.nodeId)) continue;
+    if (item.type === "assistant_message" || item.type === "reasoning") chars += item.text.length;
+  }
+  return { key: run.id, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
+}
+
+/** Keeps only the newest sample before the window as the rate's baseline. */
+export function appendTokenRateSample(
+  samples: readonly TokenRateSample[],
+  sample: TokenRateSample,
+  windowMs: number = LIVE_TOKEN_RATE_WINDOW_MS,
+): TokenRateSample[] {
+  const last = samples.at(-1);
+  if (last !== undefined && last.tokens === sample.tokens) return [...samples];
+  const next = [...samples, sample];
+  const cutoff = sample.atMs - windowMs;
+  let baseIndex = 0;
+  for (let index = 0; index < next.length; index += 1)
+    if (next[index]!.atMs <= cutoff) baseIndex = index;
+  return next.slice(baseIndex);
+}
+
+/** Measured to `now`, so the rate decays toward zero while streaming stalls. */
+export function rollingTokenRate(
+  samples: readonly TokenRateSample[],
+  nowMs: number,
+  windowMs: number = LIVE_TOKEN_RATE_WINDOW_MS,
+): number | null {
+  const newest = samples.at(-1);
+  if (newest === undefined) return null;
+  let base = samples[0]!;
+  for (const sample of samples) if (sample.atMs <= nowMs - windowMs) base = sample;
+  const spanMs = nowMs - base.atMs;
+  if (spanMs < MIN_LIVE_SPAN_MS) return null;
+  return (Math.max(0, newest.tokens - base.tokens) / spanMs) * 1000;
+}
+
+export function formatLiveTokenRate(rate: number | null): string | null {
+  if (rate === null || !Number.isFinite(rate)) return null;
+  return `~${Math.max(0, Math.round(rate))} tok/s`;
+}
+
+export const LIVE_TOKEN_RATE_EXPLANATION =
+  "Live output speed over the last few seconds, estimated from streamed text and reasoning (~4 characters per token). Tool-call arguments are not counted.";
+
 export function tokenRateExplanation(turn: OrchestrationV2ProviderTurn | null | undefined): string {
   if (completedTurnTokenRate(turn) !== null)
     return "Completed-turn average output throughput, including reasoning and tool waits; not live generation speed.";
   if (turn?.status === "pending" || turn?.status === "running")
-    return "Awaiting turn completion. Output tok/s is only available after a completed turn with supported totals and timing.";
+    return "Measuring live output speed from streamed text.";
   return "Output tok/s unavailable: awaiting a completed turn with supported output-token totals and timing. Input/context usage is not generation speed.";
 }

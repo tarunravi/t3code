@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import type { OrchestrationV2ProviderTurn } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ProviderTurn,
+  OrchestrationV2Run,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -31,16 +36,81 @@ afterEach(async () => {
   container.remove();
   vi.unstubAllGlobals();
 });
+type Projection = Pick<
+  OrchestrationV2ThreadProjection,
+  "runs" | "attempts" | "providerTurns" | "turnItems"
+>;
+const completedRun = {
+  id: "run:one",
+  ordinal: 1,
+  status: "completed",
+  rootNodeId: "root:one",
+  providerThreadId: "provider-thread:one",
+  activeAttemptId: null,
+} as unknown as OrchestrationV2Run;
+function projectionFor(providerTurn: OrchestrationV2ProviderTurn | null): Projection | null {
+  if (providerTurn === null) return null;
+  return {
+    runs: [completedRun],
+    attempts: [],
+    providerTurns: [
+      {
+        ...providerTurn,
+        nodeId: completedRun.rootNodeId!,
+        providerThreadId: completedRun.providerThreadId!,
+        runAttemptId: null,
+        ordinal: 1,
+      },
+    ],
+    turnItems: [],
+  };
+}
+function streaming(text: string): Projection {
+  return {
+    runs: [{ ...completedRun, status: "running" }],
+    attempts: [],
+    providerTurns: [],
+    turnItems: [
+      {
+        type: "assistant_message",
+        runId: completedRun.id,
+        nodeId: completedRun.rootNodeId,
+        text,
+      } as unknown as OrchestrationV2TurnItem,
+    ],
+  };
+}
+async function renderProjection(projection: Projection | null) {
+  await act(async () => root.render(<TokenRateLabel projection={projection} />));
+}
 async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
-  await act(async () => root.render(<TokenRateLabel providerTurn={providerTurn} />));
+  await renderProjection(projectionFor(providerTurn));
 }
 describe("TokenRateLabel", () => {
-  it("explains pending and unsupported telemetry without claiming live context speed", async () => {
-    await render({ ...completed, status: "running", completedAt: null });
-    expect(container.textContent).toBe("tok/s —");
-    expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
-      "Awaiting turn completion",
-    );
+  it("updates a live estimate every second while text streams, then shows the turn average", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      await renderProjection(streaming(""));
+      expect(container.textContent).toBe("tok/s —");
+      expect(container.querySelector("span")?.getAttribute("aria-label")).toBe(
+        "Output token rate unavailable",
+      );
+      vi.setSystemTime(2000);
+      await renderProjection(streaming("x".repeat(400)));
+      expect(container.textContent).toBe("~50 tok/s");
+      expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
+        "estimated from streamed text",
+      );
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(container.textContent).toBe("~25 tok/s");
+      await render(completed);
+      expect(container.textContent).toBe("100 tok/s (turn avg)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("hides unsupported telemetry without claiming context growth as speed", async () => {
     await render({
       ...completed,
       turnTokenUsage: undefined,

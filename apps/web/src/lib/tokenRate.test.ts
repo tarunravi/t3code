@@ -10,10 +10,19 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
-import { completedTurnTokenRate, formatTokenRate, latestTokenRateTurn } from "./tokenRate";
+import {
+  appendTokenRateSample,
+  completedTurnTokenRate,
+  formatLiveTokenRate,
+  formatTokenRate,
+  latestTokenRateTurn,
+  liveTokenRateSource,
+  rollingTokenRate,
+} from "./tokenRate";
 
 function turn(overrides: Partial<OrchestrationV2ProviderTurn> = {}): OrchestrationV2ProviderTurn {
   return {
@@ -323,5 +332,84 @@ describe("latestTokenRateTurn", () => {
         projection({ runs: [run({ activeAttemptId: null, rootNodeId: null })], attempts: [] }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("rollingTokenRate", () => {
+  it("measures the token delta across the window and fluctuates with the stream", () => {
+    let samples = appendTokenRateSample([], { tokens: 0, atMs: 0 });
+    expect(rollingTokenRate(samples, 500)).toBeNull();
+    samples = appendTokenRateSample(samples, { tokens: 100, atMs: 1000 });
+    expect(rollingTokenRate(samples, 1000)).toBe(100);
+    samples = appendTokenRateSample(samples, { tokens: 400, atMs: 2000 });
+    expect(rollingTokenRate(samples, 2000)).toBe(200);
+  });
+  it("decays to zero while the stream stalls and drops samples older than the window", () => {
+    let samples = appendTokenRateSample([], { tokens: 0, atMs: 0 });
+    samples = appendTokenRateSample(samples, { tokens: 500, atMs: 1000 });
+    expect(rollingTokenRate(samples, 5000)).toBe(100);
+    expect(rollingTokenRate(samples, 7000)).toBe(0);
+    samples = appendTokenRateSample(samples, { tokens: 900, atMs: 8000 });
+    expect(samples.map((sample) => sample.atMs)).toEqual([1000, 8000]);
+    expect(rollingTokenRate(samples, 8000)).toBe((400 / 7000) * 1000);
+  });
+  it("ignores repeated counts and never reports negative speed", () => {
+    const samples = appendTokenRateSample([{ tokens: 10, atMs: 0 }], { tokens: 10, atMs: 900 });
+    expect(samples).toHaveLength(1);
+    expect(
+      rollingTokenRate(
+        [
+          { tokens: 10, atMs: 0 },
+          { tokens: 5, atMs: 1000 },
+        ],
+        2000,
+      ),
+    ).toBe(0);
+    expect(rollingTokenRate([], 1000)).toBeNull();
+  });
+  it("formats the estimate distinctly from the completed-turn average", () => {
+    expect(formatLiveTokenRate(41.6)).toBe("~42 tok/s");
+    expect(formatLiveTokenRate(null)).toBeNull();
+  });
+});
+
+describe("liveTokenRateSource", () => {
+  function item(
+    overrides: Partial<{ type: string; runId: string; nodeId: string | null; text: string }>,
+  ): OrchestrationV2TurnItem {
+    return {
+      type: "assistant_message",
+      runId: run().id,
+      nodeId: turn().nodeId,
+      text: "",
+      ...overrides,
+    } as unknown as OrchestrationV2TurnItem;
+  }
+  it("estimates root-agent assistant and reasoning output for the active run only", () => {
+    const source = liveTokenRateSource({
+      ...projection({
+        runs: [run(), run({ id: RunId.make("run:two"), ordinal: 2, status: "running" })],
+      }),
+      attempts: [attempt({ runId: RunId.make("run:two"), rootNodeId: NodeId.make("root:two") })],
+      turnItems: [
+        item({ runId: "run:two", nodeId: "root:two", text: "x".repeat(40) }),
+        item({ runId: "run:two", nodeId: "root:two", type: "reasoning", text: "y".repeat(20) }),
+        item({
+          runId: "run:two",
+          nodeId: "root:two",
+          type: "command_execution",
+          text: "z".repeat(99),
+        }),
+        item({ runId: "run:two", nodeId: "node:child", text: "z".repeat(99) }),
+        item({ text: "z".repeat(99) }),
+      ],
+    });
+    expect(source).toEqual({ key: "run:two", estimatedTokens: 15 });
+  });
+  it("is absent when no run is active", () => {
+    expect(
+      liveTokenRateSource({ ...projection(), turnItems: [item({ text: "abcd" })] }),
+    ).toBeNull();
+    expect(liveTokenRateSource(null)).toBeNull();
   });
 });
