@@ -1,6 +1,6 @@
 import {
   DesktopAwsProfileSchema,
-  DesktopDevboxActionSchema,
+  DesktopDevboxActionInputSchema,
   DesktopDevboxEnableInputSchema,
   DesktopDevboxLoginStartSchema,
   DesktopDevboxStateOptionsSchema,
@@ -26,11 +26,11 @@ export const getDevboxState = makeIpcMethod({
 
 export const runDevboxAction = makeIpcMethod({
   channel: IpcChannels.RUN_DEVBOX_ACTION_CHANNEL,
-  payload: DesktopDevboxActionSchema,
+  payload: DesktopDevboxActionInputSchema,
   result: DesktopDevboxStateSchema,
-  handler: Effect.fn("desktop.ipc.devbox.run")(function* (action) {
+  handler: Effect.fn("desktop.ipc.devbox.run")(function* (input) {
     const devbox = yield* DesktopDevbox.DesktopDevbox;
-    return yield* devbox.run(action);
+    return yield* devbox.run(input);
   }),
 });
 
