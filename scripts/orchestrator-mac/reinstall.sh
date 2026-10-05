@@ -199,7 +199,7 @@ write_job_plist() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>$(dirname "$node"):/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>$(dirname "$node"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>T3_DATA_HOME</key><string>$data_home</string>
   </dict>
   <key>RunAtLoad</key><true/>
