@@ -14,6 +14,7 @@ import {
   rosterEntrySummary,
 } from "../chat/threadSubagentRoster.logic";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DraftInput } from "../ui/draft-input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -27,6 +28,8 @@ import {
   presetEntryAsRosterEntry,
   removePreset,
 } from "./subagentPresets.logic";
+
+const NO_DEFAULT_PRESET = "none";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -236,5 +239,64 @@ export function SubagentPresetsSetting() {
         </div>
       )}
     </SettingsRow>
+  );
+}
+
+/** The preset a new thread's Subagents panel starts with; each thread can still switch. */
+export function DefaultSubagentPresetSetting() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["subagentPresets", "defaultSubagentPresetId"]);
+  const presets = mixed ? [] : settings.subagentPresets;
+  if (presets.length === 0) return null;
+  // A deleted preset leaves a dangling id; new threads then start without a preset.
+  const selected = presets.some((preset) => preset.id === settings.defaultSubagentPresetId)
+    ? settings.defaultSubagentPresetId!
+    : NO_DEFAULT_PRESET;
+  const nameById = new Map(presets.map((preset) => [preset.id, preset.name]));
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["defaultSubagentPresetId"]}
+      {...searchableSetting("default-subagent-preset")}
+      description="New threads start with this preset selected. Each thread can still switch presets."
+      resetAction={
+        selected === NO_DEFAULT_PRESET ? null : (
+          <SettingResetButton
+            label="default subagent preset"
+            onClick={() => updateSettings({ defaultSubagentPresetId: null })}
+          />
+        )
+      }
+      control={
+        <Select
+          value={selected}
+          onValueChange={(value) =>
+            updateSettings({
+              defaultSubagentPresetId: value === NO_DEFAULT_PRESET || value === null ? null : value,
+            })
+          }
+        >
+          <SelectTrigger size="sm" aria-label="Default subagent preset">
+            <SelectValue>
+              {(value: string | null) =>
+                value === null || value === NO_DEFAULT_PRESET
+                  ? "None"
+                  : (nameById.get(value) ?? "None")
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value={NO_DEFAULT_PRESET}>None</SelectItem>
+            {presets.map((preset) => (
+              <SelectItem key={preset.id} value={preset.id}>
+                {preset.name}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
   );
 }

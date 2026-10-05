@@ -464,7 +464,10 @@ import {
   RightPanelMaximizeControl,
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { draftSubagentRosterPatch } from "./settings/subagentPresets.logic";
+import {
+  draftRosterWithDefaultPreset,
+  draftSubagentRosterPatch,
+} from "./settings/subagentPresets.logic";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
@@ -9201,7 +9204,11 @@ export default function ChatView(props: ChatViewProps) {
     }
     const threadIdForSend = activeThread.id;
     const draftSubagentRoster = isLocalDraftThread
-      ? useComposerDraftStore.getState().getDraftThread(composerDraftTarget)?.subagentRoster
+      ? draftRosterWithDefaultPreset(
+          useComposerDraftStore.getState().getDraftThread(composerDraftTarget)?.subagentRoster,
+          settings.subagentPresets,
+          settings.defaultSubagentPresetId,
+        )
       : undefined;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
     const baseBranchForWorktree =
