@@ -24,6 +24,8 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageModelRates,
+  type UsageModelRatesInput,
   type UsageSpeedInput,
   type UsageSpeedSourceStatus,
   type UsageSpeedSummary,
@@ -62,7 +64,12 @@ import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import * as CursorUsageSource from "./usageCursorSource.ts";
 import { aggregateSpeed } from "./usageSpeed.ts";
 import { readClaudeSpeed, readOpenCodexSpeed } from "./usageSpeedSources.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  resolveStandardRates,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -166,6 +173,10 @@ export class UsageService extends Context.Service<
     ) => Effect.Effect<UsageSpeedSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Standard rates per model, with the same overrides and aliases as summaries. */
+    readonly readModelRates: (
+      input: UsageModelRatesInput,
+    ) => Effect.Effect<UsageModelRates, UsageReadError>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -193,6 +204,11 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readModelRates: (input) =>
+      Effect.succeed({
+        models: input.models.map((model) => ({ model, rate: null })),
+        pricing: EMPTY_PRICING,
+      }),
     readSpeed: (input) =>
       Effect.succeed({
         readAt: "1970-01-01T00:00:00.000Z",
@@ -1072,7 +1088,7 @@ export const make = Effect.gen(function* () {
             requests: cursorSamples.length,
           };
     return {
-      readAt: new Date().toISOString(),
+      readAt: DateTime.formatIso(yield* DateTime.now),
       sinceTime: input.sinceTime,
       untilTime: input.untilTime,
       rows: aggregateSpeed([...openCodex.samples, ...claude.samples, ...(cursorSamples ?? [])]),
@@ -1080,7 +1096,23 @@ export const make = Effect.gen(function* () {
     } satisfies UsageSpeedSummary;
   });
 
-  return { readSummary, refreshRates, readSpeed } as const;
+  const readModelRates = Effect.fn("UsageService.readModelRates")(function* (
+    input: UsageModelRatesInput,
+  ) {
+    const settings = yield* readSettings;
+    yield* ensureRates(false);
+    const overrides = createOverrideRateTable(settings.usagePriceOverrides);
+    const aliases = resolveModelAliases(settings.usageModelAliases);
+    return {
+      models: input.models.map((model) => ({
+        model,
+        rate: resolveStandardRates(rates, model, overrides, aliases),
+      })),
+      pricing: pricing(),
+    } satisfies UsageModelRates;
+  });
+
+  return { readSummary, refreshRates, readSpeed, readModelRates } as const;
 });
 
 export const layer = Layer.effect(UsageService, make).pipe(Layer.provide(CursorUsageSource.layer));
