@@ -3,8 +3,16 @@ import { PlusIcon, SparklesIcon, Trash2Icon } from "lucide-react";
 
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { randomUUID } from "../../lib/utils";
-import { SubagentRosterAddControls, useSubagentInstances } from "../chat/SubagentRosterList";
-import { resolveRosterEntry, rosterEntryKey } from "../chat/threadSubagentRoster.logic";
+import {
+  SubagentNoteField,
+  SubagentRosterAddControls,
+  useSubagentInstances,
+} from "../chat/SubagentRosterList";
+import {
+  resolveRosterEntry,
+  rosterEntryKey,
+  rosterEntrySummary,
+} from "../chat/threadSubagentRoster.logic";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -48,9 +56,10 @@ function PresetEntryRow(props: {
     <SparklesIcon className="size-4 text-muted-foreground" aria-hidden />
   );
 
+  // Icon, name, and trash share the preset header's columns so every action lines up.
   return (
-    <li className="flex flex-col gap-0.5 rounded-lg py-1.5 ps-2.5 pe-1">
-      <div className="flex min-w-0 items-center gap-2.5">
+    <li className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 items-center gap-2">
         <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/72 ring-1 ring-border/60">
           {resolved.unavailableReason === null ? (
             icon
@@ -72,9 +81,7 @@ function PresetEntryRow(props: {
             {resolved.modelLabel}
           </span>
           <p className="truncate text-2xs text-muted-foreground">
-            {resolved.effortLabel === null
-              ? providerName
-              : `${providerName} · ${resolved.effortLabel}`}
+            {rosterEntrySummary(providerName, resolved)}
           </p>
         </div>
         <Button
@@ -86,13 +93,10 @@ function PresetEntryRow(props: {
           <Trash2Icon />
         </Button>
       </div>
-      <DraftInput
-        size="sm"
-        className="w-full"
+      <SubagentNoteField
         value={props.entry.description ?? ""}
+        modelLabel={resolved.modelLabel}
         onCommit={props.onDescription}
-        placeholder="Notes: when should an agent pick this model?"
-        aria-label={`When to use ${resolved.modelLabel}`}
       />
     </li>
   );
@@ -110,8 +114,8 @@ function PresetEditor(props: {
   const rosterEntries = props.preset.entries.map(presetEntryAsRosterEntry);
 
   return (
-    <div className="w-full max-w-md rounded-xl border border-border/65 p-1">
-      <div className="flex items-center gap-1 px-1.5 pt-1">
+    <div className="flex w-full flex-col gap-3 rounded-xl border border-border/65 p-3">
+      <div className="flex items-center gap-2">
         <DraftInput
           size="sm"
           className="flex-1"
@@ -129,12 +133,10 @@ function PresetEditor(props: {
         </Button>
       </div>
       {props.preset.entries.length === 0 ? (
-        <p className="px-2.5 py-2 text-xs text-muted-foreground">
-          No subagents yet. Add models below.
-        </p>
+        <p className="text-xs text-muted-foreground">No subagents yet. Add models below.</p>
       ) : (
         <ul
-          className="m-0 flex list-none flex-col gap-0.5 p-0"
+          className="m-0 flex list-none flex-col gap-3 p-0"
           aria-label={`Subagents in ${props.preset.name}`}
         >
           {props.preset.entries.map((entry, index) => (
@@ -168,6 +170,8 @@ function PresetEditor(props: {
           })
         }
         presetsReplace={false}
+        // Ghost rows pad their icons; pull them out so "+" sits in the entry icon column.
+        className="-mx-1.5 -mb-1 px-0 pt-0"
       />
     </div>
   );

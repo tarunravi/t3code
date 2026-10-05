@@ -124,6 +124,68 @@ export function selectedEffort(
   return typeof value === "string" ? value : null;
 }
 
+/** Claude's boolean fast mode, or Codex's service tier select. */
+const SPEED_OPTION_IDS = new Set(["fastMode", "serviceTier"]);
+
+export const DEFAULT_SPEED_LABEL = "Default speed";
+
+/**
+ * The speed an entry runs at: "Fast", "Standard", or a service tier's label
+ * when set, "Default speed" when left to the provider, and null when the
+ * model has no speed option at all.
+ */
+export function rosterSpeedLabel(
+  selection: ModelSelection,
+  model: ServerProviderModel | undefined,
+): string | null {
+  const descriptors = model?.capabilities?.optionDescriptors ?? [];
+  const option = selection.options?.find((candidate) => SPEED_OPTION_IDS.has(candidate.id));
+  if (option === undefined) {
+    const offered = descriptors.some((descriptor) => SPEED_OPTION_IDS.has(descriptor.id));
+    return offered ? DEFAULT_SPEED_LABEL : null;
+  }
+  if (typeof option.value === "boolean") return option.value ? "Fast" : "Standard";
+  const descriptor = descriptors.find((candidate) => candidate.id === option.id);
+  return descriptor?.type === "select"
+    ? (descriptor.options.find((choice) => choice.id === option.value)?.label ?? option.value)
+    : option.value;
+}
+
+/** "Claude · Medium · Fast": a provider or model name followed by effort and speed. */
+export function rosterEntrySummary(lead: string, resolved: ResolvedRosterEntry): string {
+  return [lead, resolved.effortLabel, resolved.speedLabel]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}
+
+export interface RosterOptionChip {
+  readonly id: string;
+  readonly label: string;
+  /** The option's name ("Reasoning"), when the model describes it. */
+  readonly title: string | null;
+}
+
+/** A selection's options as short chips; speed always shows, other switched-off booleans don't. */
+export function rosterOptionChips(
+  selection: ModelSelection,
+  model: ServerProviderModel | undefined,
+): RosterOptionChip[] {
+  const descriptors = model?.capabilities?.optionDescriptors ?? [];
+  const chips = (selection.options ?? []).flatMap((option): RosterOptionChip[] => {
+    if (SPEED_OPTION_IDS.has(option.id) || option.value === false) return [];
+    const descriptor = descriptors.find((candidate) => candidate.id === option.id);
+    const title = descriptor?.label ?? null;
+    if (option.value === true) return [{ id: option.id, label: title ?? option.id, title }];
+    const label =
+      descriptor?.type === "select"
+        ? (descriptor.options.find((choice) => choice.id === option.value)?.label ?? option.value)
+        : option.value;
+    return [{ id: option.id, label, title }];
+  });
+  const speed = rosterSpeedLabel(selection, model);
+  return speed === null ? chips : [...chips, { id: "speed", label: speed, title: "Speed" }];
+}
+
 export function rosterEntryKey(entry: SubagentRosterEntry): string {
   const options = (entry.selection.options ?? [])
     .map((option) => `${option.id}=${String(option.value)}`)
@@ -222,6 +284,7 @@ export interface ResolvedRosterEntry {
   readonly model: ServerProviderModel | undefined;
   readonly modelLabel: string;
   readonly effortLabel: string | null;
+  readonly speedLabel: string | null;
   /** Why delegation to this entry would fail right now, if it would. */
   readonly unavailableReason: string | null;
 }
@@ -254,6 +317,7 @@ export function resolveRosterEntry(
     model,
     modelLabel: model?.shortName ?? model?.name ?? entry.selection.model,
     effortLabel,
+    speedLabel: rosterSpeedLabel(entry.selection, model),
     unavailableReason,
   };
 }

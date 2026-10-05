@@ -10,7 +10,7 @@ import { type ChangeEvent, type KeyboardEvent, useState } from "react";
  * update from the user's own commit, or a reset to defaults) doesn't
  * clobber an in-progress edit.
  *
- * Returns a bag of props that should be spread onto an `<Input>`:
+ * Returns a bag of props that should be spread onto an `<Input>` or `<Textarea>`:
  *
  *   const bag = useCommitOnBlur(instance.displayName ?? "", (next) => {...});
  *   <Input {...bag} placeholder="e.g. Work" />
@@ -20,7 +20,7 @@ export function useCommitOnBlur(value: string, onCommit: (next: string) => void)
 
   return {
     value: draft ?? value,
-    onChange: (event: ChangeEvent<HTMLInputElement>) => {
+    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setDraft(event.target.value);
     },
     onFocus: () => {
@@ -33,11 +33,11 @@ export function useCommitOnBlur(value: string, onCommit: (next: string) => void)
         onCommit(next);
       }
     },
-    onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
+    onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return;
       if (event.key === "Enter") {
         event.preventDefault();
-        (event.target as HTMLInputElement).blur();
+        event.currentTarget.blur();
       }
     },
   };

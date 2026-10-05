@@ -17,21 +17,17 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "../ui/preview-card";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   SubagentRosterAddControls,
   SubagentRosterList,
   useSubagentInstances,
 } from "./SubagentRosterList";
+import { SubagentRosterSummary } from "./SubagentRosterSummary";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
-import {
-  appendRosterEntries,
-  resolvePreset,
-  resolveRosterEntry,
-  rosterEntryKey,
-  SUBAGENT_PRESETS,
-} from "./threadSubagentRoster.logic";
+import { appendRosterEntries, resolvePreset, SUBAGENT_PRESETS } from "./threadSubagentRoster.logic";
 import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
@@ -63,6 +59,8 @@ export function ThreadSubagentsPanel(props: {
   );
   const navigate = useNavigate();
   const [manualChoice, setManualChoice] = useState<boolean | null>(null);
+  const [rosterCardOpen, setRosterCardOpen] = useState(false);
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false);
   const draftEntries = useComposerDraftStore((store) =>
     props.draftId ? store.getDraftThread(props.draftId)?.subagentRoster : undefined,
   );
@@ -189,58 +187,47 @@ export function ThreadSubagentsPanel(props: {
       }
     >
       {presets.length > 0 ? (
-        <Menu>
-          <Tooltip>
-            <TooltipTrigger
+        <Menu onOpenChange={setPresetMenuOpen}>
+          <PreviewCard open={rosterCardOpen && !presetMenuOpen} onOpenChange={setRosterCardOpen}>
+            <PreviewCardTrigger
+              delay={350}
+              closeDelay={120}
               render={
                 <MenuTrigger
                   render={
                     <ThreadDetailsControl
                       part="row"
                       tone="muted"
+                      multiline
                       aria-label="Choose a subagent preset"
                     />
                   }
-                >
-                  <SparklesIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-foreground/80">
-                      {activePreset?.name ?? "Subagent presets"}
-                    </span>
-                    <p className="truncate text-2xs text-muted-foreground">{presetSummary}</p>
-                  </span>
-                </MenuTrigger>
+                />
               }
-            />
-            <TooltipPopup>
+            >
+              <SparklesIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+              {/* Tops up multiline's padding to the py-1.5 of the two-line rows beside it. */}
+              <span className="min-w-0 flex-1 py-0.75">
+                <span className="block truncate text-sm font-medium text-foreground/80">
+                  {activePreset?.name ?? "Subagent presets"}
+                </span>
+                <span className="block truncate text-2xs font-normal text-muted-foreground">
+                  {presetSummary}
+                </span>
+              </span>
+            </PreviewCardTrigger>
+            <PreviewCardPopup className="w-80 max-w-[calc(100vw-2rem)] overflow-hidden">
               {roster === undefined ? (
-                "Environment subagents"
+                <p className="px-3 py-2.5 text-xs text-muted-foreground">Environment subagents</p>
               ) : roster.entries.length === 0 ? (
-                "No subagents: this thread's agent cannot delegate."
+                <p className="px-3 py-2.5 text-xs text-warning-foreground">
+                  No subagents: this thread's agent cannot delegate.
+                </p>
               ) : (
-                <ul
-                  className="m-0 flex list-none flex-col gap-2 p-0"
-                  aria-label="Current subagent roster"
-                >
-                  {roster.entries.map((entry) => {
-                    const resolved = resolveRosterEntry(entry, instances);
-                    return (
-                      <li key={rosterEntryKey(entry)}>
-                        <span className="block font-medium">{resolved.modelLabel}</span>
-                        <span className="block">
-                          {resolved.instance?.displayName ?? entry.selection.instanceId}
-                          {resolved.effortLabel ? ` · ${resolved.effortLabel}` : ""}
-                        </span>
-                        {entry.description ? (
-                          <span className="block">{entry.description}</span>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
+                <SubagentRosterSummary entries={roster.entries} instances={instances} />
               )}
-            </TooltipPopup>
-          </Tooltip>
+            </PreviewCardPopup>
+          </PreviewCard>
           <MenuPopup align="start">
             <MenuRadioGroup
               value={manualChoice === true ? MANUAL_PRESET : (activePreset?.id ?? MANUAL_PRESET)}
