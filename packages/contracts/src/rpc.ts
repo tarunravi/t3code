@@ -300,6 +300,8 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import {
+  UsageModelRates,
+  UsageModelRatesInput,
   UsagePricing,
   UsageReadError,
   UsageSpeedInput,
@@ -477,6 +479,7 @@ export const WS_METHODS = {
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
   serverGetUsageSpeed: "server.getUsageSpeed",
+  serverGetUsageModelRates: "server.getUsageModelRates",
 
   // Scheduled tasks
   scheduledTasksList: "scheduledTasks.list",
@@ -854,6 +857,13 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
 const WsServerGetUsageSpeedRpc = Rpc.make(WS_METHODS.serverGetUsageSpeed, {
   payload: UsageSpeedInput,
   success: UsageSpeedSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+/** Rates for pricing in-app token usage, such as a thread's estimated cost. */
+const WsServerGetUsageModelRatesRpc = Rpc.make(WS_METHODS.serverGetUsageModelRates, {
+  payload: UsageModelRatesInput,
+  success: UsageModelRates,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
@@ -1810,6 +1820,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
   WsServerGetUsageSpeedRpc,
+  WsServerGetUsageModelRatesRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,

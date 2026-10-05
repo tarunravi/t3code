@@ -355,3 +355,24 @@ export function cacheSavingsUsd(
   const rates = ratesAt(rate, record.speed);
   return record.totals.cachedInputTokens * (rates.inputCostPerToken - rates.cacheReadCostPerToken);
 }
+
+/**
+ * Standard-speed rates for `model`, resolved the way `UsageAggregator` prices
+ * records: the "Map to" alias first, then a price override, then the table.
+ */
+export function resolveStandardRates(
+  table: RateTable,
+  model: string,
+  overrides?: RateTable,
+  aliases?: ReadonlyMap<string, string>,
+): TokenRates | null {
+  const priced = aliases?.get(model) ?? model;
+  const rate = overrides?.get(priced.trim()) ?? lookupRate(table, priced);
+  if (rate === null) return null;
+  return {
+    inputCostPerToken: rate.inputCostPerToken,
+    outputCostPerToken: rate.outputCostPerToken,
+    cacheReadCostPerToken: rate.cacheReadCostPerToken,
+    cacheCreationCostPerToken: rate.cacheCreationCostPerToken,
+  };
+}
