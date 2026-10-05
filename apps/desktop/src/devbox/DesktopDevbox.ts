@@ -1,3 +1,4 @@
+// @effect-diagnostics globalErrorInEffectFailure:off anyUnknownInErrorContext:off preferSchemaOverJson:off globalDateInEffect:off - AWS/SSH CLI failures surface as plain messages in the devbox panel.
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- login ids need only uniqueness; this layer does not require Crypto.
 import * as NodeCrypto from "node:crypto";
 import * as NodeNet from "node:net";
@@ -6,6 +7,7 @@ import {
   DesktopDevboxConfigSchema,
   type DesktopAwsProfile,
   type DesktopDevboxAction,
+  type DesktopDevboxActionInput,
   type DesktopDevboxConfig,
   type DesktopDevboxEnableInput,
   type DesktopDevboxLogin,
@@ -28,10 +30,11 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import {
+  CODEX_CALLBACK_PORT,
   DEVBOX,
   DEVBOX_BOOTSTRAP_SCRIPT,
   DEVBOX_BRAIN_SCRIPT,
@@ -39,7 +42,6 @@ import {
   awsArgs,
   awsProfileSections,
   buildHealthScript,
-  buildSshConfigBlock,
   buildUserData,
   describeManagedInstanceArgs,
   describeTemplateInstanceArgs,
@@ -47,13 +49,17 @@ import {
   extractCodes,
   extractLinks,
   loginCommand,
+  MAC_TARGET,
+  nextDevboxName,
   parseAwsProfiles,
   parseDevboxHealth,
   parseLaunchTemplate,
-  parseManagedInstance,
+  parseManagedInstances,
   runInstancesArgs,
+  sshBlockAliases,
   stripTerminal,
-  upsertSshConfigBlock,
+  syncSshConfigHosts,
+  validateDevboxName,
   type DevboxHealth,
   type DevboxInstance,
 } from "./devboxPlan.ts";
@@ -64,7 +70,7 @@ const LOGIN_TIMEOUT = Duration.minutes(10);
 const SSM_ONLINE_TIMEOUT = Duration.minutes(10);
 const SSH_READY_TIMEOUT = Duration.minutes(5);
 
-type Job = NonNullable<DesktopDevboxState["job"]>;
+type Job = DesktopDevboxState["jobs"][number];
 
 interface CommandResult {
   readonly exitCode: number;
@@ -91,7 +97,7 @@ export class DesktopDevbox extends Context.Service<
   DesktopDevbox,
   {
     readonly getState: (options?: DesktopDevboxStateOptions) => Effect.Effect<DesktopDevboxState>;
-    readonly run: (action: DesktopDevboxAction) => Effect.Effect<DesktopDevboxState>;
+    readonly run: (input: DesktopDevboxActionInput) => Effect.Effect<DesktopDevboxState, Error>;
     readonly listAwsProfiles: Effect.Effect<readonly DesktopAwsProfile[]>;
     readonly setEnabled: (
       input: DesktopDevboxEnableInput,
@@ -124,12 +130,14 @@ export const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => null),
   );
   const config = yield* Ref.make<DesktopDevboxConfig | null>(savedConfig);
-  const job = yield* Ref.make<Job | null>(null);
+  const jobs = yield* Ref.make<ReadonlyMap<string, Job>>(new Map());
   const aws = yield* Ref.make<{
     readonly aws: DesktopDevboxState["aws"];
-    readonly instance: DevboxInstance | null;
-  }>({ aws: { ok: false, detail: "Not checked yet" }, instance: null });
-  const checks = yield* Ref.make<DesktopDevboxState["checks"]>({ mac: null, devbox: null });
+    readonly instances: readonly DevboxInstance[];
+    /** Hand-written hosts in the shared ssh_config block, which new devboxes must not reuse. */
+    readonly sshAliases: readonly string[];
+  }>({ aws: { ok: false, detail: "Not checked yet" }, instances: [], sshAliases: [] });
+  const checks = yield* Ref.make<DesktopDevboxState["checks"]>({});
   const checking = yield* Ref.make(0);
   // Sign-ins on a Mac without a devbox still need a profile for AWS SSO.
   const machinesPath = path.join(environment.stateDir, "machines.json");
@@ -146,19 +154,26 @@ export const make = Effect.gen(function* () {
     return (yield* Ref.get(config))?.awsProfile ?? (yield* Ref.get(machinesAwsProfile));
   });
   const logins = yield* Ref.make<ReadonlyArray<DesktopDevboxLogin>>([]);
+  // Teleport callback ports held by running devbox sign-ins, so two never pick the same one.
+  const callbackPorts = yield* Ref.make<ReadonlySet<number>>(new Set());
 
-  const log = (line: string) =>
-    Ref.update(job, (current) =>
-      current === null
-        ? current
-        : { ...current, log: [...current.log, line].slice(-MAX_LOG_LINES) },
-    );
+  const updateJob = (devbox: string, update: (job: Job) => Job) =>
+    Ref.update(jobs, (all) => {
+      const current = all.get(devbox);
+      return current === undefined ? all : new Map(all).set(devbox, update(current));
+    });
 
-  /** Runs a local command; `echo` streams its output into the job log. */
+  const log = (devbox: string, line: string) =>
+    updateJob(devbox, (current) => ({
+      ...current,
+      log: [...current.log, line].slice(-MAX_LOG_LINES),
+    }));
+
+  /** Runs a local command; `echo` streams its output into that devbox's job log. */
   const runCommand = (
     command: string,
     args: readonly string[],
-    options: { readonly stdin?: string; readonly echo?: boolean } = {},
+    options: { readonly stdin?: string; readonly echo?: string } = {},
   ): Effect.Effect<CommandResult> =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -186,7 +201,9 @@ export const make = Effect.gen(function* () {
               (lines, line) => [...lines, line],
             ),
             Effect.tap((lines) =>
-              options.echo ? Effect.forEach(lines, log, { discard: true }) : Effect.void,
+              options.echo === undefined
+                ? Effect.void
+                : Effect.forEach(lines, (line) => log(options.echo!, line), { discard: true }),
             ),
           );
         const [stdout, stderr, exitCode] = yield* Effect.all(
@@ -227,19 +244,27 @@ export const make = Effect.gen(function* () {
     );
 
   const ssh = (
+    devbox: string,
     remote: readonly string[],
-    options: { readonly stdin?: string; readonly echo?: boolean },
+    options: { readonly stdin?: string; readonly echo?: string } = {},
   ) =>
     runCommand(
       "ssh",
-      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=60", DEVBOX.sshAlias, ...remote],
+      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=60", devbox, ...remote],
       options,
     );
 
+  const readSshConfig = fs.readFileString(sshConfigPath).pipe(Effect.orElseSucceed(() => ""));
+
   const refreshAws = Effect.gen(function* () {
     const current = yield* Ref.get(config);
+    const sshAliases = sshBlockAliases(yield* readSshConfig);
     if (current === null) {
-      yield* Ref.set(aws, { aws: { ok: false, detail: "Devbox panel is off" }, instance: null });
+      yield* Ref.set(aws, {
+        aws: { ok: false, detail: "Devbox panel is off" },
+        instances: [],
+        sshAliases,
+      });
       return;
     }
     const identity = yield* runCommand("aws", awsArgs(current, "sts", "get-caller-identity"));
@@ -252,15 +277,20 @@ export const make = Effect.gen(function* () {
             ? `AWS SSO session for ${current.awsProfile} expired`
             : identity.stderr.slice(-300) || "aws CLI unavailable",
         },
-        instance: null,
+        instances: [],
+        sshAliases,
       });
       return;
     }
     const arn = (JSON.parse(identity.stdout) as { Arn?: string }).Arn ?? current.awsProfile;
     const described = yield* runCommand("aws", describeManagedInstanceArgs(current));
     yield* Ref.set(aws, {
-      aws: { ok: true, detail: arn.split("/").at(-1) ?? arn },
-      instance: described.exitCode === 0 ? parseManagedInstance(described.stdout) : null,
+      aws:
+        described.exitCode === 0
+          ? { ok: true, detail: arn.split("/").at(-1) ?? arn }
+          : { ok: false, detail: described.stderr.slice(-300) || "Could not list instances" },
+      instances: described.exitCode === 0 ? parseManagedInstances(described.stdout) : [],
+      sshAliases,
     });
   });
 
@@ -280,42 +310,52 @@ export const make = Effect.gen(function* () {
     }
   };
 
-  /** Re-reads sign-in health on one machine, or on both when no target is given. */
+  /** Re-reads sign-in health on one machine, or on this Mac and every devbox when no target is given. */
   const refreshChecks = (target?: DesktopDevboxLoginTarget) =>
     Effect.gen(function* () {
       const script = buildHealthScript(yield* signInAwsProfile);
-      const running = (yield* Ref.get(aws)).instance?.state === "running";
-      const readMac =
-        target === "devbox"
-          ? Effect.succeed(undefined)
-          : runCommand("bash", ["-s"], { stdin: script }).pipe(
+      const targets = [
+        MAC_TARGET,
+        ...(yield* Ref.get(aws)).instances.map((instance) => instance.name),
+      ].filter((name) => target === undefined || name === target);
+      const running = new Set(
+        (yield* Ref.get(aws)).instances
+          .filter((instance) => instance.state === "running")
+          .map((instance) => instance.name),
+      );
+      const read = (name: string): Effect.Effect<DevboxHealth | null> =>
+        name === MAC_TARGET
+          ? runCommand("bash", ["-s"], { stdin: script }).pipe(
               Effect.map((result) => readHealth(result, "The local health check failed")),
-            );
-      const readDevbox =
-        target === "mac"
-          ? Effect.succeed(undefined)
-          : running
-            ? ssh(["bash", "-s"], { stdin: script }).pipe(
-                Effect.map((result) => readHealth(result, "Could not reach the devbox over SSH")),
+            )
+          : running.has(name)
+            ? ssh(name, ["bash", "-s"], { stdin: script }).pipe(
+                Effect.map((result) => readHealth(result, `Could not reach ${name} over SSH`)),
               )
             : Effect.succeed(null);
-      const [mac, devbox] = yield* Effect.all([readMac, readDevbox], { concurrency: "unbounded" });
-      yield* Ref.update(checks, (current) => ({
-        mac: mac === undefined ? current.mac : mac,
-        devbox: devbox === undefined ? current.devbox : devbox,
-      }));
+      const results = yield* Effect.forEach(
+        targets,
+        (name) => read(name).pipe(Effect.map((health) => [name, health] as const)),
+        { concurrency: "unbounded" },
+      );
+      yield* Ref.update(checks, (current) => ({ ...current, ...Object.fromEntries(results) }));
     }).pipe(Effect.ensuring(Ref.update(checking, (count) => count - 1)), (effect) =>
       Ref.update(checking, (count) => count + 1).pipe(Effect.andThen(effect)),
     );
 
   const snapshot = Effect.gen(function* () {
     const current = yield* Ref.get(aws);
+    const currentJobs = [...(yield* Ref.get(jobs)).values()];
     return {
       config: yield* Ref.get(config),
       aws: current.aws,
-      instance: current.instance,
-      sshAlias: DEVBOX.sshAlias,
-      job: yield* Ref.get(job),
+      instances: current.instances,
+      nextName: nextDevboxName([
+        ...current.instances.map((instance) => instance.name),
+        ...current.sshAliases,
+        ...currentJobs.map((job) => job.devbox),
+      ]),
+      jobs: currentJobs,
       checks: yield* Ref.get(checks),
       signInAwsProfile: yield* signInAwsProfile,
       checking: (yield* Ref.get(checking)) > 0,
@@ -323,31 +363,34 @@ export const make = Effect.gen(function* () {
     } satisfies DesktopDevboxState;
   });
 
-  const managedInstance = Effect.gen(function* () {
+  const managedInstances = Effect.gen(function* () {
     yield* refreshAws;
     const current = yield* Ref.get(aws);
     if (!current.aws.ok) {
       return yield* Effect.fail(new DevboxStepError(current.aws.detail));
     }
-    return current.instance;
+    return current.instances;
   });
 
-  const requireInstance = managedInstance.pipe(
-    Effect.flatMap((instance) =>
-      instance === null
-        ? Effect.fail(new DevboxStepError("No devbox exists yet."))
-        : Effect.succeed(instance),
-    ),
-  );
+  const requireInstance = (devbox: string) =>
+    managedInstances.pipe(
+      Effect.flatMap((instances) => {
+        const instance = instances.find((entry) => entry.name === devbox);
+        return instance === undefined
+          ? Effect.fail(new DevboxStepError(`No devbox named ${devbox}.`))
+          : Effect.succeed(instance);
+      }),
+    );
 
-  const writeSshConfig = (instanceId: string | null) =>
+  /** Adds or refreshes one devbox's alias, or drops it once the instance is terminated. */
+  const writeSshConfig = (instance: DevboxInstance, change: "upsert" | "remove") =>
     Effect.gen(function* () {
       const current = yield* requireConfig;
-      const existing = yield* fs.readFileString(sshConfigPath).pipe(Effect.orElseSucceed(() => ""));
-      const next = upsertSshConfigBlock(
-        existing,
-        instanceId === null ? null : buildSshConfigBlock(current, instanceId),
-      );
+      const existing = yield* readSshConfig;
+      const next =
+        change === "upsert"
+          ? syncSshConfigHosts(existing, current, [instance])
+          : syncSshConfigHosts(existing, current, [], [instance.instanceId]);
       if (next === existing) return;
       yield* fs.makeDirectory(path.dirname(sshConfigPath), { recursive: true }).pipe(Effect.orDie);
       if (existing.length > 0) {
@@ -355,15 +398,21 @@ export const make = Effect.gen(function* () {
       }
       yield* fs.writeFileString(sshConfigPath, next).pipe(Effect.orDie);
       yield* log(
-        instanceId === null
-          ? `Removed ${DEVBOX.sshAlias} from ~/.ssh/config`
-          : `~/.ssh/config: ${DEVBOX.sshAlias} → ${instanceId} over SSM`,
+        instance.name,
+        change === "remove"
+          ? `Removed ${instance.name} from ~/.ssh/config`
+          : `~/.ssh/config: ${instance.name} → ${instance.instanceId} over SSM`,
       );
     });
 
-  const waitFor = (what: string, timeout: Duration.Duration, probe: Effect.Effect<boolean>) =>
+  const waitFor = (
+    devbox: string,
+    what: string,
+    timeout: Duration.Duration,
+    probe: Effect.Effect<boolean>,
+  ) =>
     Effect.gen(function* () {
-      yield* log(`Waiting for ${what}…`);
+      yield* log(devbox, `Waiting for ${what}…`);
       const deadline = Date.now() + Duration.toMillis(timeout);
       while (!(yield* probe)) {
         if (Date.now() > deadline) {
@@ -372,7 +421,7 @@ export const make = Effect.gen(function* () {
         // AWS offers no push notification for SSM registration, so this polls.
         yield* Effect.sleep(Duration.seconds(10));
       }
-      yield* log(`${what}: ready`);
+      yield* log(devbox, `${what}: ready`);
     });
 
   const githubToken = runCommand("gh", ["auth", "token"]).pipe(
@@ -380,12 +429,12 @@ export const make = Effect.gen(function* () {
     Effect.map((token) => token.trim()),
   );
 
-  const copyAwsProfile = (profile: string) =>
+  const copyAwsProfile = (devbox: string, profile: string) =>
     Effect.gen(function* () {
       const text = yield* fs.readFileString(awsConfigPath).pipe(Effect.orElseSucceed(() => ""));
       const sections = awsProfileSections(text, profile);
       if (sections.length === 0) return;
-      yield* require(yield* ssh([MERGE_AWS_CONFIG_SCRIPT], {
+      yield* require(yield* ssh(devbox, [MERGE_AWS_CONFIG_SCRIPT], {
         stdin: sections,
       }), "Copying the AWS profile");
     });
@@ -393,13 +442,15 @@ export const make = Effect.gen(function* () {
   const setup = (instance: DevboxInstance) =>
     Effect.gen(function* () {
       const current = yield* requireConfig;
+      const devbox = instance.name;
       if (instance.state !== "running") {
         return yield* Effect.fail(
-          new DevboxStepError(`The devbox is ${instance.state}; start it first.`),
+          new DevboxStepError(`${devbox} is ${instance.state}; start it first.`),
         );
       }
-      yield* writeSshConfig(instance.instanceId);
+      yield* writeSshConfig(instance, "upsert");
       yield* waitFor(
+        devbox,
         "SSM agent",
         SSM_ONLINE_TIMEOUT,
         runCommand(
@@ -415,74 +466,79 @@ export const make = Effect.gen(function* () {
       );
       // cloud-init installs the key shortly after SSM registers; retry until it lands.
       yield* waitFor(
+        devbox,
         "SSH login",
         SSH_READY_TIMEOUT,
-        ssh(["true"], {}).pipe(Effect.map((result) => result.exitCode === 0)),
+        ssh(devbox, ["true"]).pipe(Effect.map((result) => result.exitCode === 0)),
       );
 
-      yield* log("Installing packages, Teleport, Claude Code, and Codex…");
-      yield* require(yield* ssh(["bash", "-s"], {
+      yield* log(devbox, "Installing packages, Teleport, Claude Code, and Codex…");
+      yield* require(yield* ssh(devbox, ["bash", "-s"], {
         stdin: DEVBOX_BOOTSTRAP_SCRIPT,
-        echo: true,
+        echo: devbox,
       }), "Bootstrap");
 
-      yield* log(`Copying the ${current.awsProfile} AWS profile…`);
-      yield* copyAwsProfile(current.awsProfile);
+      yield* log(devbox, `Copying the ${current.awsProfile} AWS profile…`);
+      yield* copyAwsProfile(devbox, current.awsProfile);
 
-      yield* log("Signing GitHub in with this Mac's gh credential…");
-      yield* require(yield* ssh(["gh auth login -h github.com --with-token && gh auth setup-git"], {
-        stdin: `${yield* githubToken}\n`,
-      }), "GitHub login on the devbox");
+      yield* log(devbox, "Signing GitHub in with this Mac's gh credential…");
+      yield* require(yield* ssh(
+        devbox,
+        ["gh auth login -h github.com --with-token && gh auth setup-git"],
+        {
+          stdin: `${yield* githubToken}\n`,
+        },
+      ), "GitHub login on the devbox");
 
-      yield* log("Setting up the brain vault…");
-      yield* require(yield* ssh(["bash", "-s"], {
+      yield* log(devbox, "Setting up the brain vault…");
+      yield* require(yield* ssh(devbox, ["bash", "-s"], {
         stdin: DEVBOX_BRAIN_SCRIPT,
-        echo: true,
+        echo: devbox,
       }), "Brain setup");
-      yield* refreshChecks();
+      yield* refreshChecks(devbox);
     });
 
-  const launch = Effect.gen(function* () {
-    const current = yield* requireConfig;
-    const existing = yield* managedInstance;
-    if (existing !== null) {
-      return yield* Effect.fail(
-        new DevboxStepError(`A devbox already exists (${existing.instanceId}, ${existing.state}).`),
-      );
-    }
-    const publicKey = yield* fs
-      .readFileString(`${path.join(home, ".ssh", "id_ed25519")}.pub`)
-      .pipe(Effect.mapError(() => new DevboxStepError("~/.ssh/id_ed25519.pub is missing.")));
-    const parameter = (yield* awsJson(
-      awsArgs(current, "ssm", "get-parameter", "--name", DEVBOX.amiParameter),
-      "Resolving the Amazon Linux AMI",
-    )) as { Parameter?: { Value?: string } };
-    const amiId = parameter.Parameter?.Value;
-    if (!amiId) {
-      return yield* Effect.fail(new DevboxStepError("The Amazon Linux AMI parameter was empty."));
-    }
-    yield* log(`Launching ${current.instanceType} from ${amiId}…`);
-    const launched = (yield* awsJson(
-      runInstancesArgs({ config: current, amiId, userData: buildUserData(publicKey) }),
-      "Launching the instance",
-    )) as { Instances?: Array<{ InstanceId?: string }> };
-    const instanceId = launched.Instances?.[0]?.InstanceId;
-    if (!instanceId) {
-      return yield* Effect.fail(new DevboxStepError("run-instances returned no instance id."));
-    }
-    yield* log(`Launched ${instanceId}; waiting for it to run…`);
-    yield* require(yield* runCommand(
-      "aws",
-      awsArgs(current, "ec2", "wait", "instance-running", "--instance-ids", instanceId),
-    ), "Waiting for the instance");
-    yield* setup(yield* requireInstance);
-  });
-
-  const changePower = (verb: "start" | "stop" | "terminate") =>
+  const launch = (devbox: string) =>
     Effect.gen(function* () {
       const current = yield* requireConfig;
-      const instance = yield* requireInstance;
-      yield* log(`${verb} ${instance.instanceId}…`);
+      const publicKey = yield* fs
+        .readFileString(`${path.join(home, ".ssh", "id_ed25519")}.pub`)
+        .pipe(Effect.mapError(() => new DevboxStepError("~/.ssh/id_ed25519.pub is missing.")));
+      const parameter = (yield* awsJson(
+        awsArgs(current, "ssm", "get-parameter", "--name", DEVBOX.amiParameter),
+        "Resolving the Amazon Linux AMI",
+      )) as { Parameter?: { Value?: string } };
+      const amiId = parameter.Parameter?.Value;
+      if (!amiId) {
+        return yield* Effect.fail(new DevboxStepError("The Amazon Linux AMI parameter was empty."));
+      }
+      yield* log(devbox, `Launching ${devbox} (${current.instanceType}) from ${amiId}…`);
+      const launched = (yield* awsJson(
+        runInstancesArgs({
+          config: current,
+          name: devbox,
+          amiId,
+          userData: buildUserData(publicKey),
+        }),
+        "Launching the instance",
+      )) as { Instances?: Array<{ InstanceId?: string }> };
+      const instanceId = launched.Instances?.[0]?.InstanceId;
+      if (!instanceId) {
+        return yield* Effect.fail(new DevboxStepError("run-instances returned no instance id."));
+      }
+      yield* log(devbox, `Launched ${instanceId}; waiting for it to run…`);
+      yield* require(yield* runCommand(
+        "aws",
+        awsArgs(current, "ec2", "wait", "instance-running", "--instance-ids", instanceId),
+      ), "Waiting for the instance");
+      yield* setup(yield* requireInstance(devbox));
+    });
+
+  const changePower = (verb: "start" | "stop" | "terminate", devbox: string) =>
+    Effect.gen(function* () {
+      const current = yield* requireConfig;
+      const instance = yield* requireInstance(devbox);
+      yield* log(devbox, `${verb} ${instance.instanceId}…`);
       yield* require(yield* runCommand(
         "aws",
         awsArgs(current, "ec2", `${verb}-instances`, "--instance-ids", instance.instanceId),
@@ -497,40 +553,62 @@ export const make = Effect.gen(function* () {
         awsArgs(current, "ec2", "wait", waiter, "--instance-ids", instance.instanceId),
       ), `Waiting for ${waiter}`);
       if (verb === "terminate") {
-        yield* writeSshConfig(null);
+        yield* writeSshConfig(instance, "remove");
       }
-      yield* Ref.update(checks, (value) => ({ ...value, devbox: null }));
+      yield* Ref.update(checks, (value) => ({ ...value, [devbox]: null }));
     });
 
-  const actions: Record<DesktopDevboxAction, Effect.Effect<void, DevboxStepError>> = {
+  const actions: Record<
+    DesktopDevboxAction,
+    (devbox: string) => Effect.Effect<void, DevboxStepError>
+  > = {
     launch,
-    setup: requireInstance.pipe(Effect.flatMap(setup)),
-    start: changePower("start"),
-    stop: changePower("stop"),
-    terminate: changePower("terminate"),
+    setup: (devbox) => requireInstance(devbox).pipe(Effect.flatMap(setup)),
+    start: (devbox) => changePower("start", devbox),
+    stop: (devbox) => changePower("stop", devbox),
+    terminate: (devbox) => changePower("terminate", devbox),
   };
 
-  const run = (action: DesktopDevboxAction) =>
+  /** A new devbox's name must be free in AWS and in the shared ssh_config block. */
+  const checkNewName = (devbox: string) =>
     Effect.gen(function* () {
-      const current = yield* Ref.get(job);
-      if (current?.running) {
+      const invalid = validateDevboxName(devbox);
+      if (invalid !== null) return yield* Effect.fail(new DevboxStepError(invalid));
+      yield* managedInstances;
+      const current = yield* Ref.get(aws);
+      if (current.instances.some((instance) => instance.name === devbox)) {
+        return yield* Effect.fail(new DevboxStepError(`A devbox named ${devbox} already exists.`));
+      }
+      if (current.sshAliases.includes(devbox)) {
+        return yield* Effect.fail(
+          new DevboxStepError(`~/.ssh/config already has a ${devbox} host; choose another name.`),
+        );
+      }
+    });
+
+  const run = ({ action, devbox }: DesktopDevboxActionInput) =>
+    Effect.gen(function* () {
+      if ((yield* Ref.get(jobs)).get(devbox)?.running) {
         return yield* snapshot;
       }
-      yield* Ref.set(job, { action, running: true, log: [], error: null });
-      yield* actions[action].pipe(
+      if (action === "launch") yield* checkNewName(devbox);
+      yield* Ref.update(jobs, (all) =>
+        new Map(all).set(devbox, { devbox, action, running: true, log: [], error: null }),
+      );
+      yield* actions[action](devbox).pipe(
         Effect.matchEffect({
           onFailure: (error) =>
-            Ref.update(job, (value) => value && { ...value, running: false, error: error.message }),
+            updateJob(devbox, (value) => ({ ...value, running: false, error: error.message })),
           onSuccess: () =>
-            log("Done.").pipe(
-              Effect.andThen(Ref.update(job, (value) => value && { ...value, running: false })),
+            log(devbox, "Done.").pipe(
+              Effect.andThen(updateJob(devbox, (value) => ({ ...value, running: false }))),
             ),
         }),
         Effect.ensuring(refreshAws),
         Effect.forkIn(layerScope),
       );
       return yield* snapshot;
-    });
+    }).pipe(Effect.mapError(toError));
 
   const getState = (options: DesktopDevboxStateOptions = {}) =>
     Effect.gen(function* () {
@@ -553,7 +631,7 @@ export const make = Effect.gen(function* () {
       if (input === null) {
         yield* fs.remove(configPath).pipe(Effect.ignore);
         yield* Ref.set(config, null);
-        yield* Ref.set(checks, { mac: null, devbox: null });
+        yield* Ref.set(checks, {});
         yield* refreshAws;
         return yield* snapshot;
       }
@@ -614,33 +692,59 @@ export const make = Effect.gen(function* () {
         yield* setSignInAwsProfile({ awsProfile: input.awsProfile });
       }
       const awsProfile = yield* signInAwsProfile;
-      if (input.target === "devbox" && (yield* Ref.get(config)) === null) {
+      const onDevbox = input.target !== MAC_TARGET;
+      if (onDevbox && (yield* Ref.get(config)) === null) {
         return yield* Effect.fail(
           new DevboxStepError("Turn on the devbox panel in Settings → General first."),
         );
       }
+      if (
+        onDevbox &&
+        !(yield* Ref.get(aws)).instances.some(
+          (instance) => instance.name === input.target && instance.state === "running",
+        )
+      ) {
+        return yield* Effect.fail(new DevboxStepError(`${input.target} is not running.`));
+      }
       if (input.provider === "aws" && awsProfile === null) {
         return yield* Effect.fail(new DevboxStepError("Choose an AWS profile first."));
       }
-      const existing = (yield* Ref.get(logins)).find(
+      const active = (yield* Ref.get(logins)).filter(
         (login) =>
-          login.target === input.target &&
-          login.provider === input.provider &&
-          (login.phase === "connecting" ||
-            login.phase === "approve" ||
-            login.phase === "verifying"),
+          login.phase === "connecting" || login.phase === "approve" || login.phase === "verifying",
       );
-      if (existing) return yield* snapshot;
-      if (input.target === "devbox" && input.provider === "aws" && awsProfile !== null) {
-        yield* copyAwsProfile(awsProfile);
+      if (
+        active.some((login) => login.target === input.target && login.provider === input.provider)
+      ) {
+        return yield* snapshot;
       }
-      const credential =
-        input.target === "devbox" ? yield* macCredential(input.provider) : undefined;
+      const codex = active.find((login) => login.provider === "codex");
+      if (input.provider === "codex" && codex) {
+        return yield* Effect.fail(
+          new DevboxStepError(
+            `The Codex sign-in on ${codex.target} is using port ${CODEX_CALLBACK_PORT}; finish it first.`,
+          ),
+        );
+      }
+      if (onDevbox && input.provider === "aws" && awsProfile !== null) {
+        yield* copyAwsProfile(input.target, awsProfile);
+      }
+      const credential = onDevbox ? yield* macCredential(input.provider) : undefined;
+      const reserved = yield* Ref.get(callbackPorts);
+      let callbackPort = yield* freePort;
+      while (reserved.has(callbackPort)) callbackPort = yield* freePort;
+      const holdsPort = onDevbox && input.provider === "teleport";
+      if (holdsPort) yield* Ref.update(callbackPorts, (ports) => new Set(ports).add(callbackPort));
+      const releasePort = Ref.update(callbackPorts, (ports) => {
+        const next = new Set(ports);
+        next.delete(callbackPort);
+        return next;
+      });
       const command = loginCommand({
         target: input.target,
         provider: input.provider,
         awsProfile: awsProfile ?? "default",
-        callbackPort: yield* freePort,
+        callbackPort,
         ...(credential === undefined ? {} : { credential }),
       });
       const id = NodeCrypto.randomUUID();
@@ -726,7 +830,10 @@ export const make = Effect.gen(function* () {
           }),
         ),
       );
-      yield* Effect.forkIn(session, layerScope);
+      yield* Effect.forkIn(
+        holdsPort ? session.pipe(Effect.ensuring(releasePort)) : session,
+        layerScope,
+      );
       return yield* snapshot;
     }).pipe(Effect.mapError(toError));
 
