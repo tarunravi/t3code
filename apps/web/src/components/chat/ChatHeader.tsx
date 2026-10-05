@@ -24,6 +24,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
+import { ThreadCostLabel } from "./ThreadCostLabel";
 import { TokenRateLabel } from "./TokenRateLabel";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
@@ -414,6 +415,7 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? <ThreadCostLabel threadRef={activeThreadRef} className="shrink-0" /> : null}
       <TokenRateLabel projection={threadProjection} className="shrink-0" />
     </div>
   );
