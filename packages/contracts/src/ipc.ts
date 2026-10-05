@@ -594,7 +594,7 @@ export const DesktopWslStateSchema = Schema.Struct({
   preflightError: Schema.NullOr(Schema.String),
 });
 
-/** Long-running devbox operations. One runs at a time; its log is kept in memory. */
+/** Long-running devbox operations. One runs per devbox at a time; its log is kept in memory. */
 export const DesktopDevboxActionSchema = Schema.Literals([
   "launch",
   "setup",
@@ -604,7 +604,14 @@ export const DesktopDevboxActionSchema = Schema.Literals([
 ]);
 export type DesktopDevboxAction = typeof DesktopDevboxActionSchema.Type;
 
-/** Where the devbox lives. Null config means the devbox panel is turned off on this machine. */
+export const DesktopDevboxActionInputSchema = Schema.Struct({
+  action: DesktopDevboxActionSchema,
+  /** The devbox's name (its ssh alias); for `launch`, the name of the new devbox. */
+  devbox: Schema.String,
+});
+export type DesktopDevboxActionInput = typeof DesktopDevboxActionInputSchema.Type;
+
+/** Where the devboxes live. Null config means the devbox panel is turned off on this machine. */
 export const DesktopDevboxConfigSchema = Schema.Struct({
   awsProfile: Schema.String,
   awsRegion: Schema.String,
@@ -621,7 +628,8 @@ export const DesktopAwsProfileSchema = Schema.Struct({
 });
 export type DesktopAwsProfile = typeof DesktopAwsProfileSchema.Type;
 
-export const DesktopDevboxLoginTargetSchema = Schema.Literals(["mac", "devbox"]);
+/** `mac` for this Mac, otherwise a devbox's name. */
+export const DesktopDevboxLoginTargetSchema = Schema.String;
 export type DesktopDevboxLoginTarget = typeof DesktopDevboxLoginTargetSchema.Type;
 
 export const DesktopDevboxLoginProviderSchema = Schema.Literals([
@@ -656,7 +664,7 @@ const DesktopDevboxChecksSchema = Schema.Struct({
 export type DesktopDevboxChecks = typeof DesktopDevboxChecksSchema.Type;
 
 /**
- * A fresh sign-in (logout, then login) on the Mac or the devbox. Approval
+ * A fresh sign-in (logout, then login) on the Mac or a devbox. Approval
  * links open on the Mac; `phase` drives the progress bar and ends in
  * `done` only after the follow-up health check confirms the session.
  */
@@ -677,29 +685,31 @@ export type DesktopDevboxLogin = typeof DesktopDevboxLoginSchema.Type;
 export const DesktopDevboxStateSchema = Schema.Struct({
   config: Schema.NullOr(DesktopDevboxConfigSchema),
   aws: DesktopDevboxCheckSchema,
-  /** The instance tagged `t3-managed=true`, or null when none exists. */
-  instance: Schema.NullOr(
+  /** Every live instance tagged `t3-managed=true`, ordered by name. */
+  instances: Schema.Array(
     Schema.Struct({
       instanceId: Schema.String,
+      /** The Name tag, also the ssh alias; the instance id when the tag can't be one. */
+      name: Schema.String,
       state: Schema.String,
       instanceType: Schema.String,
       launchedAt: Schema.NullOr(Schema.String),
     }),
   ),
-  sshAlias: Schema.String,
-  job: Schema.NullOr(
+  /** Default name offered for the next devbox. */
+  nextName: Schema.String,
+  /** The latest run per devbox name, including a launch still waiting for its instance. */
+  jobs: Schema.Array(
     Schema.Struct({
+      devbox: Schema.String,
       action: DesktopDevboxActionSchema,
       running: Schema.Boolean,
       log: Schema.Array(Schema.String),
       error: Schema.NullOr(Schema.String),
     }),
   ),
-  /** Sign-in health per machine; null until checked (devbox: or while it is not running). */
-  checks: Schema.Struct({
-    mac: Schema.NullOr(DesktopDevboxChecksSchema),
-    devbox: Schema.NullOr(DesktopDevboxChecksSchema),
-  }),
+  /** Sign-in health keyed by target (`mac` or a devbox name); missing or null until checked or while a devbox is not running. */
+  checks: Schema.Record(Schema.String, Schema.NullOr(DesktopDevboxChecksSchema)),
   /** AWS profile used for sign-ins: the devbox profile, or the one chosen on the Machines page. */
   signInAwsProfile: Schema.NullOr(Schema.String),
   checking: Schema.Boolean,
@@ -1338,7 +1348,7 @@ export interface DesktopBridge {
   /** Returns the cached AWS read unless `refresh`; `checkHealth` also probes the box over SSH. */
   getDevboxState?: (options?: DesktopDevboxStateOptions) => Promise<DesktopDevboxState>;
   /** Starts the action in the background and returns immediately. */
-  runDevboxAction?: (action: DesktopDevboxAction) => Promise<DesktopDevboxState>;
+  runDevboxAction?: (input: DesktopDevboxActionInput) => Promise<DesktopDevboxState>;
   listAwsProfiles?: () => Promise<readonly DesktopAwsProfile[]>;
   /** Turns the panel on for an AWS profile (detecting the network from an existing devbox), or off with null. */
   setDevboxEnabled?: (input: DesktopDevboxEnableInput) => Promise<DesktopDevboxState>;

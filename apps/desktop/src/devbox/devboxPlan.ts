@@ -6,14 +6,13 @@ import type {
 } from "@t3tools/contracts";
 
 // Pure pieces of the devbox control panel: the AWS launch template, the
-// ssh_config block that reaches the box over SSM, and the scripts run on it.
+// ssh_config block that reaches each box over SSM, and the scripts run on them.
 // Nothing here spawns processes, so every piece is testable in isolation.
 
 export const DEVBOX = {
   amiParameter: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
   rootVolumeGiB: 100,
-  name: "t3-devbox",
-  sshAlias: "t3-devbox",
+  namePrefix: "devbox",
   sshUser: "ec2-user",
   identityFile: "~/.ssh/id_ed25519",
   managedTagKey: "t3-managed",
@@ -148,13 +147,28 @@ export function awsProfileSections(configText: string, profile: string): string 
 
 export interface DevboxInstance {
   readonly instanceId: string;
+  /** The Name tag, or the instance id when the tag is missing or unusable as an ssh alias. */
+  readonly name: string;
   readonly state: string;
   readonly instanceType: string;
   readonly launchedAt: string | null;
 }
 
-/** Newest live managed instance from `describe-instances` JSON. */
-export function parseManagedInstance(json: string): DevboxInstance | null {
+/** Sign-ins use this target for the local machine, so no devbox may be named it. */
+export const MAC_TARGET = "mac";
+
+const DEVBOX_NAME = /^[A-Za-z][A-Za-z0-9-]{0,62}$/u;
+
+/** Devbox names become ssh aliases and appear in shell commands. */
+export function validateDevboxName(name: string): string | null {
+  if (!DEVBOX_NAME.test(name)) {
+    return "Use letters, digits, and dashes, starting with a letter.";
+  }
+  return name === MAC_TARGET ? `"${MAC_TARGET}" is reserved for this Mac.` : null;
+}
+
+/** Every live managed instance from `describe-instances` JSON, ordered by name. */
+export function parseManagedInstances(json: string): DevboxInstance[] {
   const parsed = JSON.parse(json) as {
     Reservations?: Array<{
       Instances?: Array<{
@@ -162,6 +176,7 @@ export function parseManagedInstance(json: string): DevboxInstance | null {
         State?: { Name?: string };
         InstanceType?: string;
         LaunchTime?: string;
+        Tags?: Array<{ Key?: string; Value?: string }>;
       }>;
     }>;
   };
@@ -172,6 +187,7 @@ export function parseManagedInstance(json: string): DevboxInstance | null {
         ? [
             {
               instanceId: instance.InstanceId,
+              tagName: instance.Tags?.find((tag) => tag.Key === "Name")?.Value ?? "",
               state: instance.State.Name,
               instanceType: instance.InstanceType ?? "",
               launchedAt: instance.LaunchTime ?? null,
@@ -179,8 +195,26 @@ export function parseManagedInstance(json: string): DevboxInstance | null {
           ]
         : [],
     )
-    .toSorted((left, right) => (right.launchedAt ?? "").localeCompare(left.launchedAt ?? ""));
-  return instances[0] ?? null;
+    // Oldest first, so an existing box keeps its alias when a duplicate Name appears.
+    .toSorted((left, right) => (left.launchedAt ?? "").localeCompare(right.launchedAt ?? ""));
+  const taken = new Set<string>();
+  return instances
+    .map(({ tagName, ...instance }) => {
+      const name =
+        validateDevboxName(tagName) === null && !taken.has(tagName) ? tagName : instance.instanceId;
+      taken.add(name);
+      return { ...instance, name };
+    })
+    .toSorted((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+}
+
+/** The first `devboxN` (from 1) that no instance or ssh host already uses. */
+export function nextDevboxName(taken: Iterable<string>): string {
+  const used = new Set(taken);
+  for (let index = 1; ; index += 1) {
+    const name = `${DEVBOX.namePrefix}${index}`;
+    if (!used.has(name)) return name;
+  }
 }
 
 /** cloud-init for the first boot: authorize the Mac's key for ec2-user. */
@@ -194,12 +228,13 @@ export function buildUserData(publicKey: string): string {
 
 export function runInstancesArgs(input: {
   readonly config: DesktopDevboxConfig;
+  readonly name: string;
   readonly amiId: string;
   readonly userData: string;
 }) {
   const { config } = input;
   const tags = [
-    { Key: "Name", Value: DEVBOX.name },
+    { Key: "Name", Value: input.name },
     { Key: "Owner", Value: "tarun" },
     { Key: "Purpose", Value: "devbox" },
     { Key: DEVBOX.managedTagKey, Value: "true" },
@@ -239,18 +274,38 @@ export function runInstancesArgs(input: {
   );
 }
 
-const SSH_BLOCK_START = "# >>> t3 devbox (managed by T3 Code) >>>";
-const SSH_BLOCK_END = "# <<< t3 devbox (managed by T3 Code) <<<";
+/**
+ * One ssh_config block holds every devbox alias. It is shared with the
+ * hand-maintained Sandbox-1 fleet block of the same name: the panel owns the
+ * Host entries that point at t3-managed instances and keeps every other entry
+ * in the block (such as the LLM gateway) exactly as written.
+ */
+const SSH_BLOCK_NAME = "sandbox1-devboxes";
+const SSH_BLOCK_START = `# >>> ${SSH_BLOCK_NAME}`;
+const SSH_BLOCK_END = `# <<< ${SSH_BLOCK_NAME}`;
+const NEW_SSH_BLOCK_START = `${SSH_BLOCK_START} (Host entries for t3-managed instances are written by T3 Code's devbox panel)`;
+// Written by the single-devbox panel; replaced by the shared block.
+const LEGACY_SSH_BLOCK_START = "# >>> t3 devbox (managed by T3 Code) >>>";
+const LEGACY_SSH_BLOCK_END = "# <<< t3 devbox (managed by T3 Code) <<<";
 
-export function buildSshConfigBlock(config: AwsTarget, instanceId: string): string {
-  if (!/^i-[0-9a-f]+$/u.test(instanceId)) {
-    throw new Error(`Unexpected instance id: ${instanceId}`);
+const isMarker = (line: string, marker: string) => line === marker || line.startsWith(`${marker} `);
+
+export interface DevboxSshHost {
+  readonly name: string;
+  readonly instanceId: string;
+}
+
+export function buildSshHostEntry(config: AwsTarget, host: DevboxSshHost): string[] {
+  if (!/^i-[0-9a-f]+$/u.test(host.instanceId)) {
+    throw new Error(`Unexpected instance id: ${host.instanceId}`);
+  }
+  if (host.name !== host.instanceId && validateDevboxName(host.name) !== null) {
+    throw new Error(`Unexpected devbox name: ${host.name}`);
   }
   const path = DEVBOX_EXTRA_PATH.map((entry) => entry.replace(/^~/u, "$HOME")).join(":");
   return [
-    SSH_BLOCK_START,
-    `Host ${DEVBOX.sshAlias}`,
-    `    HostName ${instanceId}`,
+    `Host ${host.name}`,
+    `    HostName ${host.instanceId}`,
     `    User ${DEVBOX.sshUser}`,
     `    IdentityFile ${DEVBOX.identityFile}`,
     "    IdentitiesOnly yes",
@@ -259,26 +314,110 @@ export function buildSshConfigBlock(config: AwsTarget, instanceId: string): stri
     "    StrictHostKeyChecking accept-new",
     "    ServerAliveInterval 30",
     `    ProxyCommand sh -lc 'PATH="${path}:$PATH" AWS_PROFILE=${config.awsProfile} AWS_REGION=${config.awsRegion} aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p'`,
-    SSH_BLOCK_END,
-  ].join("\n");
+  ];
+}
+
+interface SshEntry {
+  readonly aliases: readonly string[];
+  readonly hostName: string | null;
+  readonly lines: readonly string[];
+}
+
+function parseSshEntries(lines: readonly string[]): { preamble: string[]; entries: SshEntry[] } {
+  const preamble: string[] = [];
+  const entries: Array<{ aliases: string[]; hostName: string | null; lines: string[] }> = [];
+  for (const line of lines) {
+    const host = /^\s*(Host|Match)\s+(.*)$/iu.exec(line);
+    if (host) {
+      entries.push({
+        aliases: host[1]!.toLowerCase() === "host" ? host[2]!.trim().split(/\s+/u) : [],
+        hostName: null,
+        lines: [line],
+      });
+      continue;
+    }
+    const current = entries.at(-1);
+    if (!current) {
+      preamble.push(line);
+      continue;
+    }
+    current.lines.push(line);
+    const hostName = /^\s*HostName\s+(\S+)/iu.exec(line);
+    if (hostName) current.hostName = hostName[1]!;
+  }
+  return { preamble, entries };
+}
+
+function findBlock(lines: readonly string[], start: string, end: string) {
+  const from = lines.findIndex((line) => isMarker(line, start));
+  const to =
+    from === -1 ? -1 : lines.findIndex((line, index) => index > from && isMarker(line, end));
+  return from === -1 || to === -1 ? null : { from, to };
+}
+
+function removeBlock(lines: string[], start: string, end: string): string[] {
+  const block = findBlock(lines, start, end);
+  if (!block) return lines;
+  let to = block.to + 1;
+  while (to < lines.length && lines[to] === "") to += 1;
+  return [...lines.slice(0, block.from), ...lines.slice(to)];
+}
+
+/** Aliases in the shared block, so a new devbox never takes a hand-written host's name. */
+export function sshBlockAliases(existing: string): string[] {
+  const lines = existing.split("\n");
+  const block = findBlock(lines, SSH_BLOCK_START, SSH_BLOCK_END);
+  if (!block) return [];
+  return parseSshEntries(lines.slice(block.from + 1, block.to)).entries.flatMap(
+    (entry) => entry.aliases,
+  );
 }
 
 /**
- * Replaces the managed block, or prepends it: ssh_config uses the first
- * matching value, so a later `Host *` must not shadow the devbox settings.
- * Passing null removes the block. Everything outside the markers is kept.
+ * Writes `hosts` into the shared block, replacing entries with the same alias
+ * or instance id in place and appending new ones. Entries for `removed`
+ * instance ids are dropped; every other line is kept. A new block is
+ * prepended because ssh_config uses the first matching value, so a later
+ * `Host *` or stale alias must not shadow it.
  */
-export function upsertSshConfigBlock(existing: string, block: string | null): string {
-  const start = existing.indexOf(SSH_BLOCK_START);
-  const end = existing.indexOf(SSH_BLOCK_END);
-  const withoutBlock =
-    start !== -1 && end > start
-      ? existing.slice(0, start) + existing.slice(end + SSH_BLOCK_END.length).replace(/^\n+/u, "")
-      : existing;
-  if (block === null) {
-    return withoutBlock;
+export function syncSshConfigHosts(
+  existing: string,
+  config: AwsTarget,
+  hosts: readonly DevboxSshHost[],
+  removed: readonly string[] = [],
+): string {
+  let lines = removeBlock(existing.split("\n"), LEGACY_SSH_BLOCK_START, LEGACY_SSH_BLOCK_END);
+  const block = findBlock(lines, SSH_BLOCK_START, SSH_BLOCK_END);
+  const { preamble, entries } = parseSshEntries(block ? lines.slice(block.from + 1, block.to) : []);
+  const pending = new Map(hosts.map((host) => [host.name, host]));
+  const byInstance = new Map(hosts.map((host) => [host.instanceId, host]));
+  const body = [...preamble];
+  for (const entry of entries) {
+    const owner =
+      entry.aliases.map((alias) => pending.get(alias)).find((host) => host !== undefined) ??
+      (entry.hostName === null ? undefined : byInstance.get(entry.hostName));
+    if (owner) {
+      if (pending.delete(owner.name)) {
+        // Blank lines and comments after the last option introduce the next entry; keep them.
+        const lastOption = entry.lines.findLastIndex((line) => !/^\s*(#.*)?$/u.test(line));
+        body.push(...buildSshHostEntry(config, owner), ...entry.lines.slice(lastOption + 1));
+      }
+      continue;
+    }
+    if (entry.hostName !== null && removed.includes(entry.hostName)) continue;
+    body.push(...entry.lines);
   }
-  return withoutBlock.length === 0 ? `${block}\n` : `${block}\n\n${withoutBlock}`;
+  for (const host of pending.values()) body.push(...buildSshHostEntry(config, host));
+
+  const startLine = block ? lines[block.from]! : NEW_SSH_BLOCK_START;
+  const next = [startLine, ...body, block ? lines[block.to]! : SSH_BLOCK_END];
+  if (block) {
+    lines = [...lines.slice(0, block.from), ...next, ...lines.slice(block.to + 1)];
+  } else {
+    while (lines.length > 0 && lines[0] === "") lines.shift();
+    lines = lines.length === 0 ? [...next, ""] : [...next, "", ...lines];
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -498,6 +637,9 @@ export function parseDevboxHealth(stdout: string): DevboxHealth {
   };
 }
 
+/** Codex's browser callback is fixed to localhost:1455, so only one Codex sign-in can run at a time. */
+export const CODEX_CALLBACK_PORT = 1455;
+
 /** How a sign-in runs. Devbox sign-ins tunnel their browser callback back to this Mac. */
 export interface LoginCommand {
   readonly command: string;
@@ -519,7 +661,11 @@ function macPty(shellCommand: string): Omit<LoginCommand, "opensBrowser"> {
   return { command: "python3", args: ["-c", PTY_RUNNER, shellCommand] };
 }
 
-function devboxPty(shellCommand: string, forwardPort?: number): Omit<LoginCommand, "opensBrowser"> {
+function devboxPty(
+  sshAlias: string,
+  shellCommand: string,
+  forwardPort?: number,
+): Omit<LoginCommand, "opensBrowser"> {
   return {
     command: "ssh",
     args: [
@@ -529,7 +675,7 @@ function devboxPty(shellCommand: string, forwardPort?: number): Omit<LoginComman
       "-o",
       "ExitOnForwardFailure=yes",
       ...(forwardPort === undefined ? [] : ["-L", `${forwardPort}:127.0.0.1:${forwardPort}`]),
-      DEVBOX.sshAlias,
+      sshAlias,
       `bash -lc ${shellQuote(`export PATH="$HOME/.local/bin:$PATH"; ${shellCommand}`)}`,
     ],
   };
@@ -541,6 +687,7 @@ function devboxPty(shellCommand: string, forwardPort?: number): Omit<LoginComman
  * GitHub and Claude on the devbox reuse this Mac's credential over stdin.
  */
 export function loginCommand(input: {
+  /** `mac`, or the devbox's ssh alias. */
   readonly target: DesktopDevboxLoginTarget;
   readonly provider: DesktopDevboxLoginProvider;
   readonly awsProfile: string;
@@ -549,12 +696,12 @@ export function loginCommand(input: {
   /** This Mac's credential for providers the devbox copies instead of signing in. */
   readonly credential?: string;
 }): LoginCommand {
-  const onMac = input.target === "mac";
+  const onMac = input.target === MAC_TARGET;
   const run = (
     shellCommand: string,
     options: { forwardPort?: number; opensBrowser?: boolean } = {},
   ) => ({
-    ...(onMac ? macPty(shellCommand) : devboxPty(shellCommand, options.forwardPort)),
+    ...(onMac ? macPty(shellCommand) : devboxPty(input.target, shellCommand, options.forwardPort)),
     opensBrowser: onMac && options.opensBrowser === true,
   });
   const profile = shellQuote(input.awsProfile);
@@ -570,7 +717,7 @@ export function loginCommand(input: {
       args: [
         "-o",
         "ConnectTimeout=60",
-        DEVBOX.sshAlias,
+        input.target,
         `bash -lc ${shellQuote(`export PATH="$HOME/.local/bin:$PATH"; ${remote}`)}`,
       ],
       stdin: `${input.credential.trim()}\n`,
@@ -599,10 +746,9 @@ export function loginCommand(input: {
             `${quietly("gh auth logout --hostname github.com")}; gh auth login --hostname github.com --with-token && gh auth setup-git && gh api user --jq .login`,
           );
     case "codex":
-      // Codex's browser callback is fixed to localhost:1455.
       return run(`${quietly("codex logout")}; codex login`, {
         opensBrowser: true,
-        ...(onMac ? {} : { forwardPort: 1455 }),
+        ...(onMac ? {} : { forwardPort: CODEX_CALLBACK_PORT }),
       });
     case "claude":
       return onMac

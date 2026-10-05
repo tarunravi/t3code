@@ -188,7 +188,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setWslOnly: (enabled) => ipcRenderer.invoke(IpcChannels.SET_WSL_ONLY_CHANNEL, enabled),
   getDevboxState: (options) =>
     ipcRenderer.invoke(IpcChannels.GET_DEVBOX_STATE_CHANNEL, options ?? {}),
-  runDevboxAction: (action) => ipcRenderer.invoke(IpcChannels.RUN_DEVBOX_ACTION_CHANNEL, action),
+  runDevboxAction: (input) => ipcRenderer.invoke(IpcChannels.RUN_DEVBOX_ACTION_CHANNEL, input),
   listAwsProfiles: () => ipcRenderer.invoke(IpcChannels.LIST_AWS_PROFILES_CHANNEL),
   setDevboxEnabled: (input) => ipcRenderer.invoke(IpcChannels.SET_DEVBOX_ENABLED_CHANNEL, input),
   startDevboxLogin: (input) => ipcRenderer.invoke(IpcChannels.START_DEVBOX_LOGIN_CHANNEL, input),
