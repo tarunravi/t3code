@@ -546,6 +546,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
   {
+    id: "voice-microphone",
+    title: "Microphone",
+    to: "/settings/general",
+    searchTerms: ["voice input dictation audio device mic headset usb default"],
+    desktopOnly: true,
+  },
+  {
     id: "voice-recordings",
     title: "Voice recordings",
     to: "/settings/general",
