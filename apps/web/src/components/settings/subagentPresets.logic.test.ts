@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  draftRosterWithDefaultPreset,
   draftSubagentRosterPatch,
   withSubagentDescription,
   applyPresetEntryDescription,
@@ -24,6 +25,7 @@ import {
 } from "./subagentPresets.logic";
 
 const decodeSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeSettings = Schema.decodeUnknownSync(ServerSettings);
 
 const OPUS: SubagentPresetEntry = {
   selection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
@@ -37,6 +39,19 @@ const GLM: SubagentPresetEntry = {
 const PRESET: SubagentPreset = { id: "hard", name: "Hard work", entries: [OPUS, GLM] };
 
 describe("subagent preset helpers", () => {
+  it("starts an untouched draft on the default preset, keeping any explicit choice", () => {
+    expect(draftRosterWithDefaultPreset(undefined, [PRESET], "hard")).toEqual([OPUS, GLM]);
+    expect(draftRosterWithDefaultPreset(null, [PRESET], "hard")).toBeNull();
+    expect(draftRosterWithDefaultPreset([GLM], [PRESET], "hard")).toEqual([GLM]);
+    expect(draftRosterWithDefaultPreset(undefined, [PRESET], null)).toBeUndefined();
+    expect(draftRosterWithDefaultPreset(undefined, [PRESET], "deleted")).toBeUndefined();
+  });
+  it("decodes a missing default preset as none and patches it like other settings", () => {
+    expect(decodeSettings({}).defaultSubagentPresetId).toBeNull();
+    expect(decodeSettingsPatch({ defaultSubagentPresetId: "hard" })).toEqual({
+      defaultSubagentPresetId: "hard",
+    });
+  });
   it("targets first-submit and multi-model destination ids without changing legacy entries", () => {
     const first = ThreadId.make("first-submit");
     const second = ThreadId.make("multi-submit");

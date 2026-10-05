@@ -224,6 +224,42 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     });
   });
 
+  it("starts a new draft on the default preset, and still lets it switch or opt out", () => {
+    const other = { id: "bulk", name: "Bulk work", entries: [{ selection: GLM_SELECTION }] };
+    testState.settings = settingsWith({
+      subagentPresets: [PRESET, other],
+      defaultSubagentPresetId: "hard",
+    });
+    const draftPanel = () => (
+      <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />
+    );
+    act(() => {
+      renderer = create(draftPanel());
+    });
+    expect(hasText(renderer!, "Hard work")).toBe(true);
+    expect(button(renderer!, (props) => props.value === "hard").props["aria-checked"]).toBe(true);
+    expect(button(renderer!, (props) => props.role === "switch").props["aria-checked"]).toBe(true);
+
+    applyPreset(renderer!, "bulk");
+    expect(testState.setDraftThreadContext).toHaveBeenLastCalledWith(DRAFT, {
+      subagentRoster: other.entries,
+    });
+
+    // Turning the roster off is an explicit choice the default must not override.
+    testState.draftEntries = null;
+    act(() => renderer!.update(draftPanel()));
+    expect(button(renderer!, (props) => props.role === "switch").props["aria-checked"]).toBe(false);
+  });
+
+  it("keeps an existing server thread's environment subagents despite a default preset", () => {
+    testState.settings = settingsWith({
+      subagentPresets: [PRESET],
+      defaultSubagentPresetId: "hard",
+    });
+    const root = renderPanel();
+    expect(button(root, (props) => props.role === "switch").props["aria-checked"]).toBe(false);
+  });
+
   it("previews the saved thread entries, not an edited preset or its old notes", () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],

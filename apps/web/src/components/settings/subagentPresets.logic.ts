@@ -113,6 +113,20 @@ export function applyPresetEntryDescription(
   };
 }
 
+/**
+ * A new thread's roster: its own choice once made (`null` chose the environment's
+ * subagents), otherwise the default preset's entries. Undefined means no roster.
+ */
+export function draftRosterWithDefaultPreset(
+  draftRoster: ReadonlyArray<SubagentRosterEntry> | null | undefined,
+  presets: ReadonlyArray<SubagentPreset>,
+  defaultPresetId: string | null,
+): ReadonlyArray<SubagentRosterEntry> | null | undefined {
+  if (draftRoster !== undefined) return draftRoster;
+  const preset = presets.find((candidate) => candidate.id === defaultPresetId);
+  return preset === undefined ? undefined : applyPresetToRoster(preset);
+}
+
 /** Drafts carry intent locally; save it under the real destination ids before starting turns. */
 export function draftSubagentRosterPatch(
   entries: ReadonlyArray<SubagentRosterEntry> | null | undefined,
