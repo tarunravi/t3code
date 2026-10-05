@@ -8,6 +8,7 @@ import {
   lookupRate,
   parseRateTable,
   priceUsage,
+  resolveStandardRates,
 } from "./usagePricing.ts";
 
 const rate = (input: number, cacheRead?: number) => ({
@@ -247,5 +248,26 @@ describe("usage pricing", () => {
     expect(lookupRate(table, "provider-a/example-model")?.inputCostPerToken).toBe(1);
     expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
     expect(lookupRate(table, "example-model")).toBeNull();
+  });
+
+  it("resolves standard rates through aliases and overrides, or reports unpriced", () => {
+    const table = parseRateTable({ "example-model": rate(1, 0.1) });
+    const overrides = createOverrideRateTable({
+      "glm-5.3": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+    });
+    const aliases = new Map([["local-alias", "example-model"]]);
+    expect(resolveStandardRates(table, "local-alias", overrides, aliases)).toEqual({
+      inputCostPerToken: 1,
+      outputCostPerToken: 5,
+      cacheReadCostPerToken: 0.1,
+      cacheCreationCostPerToken: 1,
+    });
+    expect(resolveStandardRates(table, "glm-5.3", overrides, aliases)).toEqual({
+      inputCostPerToken: 2 / 1_000_000,
+      outputCostPerToken: 8 / 1_000_000,
+      cacheReadCostPerToken: 2 / 1_000_000,
+      cacheCreationCostPerToken: 2 / 1_000_000,
+    });
+    expect(resolveStandardRates(table, "unknown-model", overrides, aliases)).toBeNull();
   });
 });

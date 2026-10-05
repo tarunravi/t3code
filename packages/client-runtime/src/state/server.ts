@@ -1129,6 +1129,12 @@ export function createServerEnvironmentAtoms<R, E>(
           ),
         ),
     }),
+    usageModelRates: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-model-rates",
+      tag: WS_METHODS.serverGetUsageModelRates,
+      staleTimeMs: 60_000,
+      refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
+    }),
     usageSpeed: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:usage-speed",
       tag: WS_METHODS.serverGetUsageSpeed,
