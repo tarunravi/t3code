@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 
+import { useCommitOnBlur } from "../../hooks/useCommitOnBlur";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import {
@@ -21,7 +22,6 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
-import { DraftInput } from "../ui/draft-input";
 import {
   Menu,
   MenuGroup,
@@ -34,6 +34,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ProviderModelPicker } from "./ProviderModelPicker";
@@ -47,6 +48,7 @@ import {
   resolvePreset,
   resolveRosterEntry,
   rosterEntryKey,
+  rosterEntrySummary,
   sameRosterEntry,
   selectedEffort,
   SUBAGENT_PRESETS,
@@ -79,6 +81,28 @@ export function useSubagentInstances(environmentId: EnvironmentId) {
     );
     return { instances, pickerInstances, modelOptionsByInstance };
   }, [providers, settings]);
+}
+
+/**
+ * A subagent's "when to use" note. Wraps and grows with its text so long notes
+ * stay readable; Enter still commits like the single-line field it replaced.
+ */
+export function SubagentNoteField(props: {
+  value: string;
+  modelLabel: string;
+  onCommit: (description: string) => void;
+}) {
+  const draft = useCommitOnBlur(props.value, props.onCommit);
+  return (
+    <Textarea
+      size="sm"
+      rows={1}
+      className="[&_textarea]:min-h-0 [&_textarea]:resize-none"
+      placeholder="Notes: when should an agent pick this model?"
+      aria-label={`Notes for ${props.modelLabel}`}
+      {...draft}
+    />
+  );
 }
 
 function RosterEntryRow(props: {
@@ -137,9 +161,7 @@ function RosterEntryRow(props: {
           {resolved.modelLabel}
         </span>
         <p className="truncate text-2xs text-muted-foreground">
-          {resolved.effortLabel === null
-            ? providerName
-            : `${providerName} · ${resolved.effortLabel}`}
+          {rosterEntrySummary(providerName, resolved)}
         </p>
       </div>
       <Menu>
@@ -200,12 +222,9 @@ function RosterEntryRow(props: {
           </MenuItem>
         </MenuPopup>
       </Menu>
-      <DraftInput
-        size="sm"
-        className="w-full"
+      <SubagentNoteField
         value={props.entry.description ?? ""}
-        aria-label={`Notes for ${resolved.modelLabel}`}
-        placeholder="Notes: when should an agent pick this model?"
+        modelLabel={resolved.modelLabel}
         onCommit={(description) =>
           props.onReplace(withSubagentDescription(props.entry, description))
         }
@@ -264,6 +283,7 @@ export function SubagentRosterAddControls(props: {
   onChange: (entries: SubagentRosterEntry[]) => void;
   /** Presets replace the list instead of extending it. */
   presetsReplace: boolean;
+  className?: string;
 }) {
   const { entries, onChange } = props;
   const presets = SUBAGENT_PRESETS.map((preset) => ({
@@ -278,7 +298,7 @@ export function SubagentRosterAddControls(props: {
   );
 
   return (
-    <div className="flex min-w-0 items-center gap-1 px-1 pt-1">
+    <div className={cn("flex min-w-0 items-center gap-1 px-1 pt-1", props.className)}>
       <Menu>
         <MenuTrigger render={<ThreadDetailsControl part="row" tone="muted" className="flex-1" />}>
           <PlusIcon className="size-4" />
@@ -307,9 +327,7 @@ export function SubagentRosterAddControls(props: {
                       />
                     ) : null}
                     <span className="min-w-0 flex-1 truncate">
-                      {resolved.effortLabel === null
-                        ? resolved.modelLabel
-                        : `${resolved.modelLabel} · ${resolved.effortLabel}`}
+                      {rosterEntrySummary(resolved.modelLabel, resolved)}
                     </span>
                   </MenuItem>
                 );
