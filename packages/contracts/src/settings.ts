@@ -1496,6 +1496,10 @@ export const ServerSettings = Schema.Struct({
   subagentPresets: Schema.Array(SubagentPreset).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Preset id new threads start with; `null` starts them on the environment's subagents. */
+  defaultSubagentPresetId: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /**
    * The merge method pull requests start with; `null` reuses the method
    * last chosen on this device. Server-side so a project can override it
@@ -1826,6 +1830,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   /** Replaces the whole preset list. */
   subagentPresets: Schema.optionalKey(Schema.Array(SubagentPreset)),
+  defaultSubagentPresetId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(
     Schema.Struct({
