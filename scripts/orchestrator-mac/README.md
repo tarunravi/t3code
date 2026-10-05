@@ -27,3 +27,16 @@ macOS stores each Accessibility and Screen Recording grant with the designated r
 3. Run `scripts/orchestrator-mac/verify-signature.sh "/Applications/T3 Code (Orchestrator).app"`.
 4. The first time you switch an app to stable signing, or when stale rows appear, run `scripts/orchestrator-mac/reset-tcc-grants.sh` (dry run) and then `reset-tcc-grants.sh --apply`. Rows for apps no longer on disk cannot be reset by `tccutil`; remove them with the − button in System Settings.
 5. Launch the app and grant Accessibility and Screen Recording again when asked. Later rebuilds signed with the same identity keep these grants.
+
+## Reinstall from inside T3
+
+Quitting T3 stops every agent in it, so an agent can't swap the app directly. `reinstall.sh` verifies the new build, records the active threads, and hands the swap to a one-shot launchd job outside T3's process tree. The job backs up the databases, quits T3, installs the new app, relaunches it, and starts a post-install thread. If a step after the swap fails, it restores the old app (and the database backups, if the new app had launched).
+
+```sh
+scripts/orchestrator-mac/reinstall.sh --dry-run --exclude-thread <calling thread id>   # rehearse; changes nothing
+scripts/orchestrator-mac/reinstall.sh --exclude-thread <calling thread id>             # hand off
+scripts/orchestrator-mac/reinstall.sh --rollback ~/Backups/t3-reinstall-<ts>           # detached rollback
+scripts/orchestrator-mac/reinstall.sh --cleanup ~/Backups/t3-reinstall-<ts>            # after verification
+```
+
+`t3-rpc.mjs` is its Node helper for the running server: `health`, `active-threads`, `launch`, and `resume`. The full flow is the `install-new-t3` skill in Tarun's brain vault.
