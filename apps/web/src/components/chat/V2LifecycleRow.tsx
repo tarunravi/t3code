@@ -8,7 +8,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails } from "../../state/threads";
 import { useThreadProjection } from "../../state/entities";
-import { latestTokenRateTurn } from "../../lib/tokenRate";
 import { TokenRateLabel } from "./TokenRateLabel";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import * as DateTime from "effect/DateTime";
@@ -431,7 +430,6 @@ function SubagentTimelineLink(props: {
   const childProjection = useThreadProjection(
     threadId !== null ? scopeThreadRef(props.parentRef.environmentId, threadId) : null,
   );
-  const childTokenRateTurn = latestTokenRateTurn(childProjection?.projection);
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -489,7 +487,7 @@ function SubagentTimelineLink(props: {
         <span className="text-xs text-muted-foreground tabular-nums">
           {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
         </span>
-        <TokenRateLabel providerTurn={childTokenRateTurn} className="font-mono text-3xs" />
+        <TokenRateLabel projection={childProjection?.projection} className="font-mono text-3xs" />
       </span>
       {threadId !== null ? (
         <ChevronRightIcon
@@ -536,7 +534,10 @@ function SubagentTimelineLink(props: {
           result={agent?.result ?? props.result}
           progress={agent?.progress ?? props.progress}
           tokenRate={
-            <TokenRateLabel providerTurn={childTokenRateTurn} className="font-mono text-3xs" />
+            <TokenRateLabel
+              projection={childProjection?.projection}
+              className="font-mono text-3xs"
+            />
           }
         />
       </ThreadHoverCardPopup>
