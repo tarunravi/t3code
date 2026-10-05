@@ -346,6 +346,32 @@ describe("ClientSettings chat width", () => {
   });
 });
 
+describe("ClientSettings voice input device", () => {
+  const device = { deviceId: "usb-mic-id", label: "USB Microphone" };
+
+  it("uses the system default microphone when no device is saved", () => {
+    expect(decodeClientSettings({}).voiceInputDevice).toBeNull();
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("voiceInputDevice");
+  });
+
+  it("round-trips a chosen device and a reset to the default", () => {
+    const settings = decodeClientSettings({ voiceInputDevice: device });
+    expect(encodeClientSettings(settings).voiceInputDevice).toEqual(device);
+    expect(decodeClientSettingsPatch({ voiceInputDevice: device })).toEqual({
+      voiceInputDevice: device,
+    });
+    expect(decodeClientSettingsPatch({ voiceInputDevice: null })).toEqual({
+      voiceInputDevice: null,
+    });
+  });
+
+  it("rejects a device without an id", () => {
+    expect(() =>
+      decodeClientSettingsPatch({ voiceInputDevice: { deviceId: " ", label: "Mic" } }),
+    ).toThrow();
+  });
+});
+
 describe("ClientSettings load balancing", () => {
   it("requires opt-in when settings are new or omit load balancing", () => {
     expect(decodeClientSettings({}).loadBalancingEnabled).toBe(false);
