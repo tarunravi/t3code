@@ -137,6 +137,7 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DevboxPanelSetting } from "./DevboxPanelSetting";
+import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -3346,6 +3347,11 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      {isElectron ? (
+        <SettingsSection id="voice" title="Voice">
+          <VoiceMicrophoneSetting />
+        </SettingsSection>
+      ) : null}
       <SettingsSection id="about" title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />

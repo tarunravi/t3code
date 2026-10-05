@@ -298,6 +298,16 @@ export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
+/**
+ * Microphone chosen for voice input. The label is kept alongside the id so the
+ * device can be found again when the browser rotates its device ids.
+ */
+export const VoiceInputDevice = Schema.Struct({
+  deviceId: TrimmedNonEmptyString,
+  label: Schema.String,
+});
+export type VoiceInputDevice = typeof VoiceInputDevice.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -504,6 +514,10 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** `null` uses the system default microphone. */
+  voiceInputDevice: Schema.NullOr(VoiceInputDevice).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -2036,6 +2050,7 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotSound: Schema.optionalKey(SnapShotSound),
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
+  voiceInputDevice: Schema.optionalKey(Schema.NullOr(VoiceInputDevice)),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
