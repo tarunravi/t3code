@@ -2,17 +2,19 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   awsProfileSections,
-  buildSshConfigBlock,
   buildUserData,
   extractCodes,
   extractLinks,
   loginCommand,
+  nextDevboxName,
   parseAwsProfiles,
   parseDevboxHealth,
   parseLaunchTemplate,
-  parseManagedInstance,
+  parseManagedInstances,
   runInstancesArgs,
-  upsertSshConfigBlock,
+  sshBlockAliases,
+  syncSshConfigHosts,
+  validateDevboxName,
 } from "./devboxPlan.ts";
 
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tarun@mac";
@@ -25,33 +27,103 @@ const CONFIG = {
   instanceProfile: "DevBox-SSM-Role",
 };
 
-describe("upsertSshConfigBlock", () => {
-  const block = buildSshConfigBlock(CONFIG, "i-0abc123");
+describe("syncSshConfigHosts", () => {
+  const devbox1 = { name: "devbox1", instanceId: "i-0abc123" };
+  const devbox2 = { name: "devbox2", instanceId: "i-0def456" };
+  const fleetBlock = [
+    "# >>> sandbox1-devboxes (commercial Sandbox-1, us-west-2)",
+    "Host devbox0",
+    "    HostName i-0aaa000",
+    "    User ec2-user",
+    "",
+    "Host devbox1",
+    "    HostName i-0abc123",
+    "    User ec2-user",
+    "# gateway notes",
+    "",
+    "# <<< sandbox1-devboxes",
+    "",
+    "Host *",
+    "    User nobody",
+    "",
+  ].join("\n");
 
-  it("prepends so a later Host * cannot shadow the devbox", () => {
-    const next = upsertSshConfigBlock("Host *\n    User nobody\n", block);
-    expect(next.indexOf("Host t3-devbox")).toBeLessThan(next.indexOf("Host *"));
+  it("prepends a new block so a later Host * cannot shadow the devboxes", () => {
+    const next = syncSshConfigHosts("Host *\n    User nobody\n", CONFIG, [devbox1]);
+    expect(next.indexOf("Host devbox1")).toBeLessThan(next.indexOf("Host *"));
+    expect(next.startsWith("# >>> sandbox1-devboxes ")).toBe(true);
+    expect(next).toContain("# <<< sandbox1-devboxes\n\nHost *\n    User nobody\n");
+  });
+
+  it("rewrites managed hosts in place and keeps hand-written ones", () => {
+    const next = syncSshConfigHosts(fleetBlock, CONFIG, [devbox1, devbox2]);
+    expect(next).toContain(
+      "Host devbox0\n    HostName i-0aaa000\n    User ec2-user\n\nHost devbox1\n",
+    );
+    expect(next.match(/^Host devbox1$/gmu)).toHaveLength(1);
+    expect(next).toContain("aws ssm start-session --target %h");
+    expect(next).toMatch(/portNumber=%p'\n# gateway notes\n\nHost devbox2\n/u);
+    expect(next.indexOf("Host devbox2")).toBeLessThan(next.indexOf("# <<< sandbox1-devboxes"));
+    expect(next.startsWith("# >>> sandbox1-devboxes (commercial Sandbox-1, us-west-2)\n")).toBe(
+      true,
+    );
+    expect(next.endsWith("# <<< sandbox1-devboxes\n\nHost *\n    User nobody\n")).toBe(true);
+  });
+
+  it("is idempotent", () => {
+    const once = syncSshConfigHosts(fleetBlock, CONFIG, [devbox1, devbox2]);
+    expect(syncSshConfigHosts(once, CONFIG, [devbox1, devbox2])).toBe(once);
+  });
+
+  it("finds a renamed host by its instance id", () => {
+    const next = syncSshConfigHosts(fleetBlock, CONFIG, [
+      { name: "work1", instanceId: "i-0abc123" },
+    ]);
+    expect(next).toContain("Host work1\n    HostName i-0abc123");
+    expect(next).not.toMatch(/^Host devbox1$/mu);
+  });
+
+  it("removes only the terminated instance's host", () => {
+    const next = syncSshConfigHosts(fleetBlock, CONFIG, [], ["i-0abc123"]);
+    expect(next).not.toContain("devbox1");
+    expect(next).toContain("Host devbox0\n    HostName i-0aaa000");
     expect(next).toContain("Host *\n    User nobody\n");
   });
 
-  it("replaces the managed block in place and keeps the rest", () => {
-    const first = upsertSshConfigBlock("Host devbox\n    HostName i-old\n", block);
-    const second = upsertSshConfigBlock(first, buildSshConfigBlock(CONFIG, "i-0def456"));
-    expect(second).not.toContain("i-0abc123");
-    expect(second.match(/Host t3-devbox/gu)).toHaveLength(1);
-    expect(second).toContain("Host devbox\n    HostName i-old\n");
+  it("drops the single-devbox block the panel used to write", () => {
+    const legacy = [
+      "# >>> t3 devbox (managed by T3 Code) >>>",
+      "Host t3-devbox",
+      "    HostName i-0old",
+      "# <<< t3 devbox (managed by T3 Code) <<<",
+      "",
+      fleetBlock,
+    ].join("\n");
+    const next = syncSshConfigHosts(legacy, CONFIG, [devbox1]);
+    expect(next).not.toContain("t3-devbox");
+    expect(next.startsWith("# >>> sandbox1-devboxes (commercial")).toBe(true);
   });
 
-  it("removes only the managed block", () => {
-    const original = "Host devbox\n    HostName i-old\n";
-    expect(upsertSshConfigBlock(upsertSshConfigBlock(original, block), null)).toBe(original);
+  it("leaves a similarly named block alone", () => {
+    const other =
+      "# >>> sandbox1-devbox (old)\nHost sbdevbox\n    HostName i-0abc123\n# <<< sandbox1-devbox\n";
+    const next = syncSshConfigHosts(other, CONFIG, [devbox1]);
+    expect(next.endsWith(other)).toBe(true);
+    expect(sshBlockAliases(next)).toEqual(["devbox1"]);
   });
 
-  it("routes the alias through SSM", () => {
-    expect(block).toContain("HostName i-0abc123");
-    expect(block).toContain("aws ssm start-session --target %h");
-    expect(block).toContain("PubkeyAcceptedAlgorithms +ssh-ed25519");
-    expect(() => buildSshConfigBlock(CONFIG, "i-0abc\nHost evil")).toThrow();
+  it("lists the aliases in the shared block", () => {
+    expect(sshBlockAliases(fleetBlock)).toEqual(["devbox0", "devbox1"]);
+    expect(sshBlockAliases("Host devbox1\n")).toEqual([]);
+  });
+
+  it("refuses values that would inject ssh_config lines", () => {
+    expect(() =>
+      syncSshConfigHosts("", CONFIG, [{ name: "devbox1", instanceId: "i-0abc\nHost evil" }]),
+    ).toThrow();
+    expect(() =>
+      syncSshConfigHosts("", CONFIG, [{ name: "devbox1\nHost evil", instanceId: "i-0abc" }]),
+    ).toThrow();
   });
 });
 
@@ -61,45 +133,78 @@ describe("launch arguments", () => {
     expect(() => buildUserData("-----BEGIN OPENSSH PRIVATE KEY-----")).toThrow();
   });
 
-  it("tags the instance as managed so discovery finds it", () => {
-    const args = runInstancesArgs({ config: CONFIG, amiId: "ami-1", userData: buildUserData(KEY) });
+  it("tags the instance with its name and as managed so discovery finds it", () => {
+    const args = runInstancesArgs({
+      config: CONFIG,
+      name: "devbox3",
+      amiId: "ami-1",
+      userData: buildUserData(KEY),
+    });
     const tags = JSON.parse(args[args.indexOf("--tag-specifications") + 1]!) as Array<{
       Tags: Array<{ Key: string; Value: string }>;
     }>;
     expect(tags[0]!.Tags).toContainEqual({ Key: "t3-managed", Value: "true" });
+    expect(tags[0]!.Tags).toContainEqual({ Key: "Name", Value: "devbox3" });
     expect(args).toContain("--profile");
     expect(args).toContain("HttpTokens=required,HttpEndpoint=enabled");
   });
 });
 
-describe("parseManagedInstance", () => {
-  it("picks the newest instance", () => {
+describe("devbox names", () => {
+  it("offers the first free devboxN", () => {
+    expect(nextDevboxName([])).toBe("devbox1");
+    expect(nextDevboxName(["devbox0", "devbox1", "devbox2"])).toBe("devbox3");
+    expect(nextDevboxName(["devbox2"])).toBe("devbox1");
+  });
+
+  it("accepts only names usable as ssh aliases", () => {
+    expect(validateDevboxName("devbox3")).toBeNull();
+    expect(validateDevboxName("mac")).not.toBeNull();
+    expect(validateDevboxName("3box")).not.toBeNull();
+    expect(validateDevboxName("dev box")).not.toBeNull();
+    expect(validateDevboxName("box;rm")).not.toBeNull();
+  });
+});
+
+describe("parseManagedInstances", () => {
+  const instance = (id: string, name: string | null, launched: string) => ({
+    InstanceId: id,
+    State: { Name: "running" },
+    InstanceType: "m5.2xlarge",
+    LaunchTime: launched,
+    ...(name === null ? {} : { Tags: [{ Key: "Name", Value: name }] }),
+  });
+
+  it("lists every instance by name", () => {
+    const json = JSON.stringify({
+      Reservations: [
+        { Instances: [instance("i-2", "devbox10", "2026-10-05T00:00:00Z")] },
+        { Instances: [instance("i-1", "devbox2", "2026-10-01T00:00:00Z")] },
+      ],
+    });
+    expect(parseManagedInstances(json).map((entry) => entry.name)).toEqual(["devbox2", "devbox10"]);
+    expect(parseManagedInstances(JSON.stringify({ Reservations: [] }))).toEqual([]);
+  });
+
+  it("falls back to the instance id for missing, unusable, or duplicate names", () => {
     const json = JSON.stringify({
       Reservations: [
         {
           Instances: [
-            {
-              InstanceId: "i-old",
-              State: { Name: "stopped" },
-              InstanceType: "m5.2xlarge",
-              LaunchTime: "2026-09-01T00:00:00Z",
-            },
-          ],
-        },
-        {
-          Instances: [
-            {
-              InstanceId: "i-new",
-              State: { Name: "running" },
-              InstanceType: "m5.2xlarge",
-              LaunchTime: "2026-09-23T00:00:00Z",
-            },
+            instance("i-new", "devbox1", "2026-10-05T00:00:00Z"),
+            instance("i-old", "devbox1", "2026-10-01T00:00:00Z"),
+            instance("i-bad", "bad name", "2026-10-02T00:00:00Z"),
+            instance("i-none", null, "2026-10-03T00:00:00Z"),
           ],
         },
       ],
     });
-    expect(parseManagedInstance(json)?.instanceId).toBe("i-new");
-    expect(parseManagedInstance(JSON.stringify({ Reservations: [] }))).toBeNull();
+    expect(parseManagedInstances(json).map((entry) => [entry.instanceId, entry.name])).toEqual([
+      ["i-old", "devbox1"],
+      ["i-bad", "i-bad"],
+      ["i-new", "i-new"],
+      ["i-none", "i-none"],
+    ]);
   });
 });
 
@@ -190,21 +295,22 @@ describe("sign-ins", () => {
   const base = { awsProfile: "shift", callbackPort: 50123 } as const;
 
   it("tunnels a devbox Teleport callback to the same local port", () => {
-    const command = loginCommand({ ...base, target: "devbox", provider: "teleport" });
+    const command = loginCommand({ ...base, target: "devbox2", provider: "teleport" });
     expect(command.command).toBe("ssh");
+    expect(command.args).toContain("devbox2");
     expect(command.args).toContain("50123:127.0.0.1:50123");
     expect(command.args.at(-1)).toContain("--bind-addr=127.0.0.1:50123");
   });
 
   it("tunnels Codex's fixed callback port for the devbox", () => {
-    const command = loginCommand({ ...base, target: "devbox", provider: "codex" });
+    const command = loginCommand({ ...base, target: "devbox1", provider: "codex" });
     expect(command.args).toContain("1455:127.0.0.1:1455");
   });
 
   it("streams the GitHub token on stdin, never on the command line", () => {
     const command = loginCommand({
       ...base,
-      target: "devbox",
+      target: "devbox1",
       provider: "github",
       credential: "gho_secret",
     });
@@ -231,7 +337,7 @@ describe("sign-ins", () => {
   it("copies this Mac's Claude session to the devbox instead of a paste-back login", () => {
     const command = loginCommand({
       ...base,
-      target: "devbox",
+      target: "devbox1",
       provider: "claude",
       credential: '{"claudeAiOauth":{}}',
     });

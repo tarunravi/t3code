@@ -12,6 +12,7 @@ import { setDevboxPanelState } from "~/lib/devboxPanel";
 import { useEnvironments } from "~/state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
 import {
@@ -27,12 +28,35 @@ const POLL_MS = 2_000;
 const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
 
 const ACTION_LABELS: Record<DesktopDevboxAction, string> = {
-  launch: "Spinning up the devbox",
-  setup: "Setting up the devbox",
-  start: "Starting the devbox",
-  stop: "Stopping the devbox",
-  terminate: "Terminating the devbox",
+  launch: "Spinning up",
+  setup: "Setting up",
+  start: "Starting",
+  stop: "Stopping",
+  terminate: "Terminating",
 };
+
+type Instance = DesktopDevboxState["instances"][number];
+type Job = DesktopDevboxState["jobs"][number];
+
+function JobLog({ job }: { readonly job: Job }) {
+  return (
+    <div className="px-3 py-2 sm:px-4">
+      <p className="mb-1 text-xs font-medium text-muted-foreground">
+        {job.running ? `${ACTION_LABELS[job.action]}…` : "Last run"}
+      </p>
+      {job.error ? <p className="mb-2 text-xs text-destructive">{job.error}</p> : null}
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-2xs leading-relaxed text-muted-foreground">
+        {job.log.join("\n") || "Starting…"}
+      </pre>
+    </div>
+  );
+}
+
+const errorMessage = (cause: unknown) =>
+  (cause instanceof Error ? cause.message : String(cause)).replace(
+    /^Error invoking remote method '[^']+':\s*(Error:\s*)?/u,
+    "",
+  );
 
 function Status({ ok, detail }: { readonly ok: boolean; readonly detail: string }) {
   const Icon = ok ? CheckCircle2Icon : CircleAlertIcon;
@@ -47,24 +71,24 @@ function Status({ ok, detail }: { readonly ok: boolean; readonly detail: string 
 export function DevboxSettings() {
   const navigate = useNavigate();
   const [state, setState] = useState<DesktopDevboxState | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  const [connecting, setConnecting] = useState<ReadonlySet<string>>(new Set());
+  const [newName, setNewName] = useState<string | null>(null);
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
   });
   const { environments } = useEnvironments();
-  const wasRunning = useRef(false);
+  const runningJobs = useRef(new Set<string>());
 
   const available = bridge?.getDevboxState !== undefined && bridge.runDevboxAction !== undefined;
-  const instance = state?.instance ?? null;
-  const job = state?.job ?? null;
-  const busy = job?.running === true;
-  const running = instance?.state === "running";
-  const t3Environment =
-    instance === null
-      ? undefined
-      : environments.find((environment) =>
-          environment.displayUrl?.endsWith(`@${instance.instanceId}`),
-        );
+  const instances = state?.instances ?? [];
+  const jobs = state?.jobs ?? [];
+  const anyBusy = jobs.some((job) => job.running);
+  const jobFor = (name: string) => jobs.find((job) => job.devbox === name);
+  const pendingLaunches = jobs.filter(
+    (job) => job.action === "launch" && !instances.some((instance) => instance.name === job.devbox),
+  );
+  const t3EnvironmentFor = (instance: Instance) =>
+    environments.find((environment) => environment.displayUrl?.endsWith(`@${instance.instanceId}`));
 
   const apply = (next: DesktopDevboxState) => {
     setState(next);
@@ -82,55 +106,68 @@ export function DevboxSettings() {
 
   // Jobs run in the desktop process; poll only while one is active.
   useEffect(() => {
-    if (!busy) return;
+    if (!anyBusy) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [busy, load]);
+  }, [anyBusy, load]);
 
-  const sshAlias = state?.sshAlias ?? null;
-  const connectT3 = useCallback(async () => {
-    if (!bridge || sshAlias === null) return;
-    setConnecting(true);
+  const connectT3 = useCallback(async (devbox: string) => {
+    if (!bridge) return;
+    setConnecting((current) => new Set(current).add(devbox));
     try {
-      const target = await bridge.resolveSshHost(sshAlias);
-      const result = await connectSshEnvironment({ target, label: "devbox" });
+      const target = await bridge.resolveSshHost(devbox);
+      const result = await connectSshEnvironment({ target, label: devbox });
       if (result._tag === "Failure") {
         if (!isAtomCommandInterrupted(result)) {
           const error = squashAtomCommandFailure(result);
           toastManager.add({
             type: "error",
-            title: "Could not connect T3 to the devbox",
+            title: `Could not connect T3 to ${devbox}`,
             description: error instanceof Error ? error.message : String(error),
           });
         }
         return;
       }
-      toastManager.add({ type: "success", title: "Devbox connected", description: sshAlias });
+      toastManager.add({ type: "success", title: "Devbox connected", description: devbox });
     } finally {
-      setConnecting(false);
+      setConnecting((current) => {
+        const next = new Set(current);
+        next.delete(devbox);
+        return next;
+      });
     }
-  }, [sshAlias]);
+  }, []);
 
   // Launch and setup end by pairing T3 through the normal SSH connection flow.
   useEffect(() => {
-    const finished = wasRunning.current && !busy;
-    wasRunning.current = busy;
-    if (
-      finished &&
-      job &&
-      job.error === null &&
-      (job.action === "launch" || job.action === "setup")
-    ) {
-      void connectT3();
+    for (const job of jobs) {
+      const wasRunning = runningJobs.current.has(job.devbox);
+      if (job.running) {
+        runningJobs.current.add(job.devbox);
+        continue;
+      }
+      runningJobs.current.delete(job.devbox);
+      if (wasRunning && job.error === null && (job.action === "launch" || job.action === "setup")) {
+        void connectT3(job.devbox);
+      }
     }
-  }, [busy, connectT3, job]);
+  }, [connectT3, jobs]);
 
-  const run = async (action: DesktopDevboxAction) => {
+  const run = async (action: DesktopDevboxAction, devbox: string) => {
     if (!bridge?.runDevboxAction) return;
-    if (action === "terminate" && !window.confirm("Terminate the devbox? Its disk is deleted.")) {
+    if (action === "terminate" && !window.confirm(`Terminate ${devbox}? Its disk is deleted.`)) {
       return;
     }
-    apply(await bridge.runDevboxAction(action));
+    try {
+      apply(await bridge.runDevboxAction({ action, devbox }));
+      if (action === "launch") setNewName(null);
+    } catch (cause) {
+      toastManager.add({
+        type: "error",
+        title: `Could not ${action === "launch" ? "spin up" : action} ${devbox}`,
+        description: errorMessage(cause),
+      });
+    }
   };
 
   if (state !== null && state.config === null) {
@@ -145,12 +182,14 @@ export function DevboxSettings() {
     );
   }
 
+  const launchName = (newName ?? state?.nextName ?? "").trim();
+
   return (
     <SettingsPageContainer>
       <SettingsUnavailableGroup
         message={available ? undefined : "The devbox panel is available in the desktop app."}
       >
-        <SettingsSection title="Devbox">
+        <SettingsSection title="Devboxes">
           <SettingsRow
             title="AWS"
             description={
@@ -159,100 +198,37 @@ export function DevboxSettings() {
                 : "Devbox account"
             }
             status={state ? <Status {...state.aws} /> : null}
+            control={
+              <Button size="xs" variant="ghost" onClick={() => void load({ refresh: true })}>
+                Refresh
+              </Button>
+            }
           />
           <SettingsRow
-            title="Instance"
-            description={
-              instance
-                ? `${instance.instanceId} · ${instance.instanceType} · ssh ${state?.sshAlias}`
-                : "No devbox yet. Spinning one up launches it, installs Teleport, Claude, and Codex, signs in GitHub, sets up the brain vault, and connects T3."
-            }
-            status={instance ? <Status ok={running} detail={instance.state} /> : null}
+            title="New devbox"
+            description="Launches an instance with the same network, installs Teleport, Claude, and Codex, signs in GitHub, sets up the brain vault, and connects T3."
             control={
-              <div className="flex flex-wrap justify-end gap-1.5">
-                {instance === null ? (
-                  <Button
-                    size="xs"
-                    disabled={busy || !state?.aws.ok}
-                    onClick={() => void run("launch")}
-                  >
-                    Spin up devbox
-                  </Button>
-                ) : (
-                  <>
-                    {instance.state === "stopped" ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => void run("start")}
-                      >
-                        Start
-                      </Button>
-                    ) : null}
-                    {running ? (
-                      <>
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void run("setup")}
-                        >
-                          Re-run setup
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void run("stop")}
-                        >
-                          Stop
-                        </Button>
-                      </>
-                    ) : null}
-                    <Button
-                      size="xs"
-                      variant="destructive-outline"
-                      disabled={busy}
-                      onClick={() => void run("terminate")}
-                    >
-                      Terminate
-                    </Button>
-                  </>
-                )}
+              <div className="flex items-center gap-1.5">
+                <Input
+                  size="sm"
+                  className="w-32"
+                  aria-label="New devbox name"
+                  value={launchName}
+                  onChange={(event) => setNewName(event.target.value)}
+                />
+                <Button
+                  size="xs"
+                  disabled={!state?.aws.ok || launchName.length === 0}
+                  onClick={() => void run("launch", launchName)}
+                >
+                  Spin up devbox
+                </Button>
               </div>
             }
           />
-          {running ? (
-            <SettingsRow
-              title="T3"
-              description="Runs on the devbox and connects over the SSH tunnel."
-              status={
-                t3Environment ? (
-                  <Status
-                    ok={t3Environment.connection.phase === "connected"}
-                    detail={t3Environment.connection.phase}
-                  />
-                ) : (
-                  <Status ok={false} detail="Not connected" />
-                )
-              }
-              control={
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busy || connecting}
-                  onClick={() => void connectT3()}
-                >
-                  {connecting ? <Spinner className="size-3" /> : null}
-                  {t3Environment ? "Reconnect" : "Connect"}
-                </Button>
-              }
-            />
-          ) : null}
           <SettingsRow
             title="Sign-ins"
-            description="AWS, Teleport, GitHub, Codex, and Claude on each machine."
+            description="AWS, Teleport, GitHub, Codex, and Claude on this Mac and each devbox."
             control={
               <Button
                 size="xs"
@@ -263,18 +239,104 @@ export function DevboxSettings() {
               </Button>
             }
           />
+          {state !== null && instances.length === 0 && pendingLaunches.length === 0 ? (
+            <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
+              No instances tagged t3-managed=true yet.
+            </p>
+          ) : null}
         </SettingsSection>
 
-        {job ? (
-          <SettingsSection title={busy ? ACTION_LABELS[job.action] : "Last run"}>
-            <div className="px-3 py-2 sm:px-4">
-              {job.error ? <p className="mb-2 text-xs text-destructive">{job.error}</p> : null}
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
-                {job.log.join("\n") || "Starting…"}
-              </pre>
-            </div>
+        {instances.map((instance) => {
+          const job = jobFor(instance.name);
+          const busy = job?.running === true;
+          const running = instance.state === "running";
+          const t3Environment = t3EnvironmentFor(instance);
+          return (
+            <SettingsSection key={instance.instanceId} title={instance.name}>
+              <SettingsRow
+                title="Instance"
+                description={`${instance.instanceId} · ${instance.instanceType} · ssh ${instance.name}`}
+                status={<Status ok={running} detail={instance.state} />}
+                control={
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {instance.state === "stopped" ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => void run("start", instance.name)}
+                      >
+                        Start
+                      </Button>
+                    ) : null}
+                    {running ? (
+                      <>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => void run("setup", instance.name)}
+                        >
+                          Re-run setup
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => void run("stop", instance.name)}
+                        >
+                          Stop
+                        </Button>
+                      </>
+                    ) : null}
+                    <Button
+                      size="xs"
+                      variant="destructive-outline"
+                      disabled={busy}
+                      onClick={() => void run("terminate", instance.name)}
+                    >
+                      Terminate
+                    </Button>
+                  </div>
+                }
+              />
+              {running ? (
+                <SettingsRow
+                  title="T3"
+                  description="Runs on the devbox and connects over the SSH tunnel."
+                  status={
+                    t3Environment ? (
+                      <Status
+                        ok={t3Environment.connection.phase === "connected"}
+                        detail={t3Environment.connection.phase}
+                      />
+                    ) : (
+                      <Status ok={false} detail="Not connected" />
+                    )
+                  }
+                  control={
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busy || connecting.has(instance.name)}
+                      onClick={() => void connectT3(instance.name)}
+                    >
+                      {connecting.has(instance.name) ? <Spinner className="size-3" /> : null}
+                      {t3Environment ? "Reconnect" : "Connect"}
+                    </Button>
+                  }
+                />
+              ) : null}
+              {job ? <JobLog job={job} /> : null}
+            </SettingsSection>
+          );
+        })}
+
+        {pendingLaunches.map((job) => (
+          <SettingsSection key={job.devbox} title={job.devbox}>
+            <JobLog job={job} />
           </SettingsSection>
-        ) : null}
+        ))}
       </SettingsUnavailableGroup>
     </SettingsPageContainer>
   );
