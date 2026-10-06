@@ -138,6 +138,7 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DevboxPanelSetting } from "./DevboxPanelSetting";
+import { KeepAwakeSetting } from "./KeepAwakeSetting";
 import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
@@ -3234,6 +3235,7 @@ export function GeneralSettingsPanel() {
             }
           />
         ) : null}
+        {isElectron && isMacPlatform(navigator.platform) ? <KeepAwakeSetting /> : null}
         {isElectron ? <DevboxPanelSetting /> : null}
       </SettingsSection>
 
