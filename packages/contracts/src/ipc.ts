@@ -731,13 +731,29 @@ export type DesktopDevboxEnableInput = typeof DesktopDevboxEnableInputSchema.Typ
 export const DesktopDevboxLoginStartSchema = Schema.Struct({
   target: DesktopDevboxLoginTargetSchema,
   provider: DesktopDevboxLoginProviderSchema,
-  /** Mac AWS sign-in before the panel is turned on; otherwise the configured profile is used. */
+  /** Profile for this AWS sign-in instead of `signInAwsProfile`; saved as it while the panel is off. */
   awsProfile: Schema.optional(Schema.String),
 });
 export type DesktopDevboxLoginStart = typeof DesktopDevboxLoginStartSchema.Type;
 
 export const DesktopSignInAwsProfileInputSchema = Schema.Struct({ awsProfile: Schema.String });
 export type DesktopSignInAwsProfileInput = typeof DesktopSignInAwsProfileInputSchema.Type;
+
+/** "Require AWS login" on this machine: the profile to watch, or null when off. */
+export const DesktopAwsLoginGuardInputSchema = Schema.NullOr(
+  Schema.Struct({ awsProfile: Schema.String }),
+);
+export type DesktopAwsLoginGuardInput = typeof DesktopAwsLoginGuardInputSchema.Type;
+
+/** The watched profile's AWS sign-in; `awsProfile` is null when "Require AWS login" is off. */
+export const DesktopAwsLoginStatusSchema = Schema.Struct({
+  awsProfile: Schema.NullOr(Schema.String),
+  ok: Schema.Boolean,
+  detail: Schema.String,
+  /** When the SSO session lapses, when known. */
+  expiresAt: Schema.NullOr(Schema.String),
+});
+export type DesktopAwsLoginStatus = typeof DesktopAwsLoginStatusSchema.Type;
 
 /**
  * Renderer-facing snapshot of a desktop preview tab. Mirrors the main-process
@@ -1357,6 +1373,9 @@ export interface DesktopBridge {
   setDevboxEnabled?: (input: DesktopDevboxEnableInput) => Promise<DesktopDevboxState>;
   startDevboxLogin?: (input: DesktopDevboxLoginStart) => Promise<DesktopDevboxState>;
   setSignInAwsProfile?: (input: DesktopSignInAwsProfileInput) => Promise<DesktopDevboxState>;
+  /** Re-checks the watched profile's sign-in; a no-op returning `awsProfile: null` when off. */
+  getAwsLoginStatus?: () => Promise<DesktopAwsLoginStatus>;
+  setAwsLoginGuard?: (input: DesktopAwsLoginGuardInput) => Promise<DesktopAwsLoginStatus>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /** Optional while older desktop shells can host a newer web client. */
   pickProjectFavicon?: (initialPath?: string) => Promise<string | null>;
