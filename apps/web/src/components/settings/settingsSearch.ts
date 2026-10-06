@@ -544,6 +544,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "aws-login-guard",
+    title: "Require AWS login",
+    to: "/settings/general",
+    searchTerms: ["aws sso session expiry expired bifrost devbox0 llm gateway warning"],
+    desktopOnly: true,
+  },
+  {
     id: "quit-confirmation",
     title: "Quit shortcut",
     to: "/settings/general",

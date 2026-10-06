@@ -84,9 +84,11 @@ import {
   transcribeVoice,
 } from "./methods/voiceTranscription.ts";
 import {
+  getAwsLoginStatus,
   getDevboxState,
   listAwsProfiles,
   runDevboxAction,
+  setAwsLoginGuard,
   setDevboxEnabled,
   setSignInAwsProfile,
   startDevboxLogin,
@@ -161,6 +163,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setDevboxEnabled);
   yield* ipc.handle(startDevboxLogin);
   yield* ipc.handle(setSignInAwsProfile);
+  yield* ipc.handle(getAwsLoginStatus);
+  yield* ipc.handle(setAwsLoginGuard);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickProjectFavicon);
