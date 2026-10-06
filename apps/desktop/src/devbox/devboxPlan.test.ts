@@ -13,7 +13,9 @@ import {
   parseManagedInstances,
   runInstancesArgs,
   sshBlockAliases,
+  ssoSessionExpiry,
   syncSshConfigHosts,
+  validateAwsProfileName,
   validateDevboxName,
 } from "./devboxPlan.ts";
 
@@ -358,5 +360,63 @@ describe("sign-ins", () => {
       ),
     ).toEqual(["https://auth.openai.com/oauth/authorize?x=1", "http://localhost:1455"]);
     expect(extractCodes(output)).toEqual(["WXYZ-ABCD"]);
+  });
+});
+
+describe("ssoSessionExpiry", () => {
+  const config = [
+    "[profile shift]",
+    "sso_session = scale",
+    "region = us-gov-west-1",
+    "[profile legacy]",
+    "sso_start_url = https://legacy.awsapps.com/start",
+    "[profile keys]",
+    "region = us-east-1",
+    "[sso-session scale]",
+    "sso_start_url = https://scale.awsapps.com/start",
+  ].join("\n");
+  const token = (startUrl: string, expiresAt: string) =>
+    JSON.stringify({ startUrl, accessToken: "secret", expiresAt });
+
+  it("reads the latest token for the profile's sso-session start URL", () => {
+    expect(
+      ssoSessionExpiry(config, "shift", [
+        token("https://scale.awsapps.com/start", "2026-10-06T10:00:00Z"),
+        token("https://scale.awsapps.com/start", "2026-10-06T18:00:00Z"),
+        token("https://legacy.awsapps.com/start", "2026-10-07T00:00:00Z"),
+        // Client registrations share the directory but carry no access token.
+        JSON.stringify({
+          startUrl: "https://scale.awsapps.com/start",
+          expiresAt: "2027-01-01T00:00:00Z",
+        }),
+        "not json",
+      ]),
+    ).toBe("2026-10-06T18:00:00Z");
+  });
+
+  it("supports legacy profiles that set the start URL directly", () => {
+    expect(
+      ssoSessionExpiry(config, "legacy", [
+        token("https://legacy.awsapps.com/start", "2026-10-07T00:00:00Z"),
+      ]),
+    ).toBe("2026-10-07T00:00:00Z");
+  });
+
+  it("is unknown for profiles without SSO or without a cached token", () => {
+    expect(
+      ssoSessionExpiry(config, "keys", [
+        token("https://scale.awsapps.com/start", "2026-10-07T00:00:00Z"),
+      ]),
+    ).toBeNull();
+    expect(ssoSessionExpiry(config, "shift", [])).toBeNull();
+    expect(ssoSessionExpiry(config, "missing", [])).toBeNull();
+  });
+});
+
+describe("validateAwsProfileName", () => {
+  it("accepts typical profile names and rejects shell metacharacters", () => {
+    expect(validateAwsProfileName("shift-admin.prod_1")).toBeNull();
+    expect(validateAwsProfileName("shift'; rm -rf ~")).toMatch(/Unexpected AWS profile name/u);
+    expect(validateAwsProfileName("")).not.toBeNull();
   });
 });
