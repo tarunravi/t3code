@@ -14,6 +14,8 @@ import ProjectionThreadPullRequests from "./Migrations/050_ProjectionThreadPullR
 import ProjectionThreadMessageContext from "./Migrations/051_ProjectionThreadMessageContext.ts";
 import ProjectionThreadTitleState from "./Migrations/052_ProjectionThreadTitleState.ts";
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
+import ScheduledTaskWebhooks from "./Migrations/057_ScheduledTaskWebhooks.ts";
+import WebhookRelayDeliveries from "./Migrations/058_WebhookRelayDeliveries.ts";
 
 // Ledger names recorded by an early orchestration V2 build on 2026-09-08.
 const divergentLedger = [
@@ -33,7 +35,8 @@ const divergentLedger = [
 ] as const;
 
 // That build's schema has everything this build's 33 and 50–56 add except
-// auto_settle_disabled_at (054) and pull_request_files_viewed (053).
+// auto_settle_disabled_at (054) and pull_request_files_viewed (053). It also
+// lacks the webhook storage that 057 and 058 add under ids it already recorded.
 const seedDivergentDatabase = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations({ toMigrationInclusive: 49 });
@@ -76,6 +79,20 @@ const legacySentinels = Effect.gen(function* () {
   };
 });
 
+const hasWebhookSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`;
+  const tables = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+      ('scheduled_task_webhook_deliveries', 'scheduled_task_webhook_relay_deliveries')
+  `;
+  return (
+    columns.some((column) => column.name === "webhook_token") &&
+    columns.some((column) => column.name === "webhook_secret") &&
+    tables.length === 2
+  );
+});
+
 describe("divergent migration history", () => {
   it.effect("replays only idempotent migrations skipped by a divergent ledger", () =>
     Effect.gen(function* () {
@@ -94,11 +111,13 @@ describe("divergent migration history", () => {
         return {
           autoSettleDisabledAt: columns.some((column) => column.name === "auto_settle_disabled_at"),
           pullRequestFilesViewed: tables.length === 1,
+          webhooks: yield* hasWebhookSchema,
         };
       });
       assert.deepStrictEqual(yield* hasSchema, {
         autoSettleDisabledAt: false,
         pullRequestFilesViewed: false,
+        webhooks: false,
       });
 
       // Replaying 052 or 055 here would fail on their existing column and indexes.
@@ -106,6 +125,7 @@ describe("divergent migration history", () => {
       assert.deepStrictEqual(yield* hasSchema, {
         autoSettleDisabledAt: true,
         pullRequestFilesViewed: true,
+        webhooks: true,
       });
 
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -115,6 +135,24 @@ describe("divergent migration history", () => {
         assert.deepStrictEqual(after.threads[0]![key], value);
       for (const [key, value] of Object.entries(sentinels.messages[0]!))
         assert.deepStrictEqual(after.messages[0]![key], value);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        ledger,
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("replays webhook migrations over a ledger whose schema already has them", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedDivergentDatabase;
+      yield* ScheduledTaskWebhooks;
+      yield* WebhookRelayDeliveries;
+      const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.isTrue(yield* hasWebhookSchema);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
         ledger,
