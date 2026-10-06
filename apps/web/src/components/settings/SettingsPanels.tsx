@@ -76,6 +76,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DevboxPanelSetting } from "./DevboxPanelSetting";
+import { KeepAwakeSetting } from "./KeepAwakeSetting";
 import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
@@ -1627,7 +1628,7 @@ export function ThreadsSettingsPanel() {
         />
       </SettingsSection>
 
-      {isElectron ? <SettingsSection title="Devbox"><DevboxPanelSetting /></SettingsSection> : null}
+      {isElectron ? <SettingsSection title="Devbox">{isMacPlatform(navigator.platform) ? <KeepAwakeSetting /> : null}<DevboxPanelSetting /></SettingsSection> : null}
 
       {supportsAutoSettlement ? (
         <SettingsSection id="auto-settle" title="Auto-settle">
