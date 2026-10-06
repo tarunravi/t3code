@@ -15,6 +15,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
+import { DevboxProfileForm } from "./DevboxPanelSetting";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -73,6 +74,7 @@ export function DevboxSettings() {
   const [state, setState] = useState<DesktopDevboxState | null>(null);
   const [connecting, setConnecting] = useState<ReadonlySet<string>>(new Set());
   const [newName, setNewName] = useState<string | null>(null);
+  const [changingProfile, setChangingProfile] = useState(false);
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
   });
@@ -174,9 +176,13 @@ export function DevboxSettings() {
     return (
       <SettingsPageContainer>
         <SettingsSection title="Devbox">
-          <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
-            The devbox panel is off on this Mac. Turn it on in Settings → General.
-          </p>
+          <div className="grid gap-3 px-3 py-3 sm:px-4">
+            <p className="text-sm text-muted-foreground">
+              Pick the AWS profile for the devbox account. Network settings are copied from an
+              existing instance tagged Purpose=devbox.
+            </p>
+            <DevboxProfileForm submitLabel="Use profile" onEnabled={apply} />
+          </div>
         </SettingsSection>
       </SettingsPageContainer>
     );
@@ -191,7 +197,7 @@ export function DevboxSettings() {
       >
         <SettingsSection title="Devboxes">
           <SettingsRow
-            title="AWS"
+            title="AWS profile"
             description={
               state?.config
                 ? `${state.config.awsProfile} · ${state.config.awsRegion}`
@@ -199,11 +205,33 @@ export function DevboxSettings() {
             }
             status={state ? <Status {...state.aws} /> : null}
             control={
-              <Button size="xs" variant="ghost" onClick={() => void load({ refresh: true })}>
-                Refresh
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={anyBusy || changingProfile}
+                  onClick={() => setChangingProfile(true)}
+                >
+                  Change
+                </Button>
+                <Button size="xs" variant="ghost" onClick={() => void load({ refresh: true })}>
+                  Refresh
+                </Button>
+              </div>
             }
           />
+          {changingProfile ? (
+            <div className="px-3 py-3 sm:px-4">
+              <DevboxProfileForm
+                submitLabel="Switch profile"
+                onCancel={() => setChangingProfile(false)}
+                onEnabled={(next) => {
+                  apply(next);
+                  setChangingProfile(false);
+                }}
+              />
+            </div>
+          ) : null}
           <SettingsRow
             title="New devbox"
             description="Launches an instance with the same network, installs Teleport, Claude, and Codex, signs in GitHub, sets up the brain vault, and connects T3."

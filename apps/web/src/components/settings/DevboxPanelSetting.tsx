@@ -1,80 +1,127 @@
-import type { DesktopAwsProfile } from "@t3tools/contracts";
+import type { DesktopAwsProfile, DesktopDevboxState } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { defaultAwsProfile } from "~/lib/awsLogin";
 import { setDevboxPanelState, useDevboxPanelEnabled } from "~/lib/devboxPanel";
 import { Button } from "../ui/button";
 import {
   Dialog,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogPanel,
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { AwsProfilePicker } from "./AwsProfilePicker";
 import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
 const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
 
-/** Settings → General switch; turning it on asks which AWS profile holds the devbox. */
-export function DevboxPanelSetting() {
-  const enabled = useDevboxPanelEnabled();
-  const navigate = useNavigate();
-  const [dialogOpen, setDialogOpen] = useState(false);
+const errorMessage = (cause: unknown) =>
+  (cause instanceof Error ? cause.message : String(cause)).replace(
+    /^Error invoking remote method '[^']+':\s*(Error:\s*)?/u,
+    "",
+  );
+
+/**
+ * Picks the AWS profile that holds the devboxes, starting on the last one used,
+ * and turns the panel on for it (or switches an enabled panel to it).
+ */
+export function DevboxProfileForm({
+  submitLabel,
+  onEnabled,
+  onCancel,
+}: {
+  readonly submitLabel: string;
+  readonly onEnabled: (state: DesktopDevboxState) => void;
+  readonly onCancel?: () => void;
+}) {
   const [profiles, setProfiles] = useState<readonly DesktopAwsProfile[]>([]);
   const [profile, setProfile] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  if (!bridge?.setDevboxEnabled || !bridge.listAwsProfiles) return null;
-
-  const openDialog = async () => {
-    const found = (await bridge.listAwsProfiles?.()) ?? [];
-    setProfiles(found);
-    setProfile(
-      (current) =>
-        current ?? found.find((entry) => entry.name === "shift")?.name ?? found[0]?.name ?? null,
+  useEffect(() => {
+    void Promise.all([bridge?.listAwsProfiles?.() ?? [], bridge?.getDevboxState?.()]).then(
+      ([found, state]) => {
+        setProfiles(found);
+        setProfile((current) => current ?? defaultAwsProfile(found, state?.signInAwsProfile));
+      },
     );
-    setError(null);
-    setDialogOpen(true);
-  };
+  }, []);
+
+  const chosen = profile?.trim() ?? "";
 
   const enable = async () => {
-    if (!profile || !bridge.setDevboxEnabled) return;
+    if (!chosen || !bridge?.setDevboxEnabled) return;
     setSaving(true);
     setError(null);
     try {
-      setDevboxPanelState(await bridge.setDevboxEnabled({ awsProfile: profile }));
-      setDialogOpen(false);
-      void navigate({ to: "/settings/devbox" });
+      const state = await bridge.setDevboxEnabled({ awsProfile: chosen });
+      setDevboxPanelState(state);
+      onEnabled(state);
     } catch (cause) {
-      setError(
-        (cause instanceof Error ? cause.message : String(cause)).replace(
-          /^Error invoking remote method '[^']+':\s*(Error:\s*)?/u,
-          "",
-        ),
-      );
+      setError(errorMessage(cause));
     } finally {
       setSaving(false);
     }
   };
 
   const signInToAws = async () => {
-    if (!profile || !bridge.startDevboxLogin) return;
+    if (!chosen || !bridge?.startDevboxLogin) return;
     const state = await bridge.startDevboxLogin({
       target: "mac",
       provider: "aws",
-      awsProfile: profile,
+      awsProfile: chosen,
     });
     const link = state.logins.find((login) => login.provider === "aws" && login.target === "mac")
       ?.links[0];
     if (link) void bridge.openExternal(link);
-    setError("Approve the AWS sign-in in your browser, then choose Turn on again.");
+    setError(`Approve the AWS sign-in in your browser, then choose ${submitLabel} again.`);
   };
+
+  return (
+    <div className="grid gap-3">
+      <AwsProfilePicker profiles={profiles} value={profile ?? ""} onValueChange={setProfile} />
+      {profiles.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No profiles in ~/.aws/config; type the profile name.
+        </p>
+      ) : null}
+      {error ? (
+        <div className="grid gap-2">
+          <p className="text-xs text-destructive">{error}</p>
+          {/sign in to aws/iu.test(error) ? (
+            <Button size="xs" variant="outline" onClick={() => void signInToAws()}>
+              Sign in to AWS
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex justify-end gap-2">
+        {onCancel ? (
+          <Button size="sm" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+        ) : null}
+        <Button size="sm" onClick={() => void enable()} disabled={!chosen || saving}>
+          {submitLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Settings → General switch; turning it on asks which AWS profile holds the devbox. */
+export function DevboxPanelSetting() {
+  const enabled = useDevboxPanelEnabled();
+  const navigate = useNavigate();
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  if (!bridge?.setDevboxEnabled || !bridge.listAwsProfiles) return null;
 
   return (
     <>
@@ -86,7 +133,7 @@ export function DevboxPanelSetting() {
             checked={enabled}
             onCheckedChange={(checked) => {
               if (checked) {
-                void openDialog();
+                setDialogOpen(true);
               } else {
                 void bridge.setDevboxEnabled?.(null).then(setDevboxPanelState);
               }
@@ -104,45 +151,17 @@ export function DevboxPanelSetting() {
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
-            {profiles.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No profiles in ~/.aws/config.</p>
-            ) : (
-              <Select value={profile} onValueChange={(value) => setProfile(value)}>
-                <SelectTrigger aria-label="AWS profile">
-                  <SelectValue>
-                    {profile
-                      ? `${profile} · ${profiles.find((entry) => entry.name === profile)?.region ?? "no region"}`
-                      : "Choose a profile"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  {profiles.map((entry) => (
-                    <SelectItem key={entry.name} value={entry.name}>
-                      {entry.name} · {entry.region ?? "no region"}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            )}
-            {error ? (
-              <div className="mt-3 grid gap-2">
-                <p className="text-xs text-destructive">{error}</p>
-                {/sign in to aws/iu.test(error) ? (
-                  <Button size="xs" variant="outline" onClick={() => void signInToAws()}>
-                    Sign in to AWS
-                  </Button>
-                ) : null}
-              </div>
+            {dialogOpen ? (
+              <DevboxProfileForm
+                submitLabel="Turn on"
+                onCancel={() => setDialogOpen(false)}
+                onEnabled={() => {
+                  setDialogOpen(false);
+                  void navigate({ to: "/settings/devbox" });
+                }}
+              />
             ) : null}
           </DialogPanel>
-          <DialogFooter variant="bare">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void enable()} disabled={!profile || saving}>
-              Turn on
-            </Button>
-          </DialogFooter>
         </DialogPopup>
       </Dialog>
     </>

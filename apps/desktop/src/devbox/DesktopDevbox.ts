@@ -5,6 +5,8 @@ import * as NodeNet from "node:net";
 
 import {
   DesktopDevboxConfigSchema,
+  type DesktopAwsLoginGuardInput,
+  type DesktopAwsLoginStatus,
   type DesktopAwsProfile,
   type DesktopDevboxAction,
   type DesktopDevboxActionInput,
@@ -57,8 +59,10 @@ import {
   parseManagedInstances,
   runInstancesArgs,
   sshBlockAliases,
+  ssoSessionExpiry,
   stripTerminal,
   syncSshConfigHosts,
+  validateAwsProfileName,
   validateDevboxName,
   type DevboxHealth,
   type DevboxInstance,
@@ -69,6 +73,7 @@ const MAX_LOGIN_OUTPUT = 4_000;
 const LOGIN_TIMEOUT = Duration.minutes(10);
 const SSM_ONLINE_TIMEOUT = Duration.minutes(10);
 const SSH_READY_TIMEOUT = Duration.minutes(5);
+const AWS_LOGIN_CHECK_TIMEOUT = Duration.seconds(20);
 
 type Job = DesktopDevboxState["jobs"][number];
 
@@ -108,6 +113,10 @@ export class DesktopDevbox extends Context.Service<
     readonly setSignInAwsProfile: (
       input: DesktopSignInAwsProfileInput,
     ) => Effect.Effect<DesktopDevboxState>;
+    readonly getAwsLoginStatus: Effect.Effect<DesktopAwsLoginStatus>;
+    readonly setAwsLoginGuard: (
+      input: DesktopAwsLoginGuardInput,
+    ) => Effect.Effect<DesktopAwsLoginStatus, Error>;
   }
 >()("@t3tools/desktop/devbox/DesktopDevbox") {}
 
@@ -141,15 +150,20 @@ export const make = Effect.gen(function* () {
   const checking = yield* Ref.make(0);
   // Sign-ins on a Mac without a devbox still need a profile for AWS SSO.
   const machinesPath = path.join(environment.stateDir, "machines.json");
-  const machinesAwsProfile = yield* Ref.make<string | null>(
-    yield* fs.readFileString(machinesPath).pipe(
+  const readSavedAwsProfile = (file: string) =>
+    fs.readFileString(file).pipe(
       Effect.map((text) => {
         const value = (JSON.parse(text) as { awsProfile?: unknown }).awsProfile;
         return typeof value === "string" ? value : null;
       }),
       Effect.orElseSucceed(() => null),
-    ),
+    );
+  const machinesAwsProfile = yield* Ref.make<string | null>(
+    yield* readSavedAwsProfile(machinesPath),
   );
+  // "Require AWS login" is machine-local and off unless this file exists.
+  const awsLoginPath = path.join(environment.stateDir, "aws-login.json");
+  const awsLoginProfile = yield* Ref.make<string | null>(yield* readSavedAwsProfile(awsLoginPath));
   const signInAwsProfile = Effect.gen(function* () {
     return (yield* Ref.get(config))?.awsProfile ?? (yield* Ref.get(machinesAwsProfile));
   });
@@ -635,12 +649,13 @@ export const make = Effect.gen(function* () {
         yield* refreshAws;
         return yield* snapshot;
       }
-      const profile = (yield* listAwsProfiles).find((entry) => entry.name === input.awsProfile);
-      if (!profile) {
-        return yield* Effect.fail(
-          new Error(`AWS profile ${input.awsProfile} is not in ~/.aws/config.`),
-        );
-      }
+      const invalid = validateAwsProfileName(input.awsProfile);
+      if (invalid !== null) return yield* Effect.fail(new Error(invalid));
+      // A typed name may live only in ~/.aws/credentials, so it need not be listed.
+      const profile = (yield* listAwsProfiles).find((entry) => entry.name === input.awsProfile) ?? {
+        name: input.awsProfile,
+        region: null,
+      };
       const target = { awsProfile: profile.name, awsRegion: profile.region ?? "us-east-1" };
       const described = yield* runCommand("aws", describeTemplateInstanceArgs(target));
       if (described.exitCode !== 0) {
@@ -663,7 +678,10 @@ export const make = Effect.gen(function* () {
       const next = { ...target, ...template } satisfies DesktopDevboxConfig;
       yield* fs.makeDirectory(path.dirname(configPath), { recursive: true }).pipe(Effect.orDie);
       yield* fs.writeFileString(configPath, JSON.stringify(next, null, 2)).pipe(Effect.orDie);
+      if ((yield* Ref.get(config))?.awsProfile !== next.awsProfile) yield* Ref.set(checks, {});
       yield* Ref.set(config, next);
+      // Remembered so the picker offers it again after the panel is turned off.
+      yield* setSignInAwsProfile({ awsProfile: next.awsProfile });
       yield* refreshAws;
       return yield* snapshot;
     });
@@ -691,7 +709,9 @@ export const make = Effect.gen(function* () {
       if (input.awsProfile !== undefined && (yield* Ref.get(config)) === null) {
         yield* setSignInAwsProfile({ awsProfile: input.awsProfile });
       }
-      const awsProfile = yield* signInAwsProfile;
+      const awsProfile = input.awsProfile ?? (yield* signInAwsProfile);
+      // The health check reads the sign-in profile, so it cannot confirm another one.
+      const verifiable = input.provider !== "aws" || awsProfile === (yield* signInAwsProfile);
       const onDevbox = input.target !== MAC_TARGET;
       if (onDevbox && (yield* Ref.get(config)) === null) {
         return yield* Effect.fail(
@@ -819,6 +839,10 @@ export const make = Effect.gen(function* () {
               yield* updateLogin(id, (login) => ({ ...login, phase: "failed", output: tail }));
               return;
             }
+            if (!verifiable) {
+              yield* updateLogin(id, (login) => ({ ...login, phase: "done", output: tail }));
+              return;
+            }
             yield* updateLogin(id, (login) => ({ ...login, phase: "verifying", output: tail }));
             yield* refreshChecks(input.target);
             const result = (yield* Ref.get(checks))[input.target]?.[input.provider];
@@ -846,6 +870,74 @@ export const make = Effect.gen(function* () {
       return yield* snapshot;
     });
 
+  const ssoCacheDir = path.join(home, ".aws", "sso", "cache");
+  const readSsoExpiry = (profile: string) =>
+    Effect.gen(function* () {
+      const files = (yield* fs.readDirectory(ssoCacheDir)).filter((name) => name.endsWith(".json"));
+      const cacheFiles = yield* Effect.forEach(files, (name) =>
+        fs.readFileString(path.join(ssoCacheDir, name)).pipe(Effect.orElseSucceed(() => "")),
+      );
+      const configText = yield* fs.readFileString(awsConfigPath);
+      return ssoSessionExpiry(configText, profile, cacheFiles);
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const getAwsLoginStatus = Effect.gen(function* () {
+    const profile = yield* Ref.get(awsLoginProfile);
+    if (profile === null) {
+      return { awsProfile: null, ok: false, detail: "Off", expiresAt: null };
+    }
+    const [identity, expiresAt] = yield* Effect.all(
+      [
+        runCommand("aws", [
+          "sts",
+          "get-caller-identity",
+          "--profile",
+          profile,
+          "--query",
+          "Arn",
+          "--output",
+          "text",
+        ]).pipe(
+          Effect.timeoutOption(AWS_LOGIN_CHECK_TIMEOUT),
+          Effect.map(
+            Option.getOrElse(() => ({ exitCode: 124, stdout: "", stderr: "aws sts timed out" })),
+          ),
+        ),
+        readSsoExpiry(profile),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const arn = identity.stdout.trim();
+    if (identity.exitCode === 0 && arn.startsWith("arn:")) {
+      return { awsProfile: profile, ok: true, detail: arn.split("/").at(-1) ?? arn, expiresAt };
+    }
+    return {
+      awsProfile: profile,
+      ok: false,
+      detail: /sso|token|expired|login/iu.test(identity.stderr)
+        ? "SSO session expired or missing"
+        : identity.stderr.slice(-300) || "aws CLI unavailable",
+      expiresAt,
+    };
+  });
+
+  const setAwsLoginGuard = (input: DesktopAwsLoginGuardInput) =>
+    Effect.gen(function* () {
+      if (input === null) {
+        yield* fs.remove(awsLoginPath).pipe(Effect.ignore);
+        yield* Ref.set(awsLoginProfile, null);
+        return yield* getAwsLoginStatus;
+      }
+      const invalid = validateAwsProfileName(input.awsProfile);
+      if (invalid !== null) return yield* Effect.fail(new Error(invalid));
+      yield* fs.makeDirectory(path.dirname(awsLoginPath), { recursive: true }).pipe(Effect.orDie);
+      yield* fs
+        .writeFileString(awsLoginPath, JSON.stringify({ awsProfile: input.awsProfile }, null, 2))
+        .pipe(Effect.orDie);
+      yield* Ref.set(awsLoginProfile, input.awsProfile);
+      return yield* getAwsLoginStatus;
+    });
+
   return DesktopDevbox.of({
     getState,
     run,
@@ -853,6 +945,8 @@ export const make = Effect.gen(function* () {
     setEnabled: (input) => setEnabled(input).pipe(Effect.mapError(toError)),
     startLogin,
     setSignInAwsProfile,
+    getAwsLoginStatus,
+    setAwsLoginGuard,
   });
 });
 

@@ -1,4 +1,6 @@
 import {
+  DesktopAwsLoginGuardInputSchema,
+  DesktopAwsLoginStatusSchema,
   DesktopAwsProfileSchema,
   DesktopDevboxActionInputSchema,
   DesktopDevboxEnableInputSchema,
@@ -71,5 +73,25 @@ export const setSignInAwsProfile = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.devbox.setSignInAwsProfile")(function* (input) {
     const devbox = yield* DesktopDevbox.DesktopDevbox;
     return yield* devbox.setSignInAwsProfile(input);
+  }),
+});
+
+export const getAwsLoginStatus = makeIpcMethod({
+  channel: IpcChannels.GET_AWS_LOGIN_STATUS_CHANNEL,
+  payload: Schema.Void,
+  result: DesktopAwsLoginStatusSchema,
+  handler: Effect.fn("desktop.ipc.devbox.getAwsLoginStatus")(function* () {
+    const devbox = yield* DesktopDevbox.DesktopDevbox;
+    return yield* devbox.getAwsLoginStatus;
+  }),
+});
+
+export const setAwsLoginGuard = makeIpcMethod({
+  channel: IpcChannels.SET_AWS_LOGIN_GUARD_CHANNEL,
+  payload: DesktopAwsLoginGuardInputSchema,
+  result: DesktopAwsLoginStatusSchema,
+  handler: Effect.fn("desktop.ipc.devbox.setAwsLoginGuard")(function* (input) {
+    const devbox = yield* DesktopDevbox.DesktopDevbox;
+    return yield* devbox.setAwsLoginGuard(input);
   }),
 });
