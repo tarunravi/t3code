@@ -8,6 +8,7 @@ import type {
 import { CheckCircle2Icon, CircleAlertIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { formatExpiresIn, formatExpiryTime } from "~/lib/awsLogin";
 import { cn } from "~/lib/utils";
 import { setDevboxPanelState } from "~/lib/devboxPanel";
 import { Button } from "../ui/button";
@@ -52,25 +53,6 @@ const PHASE_LABELS: Record<DesktopDevboxLogin["phase"], string> = {
 
 const isActive = (login: DesktopDevboxLogin) =>
   login.phase === "connecting" || login.phase === "approve" || login.phase === "verifying";
-
-function remaining(expiresAt: string, nowMs: number): string {
-  const ms = Date.parse(expiresAt) - nowMs;
-  if (!Number.isFinite(ms)) return "";
-  if (ms <= 0) return "expired";
-  const minutes = Math.floor(ms / 60_000);
-  const days = Math.floor(minutes / 1_440);
-  const hours = Math.floor((minutes % 1_440) / 60);
-  if (days > 0) return `expires in ${days}d ${hours}h`;
-  if (hours > 0) return `expires in ${hours}h ${minutes % 60}m`;
-  return `expires in ${minutes}m`;
-}
-
-function expiryTitle(expiresAt: string): string {
-  return new Date(expiresAt).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 
 function Progress({ login }: { readonly login: DesktopDevboxLogin }) {
   const reached =
@@ -273,7 +255,7 @@ export function MachinesSettings() {
                         <span className="truncate">
                           {check.detail}
                           {check.ok && check.expiresAt
-                            ? ` · ${remaining(check.expiresAt, nowMs)} (${expiryTitle(check.expiresAt)})`
+                            ? ` · ${formatExpiresIn(check.expiresAt, nowMs)} (${formatExpiryTime(check.expiresAt)})`
                             : check.ok && provider === "github"
                               ? " · doesn't expire"
                               : null}
