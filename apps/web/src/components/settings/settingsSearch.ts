@@ -529,6 +529,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "keep-awake",
+    title: "Keep Mac awake while T3 Code is running",
+    to: "/settings/general",
+    searchTerms: ["sleep caffeinate prevent idle power agents stall"],
+    desktopOnly: true,
+    macOnly: true,
+  },
+  {
     id: "devbox-panel",
     title: "Devbox panel",
     to: "/settings/general",

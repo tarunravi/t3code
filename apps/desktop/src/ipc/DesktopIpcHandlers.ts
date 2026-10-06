@@ -9,6 +9,7 @@ import {
   getConnectionCatalog,
   setConnectionCatalog,
 } from "./methods/connectionCatalog.ts";
+import { getKeepAwakeEnabled, setKeepAwakeEnabled } from "./methods/keepAwake.ts";
 import {
   getLocalEnvironmentEnabled,
   setLocalEnvironmentEnabled,
@@ -107,6 +108,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(getLocalEnvironmentBootstraps);
   yield* ipc.handleSync(getLocalEnvironmentEnabled);
   yield* ipc.handle(setLocalEnvironmentEnabled);
+  yield* ipc.handleSync(getKeepAwakeEnabled);
+  yield* ipc.handle(setKeepAwakeEnabled);
   yield* ipc.handle(getLocalEnvironmentBearerToken);
 
   yield* ipc.handle(getClientSettings);
