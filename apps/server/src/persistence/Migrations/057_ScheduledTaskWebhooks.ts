@@ -5,8 +5,15 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   // Kept out of schedule_json so they never decode into the read model.
-  yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN webhook_token TEXT`;
-  yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN webhook_secret TEXT`;
+  const columns = yield* sql<{ readonly name: string }>`
+    PRAGMA table_info(scheduled_tasks)
+  `;
+  if (!columns.some((column) => column.name === "webhook_token")) {
+    yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN webhook_token TEXT`;
+  }
+  if (!columns.some((column) => column.name === "webhook_secret")) {
+    yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN webhook_secret TEXT`;
+  }
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS scheduled_task_webhook_deliveries (
