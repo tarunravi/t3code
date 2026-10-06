@@ -201,6 +201,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
                 ),
           setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
           setWslDistro: () => Effect.die("unexpected WSL distro change"),
+          setKeepAwakeEnabled: () => Effect.die("unexpected keep awake toggle"),
           setLocalEnvironmentEnabled: () => Effect.die("unexpected local environment toggle"),
           setWslOnly: () => Effect.die("unexpected WSL-only toggle"),
           applyWslWindowsFallback: Effect.die("unexpected WSL Windows fallback"),
