@@ -197,6 +197,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   startDevboxLogin: (input) => ipcRenderer.invoke(IpcChannels.START_DEVBOX_LOGIN_CHANNEL, input),
   setSignInAwsProfile: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_SIGN_IN_AWS_PROFILE_CHANNEL, input),
+  getAwsLoginStatus: () => ipcRenderer.invoke(IpcChannels.GET_AWS_LOGIN_STATUS_CHANNEL),
+  setAwsLoginGuard: (input) => ipcRenderer.invoke(IpcChannels.SET_AWS_LOGIN_GUARD_CHANNEL, input),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   pickProjectFavicon: (initialPath) =>
     ipcRenderer.invoke(IpcChannels.PICK_PROJECT_FAVICON_CHANNEL, initialPath),
