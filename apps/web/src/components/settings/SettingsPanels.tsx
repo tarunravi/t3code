@@ -136,6 +136,7 @@ import {
   NumberFieldInput,
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { AwsLoginGuardSetting } from "./AwsLoginGuardSetting";
 import { DevboxPanelSetting } from "./DevboxPanelSetting";
 import { KeepAwakeSetting } from "./KeepAwakeSetting";
 import { VoiceMicrophoneSetting } from "./VoiceMicrophoneSetting";
@@ -3235,6 +3236,7 @@ export function GeneralSettingsPanel() {
         ) : null}
         {isElectron && isMacPlatform(navigator.platform) ? <KeepAwakeSetting /> : null}
         {isElectron ? <DevboxPanelSetting /> : null}
+        {isElectron ? <AwsLoginGuardSetting /> : null}
       </SettingsSection>
 
       <SettingsSection id="text-generation" title="Text generation">

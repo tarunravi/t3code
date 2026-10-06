@@ -145,6 +145,46 @@ export function awsProfileSections(configText: string, profile: string): string 
     .join("\n\n");
 }
 
+/** Profile names the panel accepts; they are interpolated into the health script. */
+export function validateAwsProfileName(profile: string): string | null {
+  return /^[A-Za-z0-9_.-]+$/u.test(profile)
+    ? null
+    : `Unexpected AWS profile name: ${profile}. Use letters, digits, '.', '_' or '-'.`;
+}
+
+/**
+ * When the profile's SSO session lapses, read from the AWS CLI's token cache
+ * (the contents of ~/.aws/sso/cache/*.json); null when the profile has no SSO
+ * start URL or no cached token.
+ */
+export function ssoSessionExpiry(
+  configText: string,
+  profile: string,
+  cacheFiles: readonly string[],
+): string | null {
+  // An sso-session section follows its profile, so its start URL wins, as in the CLI.
+  const startUrl = [
+    ...awsProfileSections(configText, profile).matchAll(/^\s*sso_start_url\s*=\s*(\S+)/gmu),
+  ].at(-1)?.[1];
+  if (startUrl === undefined) return null;
+  let latest: { readonly ms: number; readonly expiresAt: string } | null = null;
+  for (const text of cacheFiles) {
+    let entry: { startUrl?: unknown; accessToken?: unknown; expiresAt?: unknown };
+    try {
+      entry = JSON.parse(text) as typeof entry;
+    } catch {
+      continue;
+    }
+    if (entry.startUrl !== startUrl || typeof entry.accessToken !== "string") continue;
+    if (typeof entry.expiresAt !== "string") continue;
+    const ms = Date.parse(entry.expiresAt);
+    if (Number.isFinite(ms) && (latest === null || ms > latest.ms)) {
+      latest = { ms, expiresAt: entry.expiresAt };
+    }
+  }
+  return latest?.expiresAt ?? null;
+}
+
 export interface DevboxInstance {
   readonly instanceId: string;
   /** The Name tag, or the instance id when the tag is missing or unusable as an ssh alias. */
@@ -487,9 +527,8 @@ git -C "$HOME/brain" log --oneline -1
  * are never printed.
  */
 export function buildHealthScript(awsProfile: string | null): string {
-  if (awsProfile !== null && !/^[A-Za-z0-9_.-]+$/u.test(awsProfile)) {
-    throw new Error(`Unexpected AWS profile name: ${awsProfile}`);
-  }
+  const invalid = awsProfile === null ? null : validateAwsProfileName(awsProfile);
+  if (invalid !== null) throw new Error(invalid);
   return String.raw`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 T3_AWS_PROFILE='${awsProfile ?? ""}' python3 - <<'PY'
 import base64, configparser, datetime, glob, json, os, pathlib, re, subprocess, sys
