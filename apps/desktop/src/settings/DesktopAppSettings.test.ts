@@ -122,6 +122,21 @@ describe("DesktopSettings", () => {
     }),
   );
 
+  it.effect("persists turning keep awake off and back on", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        assert.isTrue((yield* settings.get).keepAwakeEnabled);
+        assert.isTrue((yield* settings.setKeepAwakeEnabled(false)).changed);
+        assert.isFalse((yield* settings.load).keepAwakeEnabled);
+        assert.isFalse((yield* settings.setKeepAwakeEnabled(false)).changed);
+        yield* settings.setKeepAwakeEnabled(true);
+        assert.isTrue((yield* settings.load).keepAwakeEnabled);
+      }),
+    ),
+  );
+
+
   it.effect(
     "persists disabling and re-enabling local execution without clearing backend settings",
     () =>
@@ -175,6 +190,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          keepAwakeEnabled: true,
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
           mainWindowMaximized: false,
@@ -270,6 +286,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          keepAwakeEnabled: true,
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,
@@ -299,6 +316,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          keepAwakeEnabled: true,
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,

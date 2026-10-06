@@ -26,6 +26,7 @@ import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
+  readonly keepAwakeEnabled: boolean;
   readonly localEnvironmentEnabled: boolean;
   readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
@@ -64,6 +65,7 @@ export const DEFAULT_MAIN_WINDOW_SIZE = {
 } as const;
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
+  keepAwakeEnabled: true,
   localEnvironmentEnabled: true,
   linuxPasswordStore: DEFAULT_LINUX_PASSWORD_STORE,
   mainWindowBounds: null,
@@ -86,6 +88,7 @@ const DesktopWindowBoundsDocument = Schema.Struct({
 });
 
 const DesktopSettingsDocument = Schema.Struct({
+  keepAwakeEnabled: Schema.optionalKey(Schema.Boolean),
   localEnvironmentEnabled: Schema.optionalKey(Schema.Boolean),
   linuxPasswordStore: Schema.optionalKey(Schema.Unknown),
   mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
@@ -143,6 +146,9 @@ export class DesktopAppSettings extends Context.Service<
   {
     readonly load: Effect.Effect<DesktopSettings>;
     readonly get: Effect.Effect<DesktopSettings>;
+    readonly setKeepAwakeEnabled: (
+      enabled: boolean,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setLocalEnvironmentEnabled: (
       enabled: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
@@ -215,6 +221,7 @@ function normalizeDesktopSettingsDocument(
     (parsed.wslBackendEnabled === undefined && parsed.wslMode === "wsl");
 
   return {
+    keepAwakeEnabled: parsed.keepAwakeEnabled !== false,
     localEnvironmentEnabled: parsed.localEnvironmentEnabled !== false,
     linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
@@ -238,6 +245,10 @@ function toDesktopSettingsDocument(
   defaults: DesktopSettings,
 ): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
+
+  if (settings.keepAwakeEnabled !== defaults.keepAwakeEnabled) {
+    document.keepAwakeEnabled = settings.keepAwakeEnabled;
+  }
 
   if (settings.localEnvironmentEnabled !== defaults.localEnvironmentEnabled) {
     document.localEnvironmentEnabled = settings.localEnvironmentEnabled;
@@ -364,6 +375,12 @@ function setWslOnly(settings: DesktopSettings, enabled: boolean): DesktopSetting
         ...settings,
         wslOnly: enabled,
       };
+}
+
+function setKeepAwakeEnabled(settings: DesktopSettings, enabled: boolean): DesktopSettings {
+  return settings.keepAwakeEnabled === enabled
+    ? settings
+    : { ...settings, keepAwakeEnabled: enabled };
 }
 
 function setLocalEnvironmentEnabled(settings: DesktopSettings, enabled: boolean): DesktopSettings {
@@ -571,6 +588,10 @@ export const make = Effect.gen(function* () {
         return yield* persist((settings) => setLocalEnvironmentEnabled(settings, enabled));
       },
     ),
+    setKeepAwakeEnabled: (enabled) =>
+      persist((settings) => setKeepAwakeEnabled(settings, enabled)).pipe(
+        Effect.withSpan("desktop.settings.setKeepAwakeEnabled", { attributes: { enabled } }),
+      ),
     applyWslWindowsFallback: persist(applyWslWindowsFallback).pipe(
       Effect.withSpan("desktop.settings.applyWslWindowsFallback"),
     ),
@@ -634,6 +655,8 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
             return update((settings) => setLocalEnvironmentEnabled(settings, enabled));
           },
         ),
+        setKeepAwakeEnabled: (enabled) =>
+          update((settings) => setKeepAwakeEnabled(settings, enabled)),
         applyWslWindowsFallback: update(applyWslWindowsFallback),
         applyWslWindowsFallbackInMemory: update(applyWslWindowsFallback),
       });
