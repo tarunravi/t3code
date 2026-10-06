@@ -1265,6 +1265,9 @@ export interface DesktopBridge {
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentEnabled?: () => boolean;
   setLocalEnvironmentEnabled?: (enabled: boolean) => Promise<void>;
+  /** macOS only: whether T3 Code keeps the Mac from sleeping while it runs. */
+  getKeepAwakeEnabled?: () => boolean;
+  setKeepAwakeEnabled?: (enabled: boolean) => Promise<void>;
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
