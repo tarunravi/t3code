@@ -5,6 +5,7 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
+import { getKeepAwakeEnabled, setKeepAwakeEnabled } from "./methods/keepAwake.ts";
 import {
   getLocalEnvironmentEnabled,
   setLocalEnvironmentEnabled,
@@ -82,9 +83,11 @@ import {
   transcribeVoice,
 } from "./methods/voiceTranscription.ts";
 import {
+  getAwsLoginStatus,
   getDevboxState,
   listAwsProfiles,
   runDevboxAction,
+  setAwsLoginGuard,
   setDevboxEnabled,
   setSignInAwsProfile,
   startDevboxLogin,
@@ -113,6 +116,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(getLocalEnvironmentBootstraps);
   yield* ipc.handleSync(getLocalEnvironmentEnabled);
   yield* ipc.handle(setLocalEnvironmentEnabled);
+  yield* ipc.handleSync(getKeepAwakeEnabled);
+  yield* ipc.handle(setKeepAwakeEnabled);
   yield* ipc.handle(getLocalEnvironmentBearerToken);
 
   yield* ipc.handle(getClientSettings);
@@ -157,6 +162,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setDevboxEnabled);
   yield* ipc.handle(startDevboxLogin);
   yield* ipc.handle(setSignInAwsProfile);
+  yield* ipc.handle(getAwsLoginStatus);
+  yield* ipc.handle(setAwsLoginGuard);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickProjectFavicon);
