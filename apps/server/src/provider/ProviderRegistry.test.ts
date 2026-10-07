@@ -844,6 +844,48 @@ it.layer(
       );
     });
 
+    it("replaces omp's placeholder model only once discovery has listed its models", () => {
+      const placeholder = { slug: "default", name: "Default", isCustom: false, capabilities: null };
+      const discovered = {
+        slug: "sparksdirect/GLM-5.3-Flash-EXL3",
+        name: "GLM-5.3-Flash",
+        isCustom: false,
+        capabilities: null,
+      };
+      const readinessProvider = {
+        instanceId: ProviderInstanceId.make("omp"),
+        driver: ProviderDriverKind.make("omp"),
+        status: "ready",
+        enabled: true,
+        installed: true,
+        auth: { status: "unknown" },
+        checkedAt: "2026-10-07T00:00:00.000Z",
+        version: null,
+        models: [placeholder],
+        slashCommands: [],
+        skills: [],
+      } as const satisfies ServerProvider;
+      const discoveredProvider = {
+        ...readinessProvider,
+        checkedAt: "2026-10-07T00:01:00.000Z",
+        nativeSessions: { canList: true, canLoad: true, canResume: true, canDelete: false },
+        models: [discovered],
+      } satisfies ServerProvider;
+
+      const afterDiscovery = ProviderRegistry.mergeProviderSnapshot(
+        readinessProvider,
+        discoveredProvider,
+      );
+      assert.deepStrictEqual(afterDiscovery.models, [discovered]);
+      assert.deepStrictEqual(
+        ProviderRegistry.mergeProviderSnapshot(afterDiscovery, {
+          ...readinessProvider,
+          checkedAt: "2026-10-07T00:02:00.000Z",
+        }).models,
+        [placeholder, discovered],
+      );
+    });
+
     it("drops stale OpenCode models missing from a successful refresh", () => {
       const previousProvider = {
         instanceId: ProviderInstanceId.make("opencode"),
