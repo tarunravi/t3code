@@ -28,6 +28,7 @@ import {
   type ProviderRequestKind,
   type ProviderThreadId,
   type ProviderUserInputAnswers,
+  type TurnTokenUsage,
   type RuntimeRequestId,
   type ThreadTokenUsageSnapshot,
   type ThreadId,
@@ -312,6 +313,17 @@ export interface AcpAdapterV2Flavor {
   readonly subagentsIdleOnTurnCompletion?: boolean;
   readonly supportsCompaction?: boolean;
   readonly runtimeHarness?: string;
+  /**
+   * Maps the `usage` an agent returns from `session/prompt` to the provider
+   * turn's token usage. Agents disagree on whether that report covers the turn
+   * or the whole session and whether input includes cache reads, so only a
+   * flavor that knows its agent's semantics opts in.
+   */
+  readonly promptTurnTokenUsage?: (input: {
+    readonly usage: EffectAcpSchema.Usage;
+    readonly status: OrchestrationV2ProviderTurn["status"];
+    readonly hasSubagents: boolean;
+  }) => TurnTokenUsage;
   readonly registerExtensions?: (
     context: AcpAdapterV2ExtensionContext,
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
@@ -1160,6 +1172,8 @@ interface ActiveAcpTurn {
       }
     | undefined;
   contextUsage: ThreadTokenUsageSnapshot | null;
+  /** The `session/prompt` result's usage report, when the agent sent one. */
+  promptUsage: EffectAcpSchema.Usage | null;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
   readonly toolStartedAt: Map<string, DateTime.Utc>;
@@ -6456,6 +6470,15 @@ export function makeAcpAdapterV2(
           status,
           startedAt: context.startedAt,
           completedAt,
+          ...(context.promptUsage === null || flavor.promptTurnTokenUsage === undefined
+            ? {}
+            : {
+                turnTokenUsage: flavor.promptTurnTokenUsage({
+                  usage: context.promptUsage,
+                  status,
+                  hasSubagents: context.subagents.size > 0,
+                }),
+              }),
         });
 
         const terminalizeOpenRunOwnedItems = Effect.fnUntraced(function* (
@@ -6951,6 +6974,7 @@ export function makeAcpAdapterV2(
               assistant: { current: null, nextSegment: 0 },
               reasoning: { current: null, nextSegment: 0 },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
+              promptUsage: null,
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
               toolStartedAt: new Map(),
@@ -7119,6 +7143,7 @@ export function makeAcpAdapterV2(
                   promptGeneration,
                   Effect.gen(function* () {
                     if (context.finalized) return;
+                    context.promptUsage = result.usage ?? null;
                     const status =
                       result.stopReason === "cancelled"
                         ? context.interrupted
