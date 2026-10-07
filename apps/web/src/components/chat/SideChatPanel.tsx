@@ -5,15 +5,16 @@ import {
   deriveThreadActivityRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
-import type {
-  EnvironmentId,
-  ModelSelection,
-  ProviderApprovalDecision,
-  ProviderInstanceId,
-  ProviderInteractionMode,
-  RuntimeMode,
-  RuntimeRequestId,
-  ThreadId,
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type ModelSelection,
+  type ProviderApprovalDecision,
+  type ProviderInstanceId,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type RuntimeRequestId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -41,6 +42,7 @@ import {
   waitForThreadShell,
 } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
+import { useEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { newMessageId, newThreadId } from "../../lib/utils";
@@ -140,6 +142,7 @@ export function SideChatPanel(props: {
   readonly workspaceRoot: string | undefined;
 }) {
   const { environmentId, parent, sideThreadId } = props;
+  const canOperateThread = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const parentRef = useMemo(
     () => scopeThreadRef(environmentId, parent.id),
     [environmentId, parent.id],
@@ -229,12 +232,13 @@ export function SideChatPanel(props: {
   const [prompt, setPrompt] = useState("");
   const send = useCallback(() => {
     const text = prompt.trim();
-    if (text.length === 0 || sideShell === null) return;
+    if (!canOperateThread || text.length === 0 || sideShell === null) return;
     setPrompt("");
     void ask({ sideThreadId, parent, modelSelection, text });
-  }, [ask, modelSelection, parent, prompt, sideShell, sideThreadId]);
+  }, [ask, canOperateThread, modelSelection, parent, prompt, sideShell, sideThreadId]);
   const sendToParent = useCallback(
     (text: string) => {
+      if (!canOperateThread) return;
       void sendToParentCommand({
         environmentId,
         input: {
@@ -251,10 +255,11 @@ export function SideChatPanel(props: {
         },
       });
     },
-    [environmentId, parent, sendToParentCommand],
+    [canOperateThread, environmentId, parent, sendToParentCommand],
   );
   const onRespondToApproval = useCallback(
     async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
+      if (!canOperateThread) return;
       setRespondingRequestId(requestId);
       await respondToApproval({
         environmentId,
@@ -262,7 +267,7 @@ export function SideChatPanel(props: {
       });
       setRespondingRequestId(null);
     },
-    [environmentId, respondToApproval, sideThreadId],
+    [canOperateThread, environmentId, respondToApproval, sideThreadId],
   );
 
   const parentStatus =
@@ -330,6 +335,7 @@ export function SideChatPanel(props: {
               <ComposerPendingApprovalActions
                 requestId={pendingApproval.requestId}
                 isResponding={respondingRequestId === pendingApproval.requestId}
+                disabled={!canOperateThread}
                 canRespond={pendingApproval.responseCapability === "live"}
                 options={pendingApproval.options}
                 onRespondToApproval={onRespondToApproval}
@@ -344,12 +350,14 @@ export function SideChatPanel(props: {
             <Button
               size="xs"
               variant="outline"
-              onClick={() =>
+              disabled={!canOperateThread}
+              onClick={() => {
+                if (!canOperateThread) return;
                 void dismissUserInput({
                   environmentId,
                   input: { threadId: sideThreadId, requestId: pendingUserInput.requestId },
-                })
-              }
+                });
+              }}
             >
               Dismiss
             </Button>
@@ -364,7 +372,7 @@ export function SideChatPanel(props: {
                     value={prompt}
                     placeholder="Ask a side question"
                     aria-label="Side chat message"
-                    disabled={sideShell === null}
+                    disabled={!canOperateThread || sideShell === null}
                     rows={1}
                     className="field-sizing-content max-h-40 min-h-10 w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-placeholder/75 disabled:cursor-not-allowed disabled:opacity-64"
                     onChange={(event) => setPrompt(event.target.value)}
@@ -401,6 +409,7 @@ export function SideChatPanel(props: {
                     pendingAction={null}
                     isRunning={isWorking}
                     canInterrupt={deriveCanInterruptRunningThread(sideShell !== null, runtime)}
+                    canOperateThread={canOperateThread}
                     showPlanFollowUpPrompt={false}
                     promptHasText={prompt.trim().length > 0}
                     isSendBusy={false}
