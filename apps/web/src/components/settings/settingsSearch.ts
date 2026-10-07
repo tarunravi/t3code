@@ -345,9 +345,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "thread-notifications",
-    title: "Thread notifications",
+    title: "System notifications",
     to: "/settings/general",
-    searchTerms: ["notification sound alert completion input approval desktop"],
+    searchTerms: ["thread subagent notification sound alert completion input approval desktop"],
   },
   {
     id: "in-app-notifications",

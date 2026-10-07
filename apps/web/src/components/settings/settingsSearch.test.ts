@@ -45,6 +45,21 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it.each(["system notifications", "thread notifications", "subagent completion", "desktop sound"])(
+    "finds the existing system notification control for %s",
+    (query) => {
+      expect(searchSettings(query)[0]).toMatchObject({
+        id: "thread-notifications",
+        title: "System notifications",
+        to: "/settings/general",
+      });
+      expect(searchableSetting("thread-notifications")).toEqual({
+        id: "thread-notifications",
+        title: "System notifications",
+      });
+    },
+  );
+
   it.each(["model prices", "ZCode pricing", "cache cost"])(
     "finds the model pricing editor for %s",
     (query) => {
