@@ -339,3 +339,21 @@ describe("fork pricing search", () => {
   );
 
 });
+
+describe("fork notification search", () => {
+  it.each(["system notifications", "thread notifications", "subagent completion", "desktop sound"])(
+    "finds the existing system notification control for %s",
+    (query) => {
+      expect(searchSettings(query)[0]).toMatchObject({
+        id: "thread-notifications",
+        title: "System notifications",
+        to: "/settings/general",
+      });
+      expect(searchableSetting("thread-notifications")).toEqual({
+        id: "thread-notifications",
+        title: "System notifications",
+      });
+    },
+  );
+
+});
