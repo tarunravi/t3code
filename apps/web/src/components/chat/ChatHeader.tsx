@@ -29,6 +29,7 @@ import { TokenRateLabel } from "./TokenRateLabel";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
 import { useAtomValue } from "@effect/atom-react";
+import { useThreadProjectionTree } from "../../state/threadProjectionTree";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -90,6 +91,17 @@ export const ChatHeader = memo(function ChatHeader({
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
+  const projectionTree = useThreadProjectionTree(isServerThread ? activeThreadRef : null);
+  const tokenRateSources = [
+    {
+      key: activeThreadId,
+      projection: projectionTree[0]?.projection ?? threadProjection,
+    },
+    ...projectionTree.slice(1).map((entry) => ({
+      key: entry.ref.threadId,
+      projection: entry.projection,
+    })),
+  ];
   const canOperateThread = useEnvironmentScope(
     activeThreadEnvironmentId,
     AuthOrchestrationOperateScope,
@@ -416,7 +428,7 @@ export const ChatHeader = memo(function ChatHeader({
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
       {isServerThread ? <ThreadCostLabel threadRef={activeThreadRef} className="shrink-0" /> : null}
-      <TokenRateLabel projection={threadProjection} className="shrink-0" />
+      <TokenRateLabel sources={tokenRateSources} className="shrink-0" />
     </div>
   );
 });
