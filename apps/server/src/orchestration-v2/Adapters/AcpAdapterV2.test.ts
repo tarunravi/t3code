@@ -23,6 +23,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
+  type OrchestrationV2ProviderGoal,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
   type ProviderOptionDescriptor,
@@ -111,6 +112,85 @@ const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpToolCallDiffPatch", () => {
+  it.live("records prompt-result usage as the turn's token usage when the flavor maps it", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const instanceId = ProviderInstanceId.make("acp-prompt-usage");
+      const threadId = ThreadId.make("thread-acp-prompt-usage");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ProviderDriverKind.make("omp"),
+          capabilities: AcpProviderCapabilitiesV2,
+          promptTurnTokenUsage: ({ usage, status, hasSubagents }) => ({
+            usageScope: "main_agent",
+            usageStatus: status === "completed" ? "complete" : "partial",
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            hasSubagents,
+          }),
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            environment: {
+              T3_ACP_PROMPT_USAGE_JSON: JSON.stringify({
+                inputTokens: 1200,
+                outputTokens: 340,
+                totalTokens: 1540,
+              }),
+            },
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-prompt-usage"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      const settled = events.findLast(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status !== "running",
+      );
+      if (settled?.type !== "provider_turn.updated") return yield* Effect.die("Missing turn");
+      assert.equal(settled.providerTurn.status, "completed");
+      assert.deepEqual(settled.providerTurn.turnTokenUsage, {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        inputTokens: 1200,
+        outputTokens: 340,
+        hasSubagents: false,
+      });
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it("builds per-file patches from ACP hunks and recorded old/new text", () => {
     for (const operation of ["add", "delete"]) {
       const text = operation === "add" ? "@@ -0,0 +1 @@\n+content\n" : "@@ -1 +0,0 @@\n-content\n";
@@ -7528,4 +7608,194 @@ describe("acpPostSettleContinuationOfferEvidence", () => {
       }),
     );
   });
+});
+
+describe("AcpAdapterV2 locally tracked /goal (omp)", () => {
+  const runGoalTurn = Effect.fnUntraced(function* (input: {
+    readonly name: string;
+    readonly messageText: string;
+    readonly goal: OrchestrationV2ProviderGoal | null;
+    readonly responseText?: string;
+  }) {
+    const path = yield* Path.Path;
+    const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+    const instanceId = ProviderInstanceId.make(`acp-goal-${input.name}`);
+    const threadId = ThreadId.make(`thread-acp-goal-${input.name}`);
+    const adapter = yield* makeAcpAdapterV2({
+      instanceId,
+      selfInvocation: yield* resolveSelfInvocation(),
+      flavor: {
+        driver: ProviderDriverKind.make("omp"),
+        capabilities: AcpProviderCapabilitiesV2,
+        tracksGoalsLocally: true,
+        promptTurnTokenUsage: ({ usage, status, hasSubagents }) => ({
+          usageScope: "main_agent",
+          usageStatus: status === "completed" ? "complete" : "partial",
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          hasSubagents,
+        }),
+        makeRuntime: makeMockRuntime({
+          childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+          mockAgentPath: yield* path.fromFileUrl(
+            new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+          ),
+          protocolEvents,
+          environment: {
+            T3_ACP_PROMPT_USAGE_JSON: JSON.stringify({
+              inputTokens: 1200,
+              outputTokens: 340,
+              totalTokens: 1540,
+            }),
+            ...(input.responseText === undefined
+              ? {}
+              : { T3_ACP_PROMPT_RESPONSE_TEXT: input.responseText }),
+          },
+        }),
+      },
+    });
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: process.cwd(),
+    });
+    const modelSelection = { instanceId, model: "default" } as const;
+    const runtime = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make(`session-acp-goal-${input.name}`),
+      modelSelection,
+      runtimePolicy,
+    });
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+    yield* runtime.startTurn(
+      makeTurnInput({
+        threadId,
+        providerThread: { ...providerThread, goal: input.goal },
+        instanceId,
+        runtimePolicy,
+        now: yield* DateTime.now,
+        messageText: input.messageText,
+      }),
+    );
+    const events = yield* runtime.events.pipe(
+      Stream.takeUntil((event) => event.type === "turn.terminal"),
+      Stream.runCollect,
+    );
+    const goals = events.flatMap((event) =>
+      event.type === "provider_thread.updated" ? [event.providerThread.goal ?? null] : [],
+    );
+    const replies = events.flatMap((event) =>
+      event.type === "message.updated" && event.message.role === "assistant"
+        ? [event.message.text]
+        : [],
+    );
+    const prompts = (yield* Queue.clear(protocolEvents)).flatMap((event) =>
+      event.direction === "outgoing" && rawProtocolMethod(event) === "session/prompt"
+        ? [
+            rawProtocolPromptTextBlocks(event)
+              .map((block) => block.text)
+              .join("\n"),
+          ]
+        : [],
+    );
+    const terminal = events.find((event) => event.type === "turn.terminal");
+    return {
+      startedGoal: goals[0],
+      settledGoal: goals.at(-1),
+      reply: replies.at(-1),
+      prompts,
+      terminalStatus: terminal?.type === "turn.terminal" ? terminal.status : undefined,
+    };
+  });
+
+  it.live("/goal set puts an active goal on the thread and prompts the objective", () =>
+    Effect.gen(function* () {
+      const result = yield* runGoalTurn({
+        name: "set",
+        messageText: "/goal set Ship the release notes",
+        goal: null,
+      });
+      assert.deepEqual(result.startedGoal, {
+        objective: "Ship the release notes",
+        status: "active",
+      });
+      assert.equal(result.prompts.length, 1);
+      assert.include(result.prompts[0], "Ship the release notes");
+      assert.include(result.prompts[0], "GOAL COMPLETE");
+      assert.notInclude(result.prompts[0], "/goal");
+      // The agent stopped without reporting completion, so the goal waits for /goal resume.
+      assert.equal(result.settledGoal?.status, "paused");
+      assert.equal(result.settledGoal?.tokensUsed, 1540);
+      assert.isNumber(result.settledGoal?.timeUsedSeconds);
+      assert.equal(result.terminalStatus, "completed");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("completes the goal when the agent ends on the completion line", () =>
+    Effect.gen(function* () {
+      const result = yield* runGoalTurn({
+        name: "complete",
+        messageText: "/goal Ship the release notes",
+        goal: null,
+        responseText: "Release notes shipped.\n\n**GOAL COMPLETE**",
+      });
+      assert.equal(result.startedGoal?.status, "active");
+      assert.equal(result.settledGoal?.status, "complete");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("/goal clear removes the goal without prompting the agent", () =>
+    Effect.gen(function* () {
+      const result = yield* runGoalTurn({
+        name: "clear",
+        messageText: "/goal clear",
+        goal: { objective: "Ship the release notes", status: "paused", tokensUsed: 900 },
+      });
+      assert.isNull(result.settledGoal);
+      assert.equal(result.reply, "Goal cleared.");
+      assert.deepEqual(result.prompts, []);
+      assert.equal(result.terminalStatus, "completed");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("/goal resume reactivates a paused goal and keeps its accounting", () =>
+    Effect.gen(function* () {
+      const result = yield* runGoalTurn({
+        name: "resume",
+        messageText: "/goal resume",
+        goal: {
+          objective: "Ship the release notes",
+          status: "paused",
+          tokensUsed: 900,
+          timeUsedSeconds: 120,
+        },
+      });
+      assert.equal(result.startedGoal?.status, "active");
+      assert.equal(result.prompts.length, 1);
+      assert.include(result.prompts[0], "Continue working toward this goal:");
+      assert.include(result.prompts[0], "Ship the release notes");
+      assert.equal(result.settledGoal?.status, "paused");
+      assert.equal(result.settledGoal?.tokensUsed, 900 + 1540);
+      assert.isAtLeast(result.settledGoal?.timeUsedSeconds ?? 0, 120);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("/goal status reports the goal as assistant text and leaves it unchanged", () =>
+    Effect.gen(function* () {
+      const goal = { objective: "Ship the release notes", status: "paused" } as const;
+      const result = yield* runGoalTurn({ name: "status", messageText: "/goal status", goal });
+      assert.equal(result.reply, "Goal paused: Ship the release notes");
+      assert.deepEqual(result.settledGoal, goal);
+      assert.deepEqual(result.prompts, []);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("/goal pause with no goal says so", () =>
+    Effect.gen(function* () {
+      const result = yield* runGoalTurn({ name: "pause", messageText: "/goal pause", goal: null });
+      assert.equal(result.reply, "No goal is set.");
+      assert.isNull(result.settledGoal);
+      assert.deepEqual(result.prompts, []);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
 });
