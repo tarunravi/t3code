@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import type {
-  OrchestrationV2ProviderTurn,
-  OrchestrationV2Run,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
+import {
+  NodeId,
+  ThreadId,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { act } from "react";
@@ -38,10 +41,11 @@ afterEach(async () => {
 });
 type Projection = Pick<
   OrchestrationV2ThreadProjection,
-  "runs" | "attempts" | "providerTurns" | "turnItems"
+  "runs" | "attempts" | "providerTurns" | "turnItems" | "nodes"
 >;
 const completedRun = {
   id: "run:one",
+  threadId: ThreadId.make("thread:one"),
   ordinal: 1,
   status: "completed",
   rootNodeId: "root:one",
@@ -63,19 +67,53 @@ function projectionFor(providerTurn: OrchestrationV2ProviderTurn | null): Projec
       },
     ],
     turnItems: [],
+    nodes: [],
   };
 }
-function streaming(text: string): Projection {
+function streaming(text: string, reasoning = ""): Projection {
+  const assistantNode: OrchestrationV2ExecutionNode = {
+    id: NodeId.make("node:assistant"),
+    threadId: completedRun.threadId,
+    runId: completedRun.id,
+    parentNodeId: completedRun.rootNodeId,
+    rootNodeId: completedRun.rootNodeId!,
+    kind: "assistant_message",
+    status: "running",
+    countsForRun: false,
+    providerThreadId: completedRun.providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    runtimeRequestId: null,
+    checkpointScopeId: null,
+    startedAt: DateTime.makeUnsafe(0),
+    completedAt: null,
+  };
+  const reasoningNode = {
+    ...assistantNode,
+    id: NodeId.make("node:reasoning"),
+    kind: "reasoning" as const,
+  };
   return {
     runs: [{ ...completedRun, status: "running" }],
     attempts: [],
     providerTurns: [],
+    nodes: [
+      assistantNode,
+      reasoningNode,
+      { ...assistantNode, id: assistantNode.rootNodeId, parentNodeId: null, kind: "root_turn" },
+    ],
     turnItems: [
       {
         type: "assistant_message",
         runId: completedRun.id,
-        nodeId: completedRun.rootNodeId,
+        nodeId: assistantNode.id,
         text,
+      } as unknown as OrchestrationV2TurnItem,
+      {
+        type: "reasoning",
+        runId: completedRun.id,
+        nodeId: reasoningNode.id,
+        text: reasoning,
       } as unknown as OrchestrationV2TurnItem,
     ],
   };
@@ -87,7 +125,7 @@ async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
   await renderProjection(projectionFor(providerTurn));
 }
 describe("TokenRateLabel", () => {
-  it("updates a live estimate every second while text streams, then shows the turn average", async () => {
+  it("measures live assistant and reasoning item nodes beneath the root, then shows the turn average", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     try {
@@ -97,7 +135,7 @@ describe("TokenRateLabel", () => {
         "Output token rate unavailable",
       );
       vi.setSystemTime(2000);
-      await renderProjection(streaming("x".repeat(400)));
+      await renderProjection(streaming("x".repeat(200), "y".repeat(200)));
       expect(container.textContent).toBe("~50 tok/s");
       expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
         "estimated from streamed text",
@@ -126,10 +164,28 @@ describe("TokenRateLabel", () => {
           projection: {
             ...parent,
             runs: [{ ...parent.runs[0]!, status: parentStatus }],
+            nodes: [
+              ...parent.nodes,
+              {
+                ...parent.nodes[0]!,
+                id: NodeId.make("node:subagent"),
+                kind: "subagent" as const,
+              },
+              {
+                ...parent.nodes[0]!,
+                id: NodeId.make("node:child-output"),
+                parentNodeId: NodeId.make("node:subagent"),
+              },
+            ],
             turnItems: [
               {
                 ...parent.turnItems[0]!,
                 text: parentText,
+              },
+              {
+                ...parent.turnItems[0]!,
+                nodeId: NodeId.make("node:child-output"),
+                text: childText,
               },
             ],
           },

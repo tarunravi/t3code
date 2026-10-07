@@ -7,6 +7,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -191,7 +192,7 @@ function attempt(overrides: Partial<OrchestrationV2RunAttempt> = {}): Orchestrat
 function projection(
   overrides: Partial<NonNullable<Parameters<typeof latestTokenRateTurn>[0]>> = {},
 ) {
-  return { runs: [run()], attempts: [attempt()], providerTurns: [turn()], ...overrides };
+  return { runs: [run()], attempts: [attempt()], providerTurns: [turn()], nodes: [], ...overrides };
 }
 
 describe("latestTokenRateTurn", () => {
@@ -374,6 +375,28 @@ describe("rollingTokenRate", () => {
 });
 
 describe("liveTokenRateSource", () => {
+  function node(
+    overrides: Partial<OrchestrationV2ExecutionNode> = {},
+  ): OrchestrationV2ExecutionNode {
+    return {
+      id: NodeId.make("node:assistant"),
+      threadId: run().threadId,
+      runId: run().id,
+      parentNodeId: turn().nodeId,
+      rootNodeId: turn().nodeId,
+      kind: "assistant_message",
+      status: "running",
+      countsForRun: false,
+      providerThreadId: turn().providerThreadId,
+      providerTurnId: turn().id,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: DateTime.makeUnsafe(0),
+      completedAt: null,
+      ...overrides,
+    };
+  }
   function item(
     overrides: Partial<{ type: string; runId: string; nodeId: string | null; text: string }>,
   ): OrchestrationV2TurnItem {
@@ -405,6 +428,55 @@ describe("liveTokenRateSource", () => {
       ],
     });
     expect(source).toEqual({ key: "run:two", estimatedTokens: 15 });
+  });
+  it("counts streamed item descendants of run and attempt roots, excluding subagent branches", () => {
+    const reasoning = node({ id: NodeId.make("node:reasoning"), kind: "reasoning" });
+    const assistant = node({ parentNodeId: reasoning.id });
+    const recoveredRoot = NodeId.make("root:recovered");
+    const recovered = node({
+      id: NodeId.make("node:recovered"),
+      parentNodeId: recoveredRoot,
+      rootNodeId: recoveredRoot,
+    });
+    const subagent = node({ id: NodeId.make("node:subagent"), kind: "subagent" });
+    const child = node({ id: NodeId.make("node:child"), parentNodeId: subagent.id });
+    const recoveredAttempt = attempt({
+      id: RunAttemptId.make("attempt:recovered"),
+      attemptOrdinal: 2,
+      rootNodeId: recoveredRoot,
+      status: "running",
+    });
+    const source = liveTokenRateSource({
+      ...projection({
+        runs: [run({ status: "running", activeAttemptId: recoveredAttempt.id })],
+      }),
+      attempts: [attempt(), recoveredAttempt],
+      nodes: [
+        assistant,
+        reasoning,
+        recovered,
+        child,
+        subagent,
+        node({ id: turn().nodeId, parentNodeId: null, kind: "root_turn" }),
+        node({
+          id: recoveredRoot,
+          parentNodeId: null,
+          rootNodeId: recoveredRoot,
+          kind: "root_turn",
+        }),
+      ],
+      turnItems: [
+        item({ nodeId: assistant.id, text: "x".repeat(40) }),
+        item({ nodeId: reasoning.id, type: "reasoning", text: "y".repeat(20) }),
+        item({ nodeId: recovered.id, text: "x".repeat(20) }),
+        item({ nodeId: child.id, text: "z".repeat(400) }),
+        item({ nodeId: subagent.id, type: "reasoning", text: "z".repeat(400) }),
+        item({ nodeId: "node:unknown", text: "z".repeat(400) }),
+        item({ nodeId: null, text: "z".repeat(400) }),
+        item({ runId: "run:old", nodeId: assistant.id, text: "z".repeat(400) }),
+      ],
+    });
+    expect(source).toEqual({ key: "run:one", estimatedTokens: 20 });
   });
   it("is absent when no run is active", () => {
     expect(
