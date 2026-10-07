@@ -219,6 +219,17 @@ const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean =>
     );
   }
 
+  if (provider.driver === ProviderDriverKind.make("omp")) {
+    // omp runs through the ACP Registry discovery but has no sign-in step:
+    // only a probe-backed snapshot (it carries nativeSessions) lists the
+    // complete inventory, while readiness checks still hold the placeholder.
+    return !(
+      provider.installed &&
+      provider.status === "ready" &&
+      provider.nativeSessions !== undefined
+    );
+  }
+
   const isAntigravity = provider.driver === ProviderDriverKind.make("antigravity");
   const isCodex = provider.driver === ProviderDriverKind.make("codex");
   if (!isAntigravity && !isCodex && provider.driver !== ProviderDriverKind.make("opencode")) {
