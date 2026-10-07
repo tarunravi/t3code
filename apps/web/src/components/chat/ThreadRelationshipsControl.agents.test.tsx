@@ -397,7 +397,7 @@ it("keeps a settled agent in current work while a follow-up run is active on its
   expect(text()).toContain("Previous agents (1)");
 });
 
-it("expands and navigates a four-level subagent tree", async () => {
+it("keeps Stop in the child header while expanding and navigating a four-level subagent tree", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const environmentId = EnvironmentId.make("test");
   const threadShell = (
@@ -455,6 +455,7 @@ it("expands and navigates a four-level subagent tree", async () => {
     subagents: [
       {
         id: "root-agent",
+        origin: "app_owned",
         driver: "codex",
         providerInstanceId: "codex",
         childThreadId: "child",
@@ -486,6 +487,24 @@ it("expands and navigates a four-level subagent tree", async () => {
     const button = renderer.root.findByProps({ type: "button", "aria-label": label });
     await act(async () => button.props.onClick());
   };
+  const expectStopInChildHeader = () => {
+    const stop = renderer.root.find(
+      (node) => node.type === "button" && node.props["aria-label"] === "Stop subagent Child agent",
+    );
+    let header = stop.parent;
+    while (
+      header &&
+      !(typeof header.type === "string" && header.props.className?.split(" ").includes("relative"))
+    ) {
+      header = header.parent;
+    }
+    expect(header?.type).toBe("div");
+    expect(header?.props.className.split(" ")).toContain("h-8");
+    expect(header?.findAllByType("ul")).toHaveLength(0);
+    expect(
+      header?.findAllByType("span").some((span) => span.children.includes("Child agent")),
+    ).toBe(true);
+  };
 
   await act(async () => {
     renderer = create(panel);
@@ -498,10 +517,21 @@ it("expands and navigates a four-level subagent tree", async () => {
   expect(text()).not.toContain("Great-grandchild agent");
   expect(text()).not.toContain("Child fork");
   expect(text()).not.toContain("Child transfer");
+  expectStopInChildHeader();
 
   await expand("Show 1 subagent for Grandchild agent");
   expect(text()).toContain("Great-grandchild agent");
   expect(text()).toContain("Running");
+  expectStopInChildHeader();
+  const navigationCount = state.navigate.mock.calls.length;
+  await act(async () =>
+    renderer.root.findByProps({ "aria-label": "Stop subagent Child agent" }).props.onClick(),
+  );
+  expect(state.command).toHaveBeenCalledExactlyOnceWith({
+    environmentId: "test",
+    input: { threadId: "child" },
+  });
+  expect(state.navigate).toHaveBeenCalledTimes(navigationCount);
 
   const greatGrandchild = renderer.root.findByProps({
     type: "button",
