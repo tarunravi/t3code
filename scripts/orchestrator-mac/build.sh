@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds and signs this fork as "T3 Code (Orchestrator)" for macOS.
+# Builds and signs this fork as "T3 Code" for macOS.
 #
 #   scripts/orchestrator-mac/build.sh <output-dir>
 #
@@ -56,7 +56,7 @@ if [[ -z "$flavor" ]]; then
 fi
 
 if [[ "$flavor" == "orchestrator" ]]; then
-  app_name="T3 Code (Orchestrator)"
+  app_name="T3 Code"
   bundle_id="com.t3tools.t3code.orchestrator"
   data_home="${T3_ORCH_HOME:-$HOME/.t3-pr-2829}"
   patch_file="$here/overlay.patch"
