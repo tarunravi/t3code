@@ -59,6 +59,7 @@ vi.mock("../ui/tooltip", () => ({
 }));
 
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { AgentElapsed } from "./AgentElapsed";
 
 let renderer: ReactTestRenderer;
 
