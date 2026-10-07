@@ -80,9 +80,19 @@ export interface AcpRegistryAdapterV2Options {
   >;
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   readonly assertComplete?: Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /** Lets a dedicated driver (omp) run a local ACP command under its own driver kind. */
+  readonly flavorOverrides?: AcpRegistryFlavorOverrides;
 }
 
-// Mistral Vibe's application rate-limit code, outside ACP.
+export type AcpRegistryFlavorOverrides = Partial<
+  Pick<
+    AcpAdapterV2Flavor,
+    "driver" | "runtimeHarness" | "promptTurnTokenUsage" | "tracksGoalsLocally"
+  >
+>;
+
+
+// Mistral Vibe: its application error code for rate limits (not an ACP code).
 const MISTRAL_VIBE_RATE_LIMITED = -31001;
 
 const MistralVibeSessionRetrying = Schema.Struct({
@@ -275,6 +285,7 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
             runtimeCoordinator.withForegroundStartup(startupKey, effect),
         }),
     ...(options.assertComplete === undefined ? {} : { assertComplete: options.assertComplete }),
+    ...options.flavorOverrides,
   };
   return yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
@@ -348,3 +359,35 @@ export const AcpRegistryAdapterV2Driver: ProviderAdapterDriver<
       ),
   ),
 };
+
+/**
+ * Builds an ACP Registry adapter from the environment's services. Dedicated
+ * drivers that launch a local ACP command reuse it with their own driver kind.
+ */
+export const createAcpRegistryAdapterV2 = Effect.fn("createAcpRegistryAdapterV2")(function* (
+  input: Pick<
+    ProviderAdapterDriverCreateInput<AcpRegistrySettings>,
+    "instanceId" | "environment"
+  > & {
+    readonly settings: AcpRegistrySettings;
+    readonly flavorOverrides?: AcpRegistryFlavorOverrides;
+  },
+) {
+  const hostEnvironment = yield* HostProcess.Environment;
+  const selfInvocation = yield* resolveSelfInvocation();
+  const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+  const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
+  return yield* makeAcpRegistryAdapterV2({
+    instanceId: input.instanceId,
+    settings: input.settings,
+    environment: yield* mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
+    selfInvocation,
+    nativeLogging: (threadId) =>
+      makeNativeLogger({
+        nativeEventLogger: providerEventLoggers.native,
+        provider: input.flavorOverrides?.driver ?? ACP_REGISTRY_PROVIDER,
+        threadId,
+      }),
+    ...(input.flavorOverrides === undefined ? {} : { flavorOverrides: input.flavorOverrides }),
+  });
+});
