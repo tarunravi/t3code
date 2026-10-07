@@ -2252,6 +2252,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   setModel: () => Effect.void,
                   setPermissionMode: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: (taskId: string) =>
+                    Effect.sync(() => {
+                      stoppedTaskIds.push(taskId);
+                    }),
                   close: Queue.shutdown(processMessages),
                 };
               }
