@@ -1,11 +1,16 @@
 import { AcpRegistryOperationError, ProviderInstanceId } from "@t3tools/contracts";
 import { AcpRegistrySettings } from "../settings.ts";
+import { OmpSettings } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
+import {
+  OMP_DRIVER_KIND,
+  ompAcpRegistrySettings,
+} from "../../../../apps/server/src/provider/acp/OmpAcpSupport.ts";
 import {
   acpRegistrySnapshotReadiness,
   applyAcpRegistryAvailableCommands,
@@ -16,6 +21,7 @@ import {
 } from "./driver.ts";
 
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
+const decodeOmpSettings = Schema.decodeSync(OmpSettings);
 const identity = {
   instanceId: ProviderInstanceId.make("acpRegistry_test"),
   displayName: "Test ACP",
@@ -320,6 +326,52 @@ describe("acpRegistrySnapshotReadiness", () => {
 
     expect(snapshot.models.map((model) => model.slug)).toEqual(["default"]);
     expect(snapshot.models[0]?.isDefault).toBe(true);
+  });
+
+  it("publishes a dedicated driver's kind, text generation, and discovered models", () => {
+    const snapshot = buildCheckedAcpRegistrySnapshot({
+      ...identity,
+      driverKind: OMP_DRIVER_KIND,
+      supportsTextGeneration: true,
+      settings: ompAcpRegistrySettings(decodeOmpSettings({})),
+      checkedAt: "2026-10-07T10:00:00.000Z",
+      inspection: { status: "ready", agentId: "", version: null, distribution: "local" },
+      probe: {
+        probe: {
+          instanceId: identity.instanceId,
+          ready: true,
+          icon: null,
+          authMethods: [],
+          models: [
+            {
+              id: "sparks/sparks/GLM-5.3-Flash-EXL3",
+              name: "GLM-5.3-Flash (sparks)",
+              description: null,
+            },
+            {
+              id: "sparksdirect/GLM-5.3-Flash-EXL3",
+              name: "GLM-5.3-Flash (sparksdirect)",
+              description: null,
+            },
+          ],
+          currentModelId: "sparksdirect/GLM-5.3-Flash-EXL3",
+          configOptions: [],
+          sessionManagement: noSessionManagement,
+        },
+        slashCommands: [],
+        skills: [],
+      },
+    });
+
+    expect(snapshot).toMatchObject({
+      driver: "omp",
+      supportsTextGeneration: true,
+      status: "ready",
+    });
+    expect(snapshot.models.map((model) => [model.slug, model.isDefault === true])).toEqual([
+      ["sparks/sparks/GLM-5.3-Flash-EXL3", false],
+      ["sparksdirect/GLM-5.3-Flash-EXL3", true],
+    ]);
   });
 
   it.each(["registry", "local"] as const)(
