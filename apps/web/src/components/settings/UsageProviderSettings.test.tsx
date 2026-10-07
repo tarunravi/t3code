@@ -20,7 +20,10 @@ vi.mock("../../state/server", () => ({
   serverEnvironment: { configValueAtom: () => "config" },
 }));
 vi.mock("../../state/presentation", () => ({ environmentPresentations: {} }));
-vi.mock("../../state/session", () => ({ environmentSession: {} }));
+vi.mock("../../state/session", () => ({
+  environmentSession: {},
+  readEnvironmentScope: () => true,
+}));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.write }));
 vi.mock("../../state/usage", () => ({ useUsage: state.useUsage }));
 vi.mock("../../hooks/useSettings", () => ({ useUpdateEnvironmentSettings: () => vi.fn() }));
@@ -55,6 +58,7 @@ const usage = [
     label: "ZCode device",
     error: null,
     isPending: false,
+    canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
     summary: {
       contractVersion: USAGE_CONTRACT_VERSION,
