@@ -7,7 +7,7 @@ index ddef3ca9eb..492ecfe28e 100644
      "vite-plus": "catalog:"
    },
 -  "productName": "T3 Code (Alpha)"
-+  "productName": "T3 Code"
++  "productName": "T3Code"
  }
 diff --git a/apps/desktop/src/app/DesktopAppIdentity.test.ts b/apps/desktop/src/app/DesktopAppIdentity.test.ts
 index 2afa963faf..932ce4e431 100644
@@ -55,7 +55,7 @@ index 6a8bc8e0ea..72aeb031ef 100644
      baseName: APP_BASE_NAME,
      stageLabel,
 -    displayName: `${APP_BASE_NAME} (${stageLabel})`,
-+    displayName: stageLabel === "Alpha" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
++    displayName: stageLabel === "Alpha" ? "T3Code" : `${APP_BASE_NAME} (${stageLabel})`,
    };
  }
  
