@@ -111,6 +111,86 @@ const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpToolCallDiffPatch", () => {
+  it.live("records prompt-result usage as the turn's token usage when the flavor maps it", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const instanceId = ProviderInstanceId.make("acp-prompt-usage");
+      const threadId = ThreadId.make("thread-acp-prompt-usage");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ProviderDriverKind.make("omp"),
+          capabilities: AcpProviderCapabilitiesV2,
+          promptTurnTokenUsage: ({ usage, status, hasSubagents }) => ({
+            usageScope: "main_agent",
+            usageStatus: status === "completed" ? "complete" : "partial",
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            hasSubagents,
+          }),
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            environment: {
+              T3_ACP_PROMPT_USAGE_JSON: JSON.stringify({
+                inputTokens: 1200,
+                outputTokens: 340,
+                totalTokens: 1540,
+              }),
+            },
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-prompt-usage"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      const settled = events.findLast(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status !== "running",
+      );
+      if (settled?.type !== "provider_turn.updated") return yield* Effect.die("Missing turn");
+      assert.equal(settled.providerTurn.status, "completed");
+      assert.deepEqual(settled.providerTurn.turnTokenUsage, {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        inputTokens: 1200,
+        outputTokens: 340,
+        hasSubagents: false,
+      });
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+
   it("builds a patch per file from ACP v1 oldText/newText, with /dev/null for a new file", () => {
     assert.equal(
       acpToolCallDiffPatch([
