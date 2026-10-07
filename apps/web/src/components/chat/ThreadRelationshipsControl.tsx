@@ -48,6 +48,7 @@ import {
   ArrowRightIcon,
   BotIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CornerLeftUpIcon,
   GitForkIcon,
   MessagesSquareIcon,
@@ -64,7 +65,7 @@ import {
   useProjects,
   useQuietThreadShell,
   useThreadProjection,
-  useThreadRelationshipShells,
+  useThreadRelationshipTreeShells,
   useHiddenThreadKeys,
   useAnyEnvironmentHiding,
 } from "../../state/entities";
@@ -111,12 +112,13 @@ function ThreadLineageRowList(props: {
   readonly hiddenCount: number;
   readonly onShowMore: () => void;
   readonly children: ReactNode;
+  readonly ariaLabel?: string;
 }) {
   return (
     <>
       {/* ScrollArea's max-height viewport measures badly inside this scrolling panel. */}
       <ul
-        aria-label="Related threads"
+        aria-label={props.ariaLabel ?? "Related threads"}
         className="m-0 max-h-[13.5rem] list-none overflow-y-auto overscroll-contain p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
       >
         {props.children}
@@ -130,6 +132,171 @@ function ThreadLineageRowList(props: {
           <PlusIcon aria-hidden className="size-4 shrink-0" />
           Show {Math.min(props.hiddenCount, THREAD_LINEAGE_PAGE_COUNT)} more
         </button>
+      ) : null}
+    </>
+  );
+}
+
+function outgoingSubagentRows(
+  rowsBySourceThreadId: ReadonlyMap<ThreadId, ReadonlyArray<ThreadRelationshipWalkRow>>,
+  threadId: ThreadId,
+  ancestorThreadIds: ReadonlySet<ThreadId>,
+): ReadonlyArray<ThreadRelationshipWalkRow> {
+  return (rowsBySourceThreadId.get(threadId) ?? []).filter(
+    ({ threadId: relatedThreadId }) =>
+      relatedThreadId !== threadId && !ancestorThreadIds.has(relatedThreadId),
+  );
+}
+
+function indexOutgoingSubagentRows(
+  graph: ReturnType<typeof deriveThreadRelationshipGraph>,
+): ReadonlyMap<ThreadId, ReadonlyArray<ThreadRelationshipWalkRow>> {
+  const rowsBySourceThreadId = new Map<ThreadId, Array<ThreadRelationshipWalkRow>>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== "subagent") continue;
+    const rows = rowsBySourceThreadId.get(edge.sourceThreadId) ?? [];
+    rows.push({
+      threadId: edge.targetThreadId,
+      fromThreadId: edge.sourceThreadId,
+      depth: 1,
+      edge,
+    });
+    rowsBySourceThreadId.set(edge.sourceThreadId, rows);
+  }
+  return new Map(
+    [...rowsBySourceThreadId].map(([threadId, rows]) => [
+      threadId,
+      orderWebThreadLineageRows({
+        graph,
+        rows,
+        currentThreadId: threadId,
+        mergeTargetThreadId: null,
+      }),
+    ]),
+  );
+}
+
+function ThreadSubagentTreeRow(props: {
+  readonly graph: ReturnType<typeof deriveThreadRelationshipGraph>;
+  readonly rowsBySourceThreadId: ReadonlyMap<ThreadId, ReadonlyArray<ThreadRelationshipWalkRow>>;
+  readonly row: ThreadRelationshipWalkRow;
+  readonly ancestorThreadIds: ReadonlySet<ThreadId>;
+  readonly onOpenThread: (threadId: ThreadId) => void;
+}) {
+  const node = props.graph.nodes.get(props.row.threadId);
+  const title = relationshipThreadTitle({
+    title: node?.thread?.title ?? props.row.threadId,
+    isSubagent: true,
+  });
+  const status = threadRelationshipRowStatus(props.graph, props.row);
+  const relationshipContent = (
+    <>
+      <ThreadRelationshipIcon fallbackIcon={BotIcon} status={status} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
+          {title}
+        </span>
+      </span>
+      <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+      <span className="shrink-0 text-2xs text-muted-foreground">
+        {threadRelationshipStatusLabel(status)}
+      </span>
+    </>
+  );
+
+  return (
+    <li className="group flex flex-col rounded-lg">
+      <ThreadSubagentTreeDisclosure
+        graph={props.graph}
+        rowsBySourceThreadId={props.rowsBySourceThreadId}
+        threadId={props.row.threadId}
+        threadTitle={title}
+        ancestorThreadIds={props.ancestorThreadIds}
+        onOpenThread={props.onOpenThread}
+      >
+        <Tooltip>
+          <TooltipTrigger
+            delay={200}
+            render={
+              <ThreadDetailsControl
+                size="sm"
+                variant="ghost"
+                disabled={node?.missing === true}
+                onClick={() => props.onOpenThread(props.row.threadId)}
+                aria-label={`Open ${title} in this chat`}
+                part="row"
+              />
+            }
+          >
+            {relationshipContent}
+          </TooltipTrigger>
+          <TooltipPopup side="left">
+            {node?.missing ? "This related thread is unavailable" : "Open subagent in this chat"}
+          </TooltipPopup>
+        </Tooltip>
+      </ThreadSubagentTreeDisclosure>
+    </li>
+  );
+}
+
+function ThreadSubagentTreeDisclosure(props: {
+  readonly graph: ReturnType<typeof deriveThreadRelationshipGraph>;
+  readonly rowsBySourceThreadId: ReadonlyMap<ThreadId, ReadonlyArray<ThreadRelationshipWalkRow>>;
+  readonly threadId: ThreadId;
+  readonly threadTitle: string;
+  readonly ancestorThreadIds: ReadonlySet<ThreadId>;
+  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(THREAD_LINEAGE_INITIAL_COUNT);
+  const rows = outgoingSubagentRows(
+    props.rowsBySourceThreadId,
+    props.threadId,
+    props.ancestorThreadIds,
+  );
+  const { visibleRows, hiddenCount } = resolveThreadLineageWindow(rows, visibleCount);
+
+  return (
+    <>
+      <div className="flex h-8 min-w-0 items-center rounded-lg">
+        <div className="min-w-0 flex-1">{props.children}</div>
+        {rows.length > 0 ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Hide" : "Show"} ${rows.length} subagent${rows.length === 1 ? "" : "s"} for ${props.threadTitle}`}
+            onClick={() => setExpanded((value) => !value)}
+            className="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-black/[0.055] hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70 dark:hover:bg-white/[0.075]"
+          >
+            <span aria-hidden="true">{rows.length}</span>
+            {expanded ? (
+              <ChevronDownIcon aria-hidden className="size-3.5" />
+            ) : (
+              <ChevronRightIcon aria-hidden className="size-3.5" />
+            )}
+          </button>
+        ) : null}
+      </div>
+      {expanded && rows.length > 0 ? (
+        <div className="ms-4 border-s border-border/50 ps-1.5">
+          <ThreadLineageRowList
+            ariaLabel={`Subagents of ${props.threadTitle}`}
+            hiddenCount={hiddenCount}
+            onShowMore={() => setVisibleCount((count) => count + THREAD_LINEAGE_PAGE_COUNT)}
+          >
+            {visibleRows.map((row) => (
+              <ThreadSubagentTreeRow
+                key={row.threadId}
+                graph={props.graph}
+                rowsBySourceThreadId={props.rowsBySourceThreadId}
+                row={row}
+                ancestorThreadIds={new Set([...props.ancestorThreadIds, props.threadId])}
+                onOpenThread={props.onOpenThread}
+              />
+            ))}
+          </ThreadLineageRowList>
+        </div>
       ) : null}
     </>
   );
@@ -388,7 +555,7 @@ export function ThreadRelationshipsPanel(props: {
   const projection = useThreadProjection(ref)?.projection ?? null;
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
-  const relationshipShells = useThreadRelationshipShells(ref);
+  const relationshipShells = useThreadRelationshipTreeShells(ref);
   const hiddenKeys = useHiddenThreadKeys();
   const hidingAnywhere = useAnyEnvironmentHiding();
   const allProjects = useProjects();
@@ -469,6 +636,7 @@ export function ThreadRelationshipsPanel(props: {
     ...(archivedShells ?? []),
   ];
   const graph = deriveThreadRelationshipGraph({ threads: shells, projection });
+  const rowsBySourceThreadId = indexOutgoingSubagentRows(graph);
   const isHiddenRelation = (threadId: ThreadId) =>
     hiddenKeys.has(threadKey({ environmentId: props.environmentId, threadId }));
   // While hiding, an unloaded parent, fork or transfer may be hidden; unloaded subagent
@@ -794,8 +962,8 @@ export function ThreadRelationshipsPanel(props: {
         />
       );
     }
-    return (
-      <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
+    const header = (
+      <div className="group relative flex h-8 w-full items-center rounded-lg">
         {isMergeTarget ? (
           <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
             <Tooltip>
@@ -880,6 +1048,26 @@ export function ThreadRelationshipsPanel(props: {
             </Tooltip>
           </div>
         ) : null}
+      </div>
+    );
+    const nested =
+      isSubagent && !isParent && !isMergeTarget && edge.sourceThreadId === props.threadId;
+    return (
+      <li key={threadId} className="flex flex-col rounded-lg">
+        {nested ? (
+          <ThreadSubagentTreeDisclosure
+            graph={graph}
+            rowsBySourceThreadId={rowsBySourceThreadId}
+            threadId={threadId}
+            threadTitle={threadTitle}
+            ancestorThreadIds={new Set([props.threadId, threadId])}
+            onOpenThread={openThread}
+          >
+            {header}
+          </ThreadSubagentTreeDisclosure>
+        ) : (
+          header
+        )}
       </li>
     );
   };
