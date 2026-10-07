@@ -92,6 +92,49 @@ describe("reopenClosedView", () => {
     ).toEqual([]);
   });
 
+  it("restores side-chat tabs with their existing side thread", async () => {
+    const sideThreadId = "side-thread" as ScopedThreadRef["threadId"];
+    const reopened = await reopenClosedView(
+      {
+        kind: "panel-tab",
+        threadRef,
+        surface: { kind: "side-chat", id: "side-chat", threadId: sideThreadId },
+      },
+      { openPreview: vi.fn(), workspaceAvailable: true },
+    );
+
+    expect(reopened).toBe(true);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({
+      isOpen: true,
+      surfaces: [{ kind: "side-chat", id: "side-chat", threadId: sideThreadId }],
+    });
+  });
+
+  it("restores background-task tabs with their existing task", async () => {
+    const reopened = await reopenClosedView(
+      {
+        kind: "panel-tab",
+        threadRef,
+        surface: {
+          kind: "background-task",
+          id: "background-task:task-1",
+          taskId: "task-1",
+        },
+      },
+      { openPreview: vi.fn(), workspaceAvailable: true },
+    );
+
+    expect(reopened).toBe(true);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({
+      isOpen: true,
+      surfaces: [{ kind: "background-task", id: "background-task:task-1", taskId: "task-1" }],
+    });
+  });
+
   it("recreates a browser tab with saved URL, viewport and profile, then selects its new ID", async () => {
     const openPreview = vi.fn(async () => AsyncResult.success({ ...snapshot, tabId: "new-tab" }));
     const result = await reopenClosedView(
