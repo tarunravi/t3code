@@ -25,6 +25,9 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitV2Fidelity = process.env.T3_ACP_EMIT_V2_FIDELITY === "1";
 const vibeRetryOutcome = process.env.T3_ACP_VIBE_RETRY_OUTCOME;
+const promptUsage: AcpSchema.Usage | undefined = process.env.T3_ACP_PROMPT_USAGE_JSON
+  ? JSON.parse(process.env.T3_ACP_PROMPT_USAGE_JSON)
+  : undefined;
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitPostSettleMonitorFlow = process.env.T3_ACP_EMIT_POST_SETTLE_MONITOR_FLOW === "1";
 const emitInTurnTaskOutputThenLateDuplicate =
@@ -469,6 +472,7 @@ const program = Effect.gen(function* () {
           sessionUpdate: "state_update",
           state: "idle",
           stopReason,
+          ...(promptUsage === undefined ? {} : { usage: promptUsage }),
           ...(_meta === undefined ? {} : { _meta }),
         },
       })
