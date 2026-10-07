@@ -1,5 +1,6 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useTokenRate } from "../../hooks/useTokenRate";
+import { useMemo } from "react";
+import { useTokenRateSources, type TokenRateProjectionSource } from "../../hooks/useTokenRate";
 import {
   LIVE_TOKEN_RATE_EXPLANATION,
   latestTokenRateTurn,
@@ -12,16 +13,25 @@ import { cn } from "~/lib/utils";
  * Live estimated output speed while a run streams; completed-turn average when idle.
  */
 export function TokenRateLabel(props: {
-  readonly projection:
+  readonly projection?:
     | Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns" | "turnItems">
     | null
     | undefined;
+  readonly sources?: readonly TokenRateProjectionSource[] | undefined;
   readonly className?: string | undefined;
 }) {
-  const { live, text } = useTokenRate(props.projection);
+  const singleSource = useMemo(
+    () => [{ key: "thread", projection: props.projection }],
+    [props.projection],
+  );
+  const sources = props.sources ?? singleSource;
+  const { live, text } = useTokenRateSources(sources);
+  const rootProjection = sources[0]?.projection;
   const explanation = live
-    ? LIVE_TOKEN_RATE_EXPLANATION
-    : tokenRateExplanation(latestTokenRateTurn(props.projection));
+    ? props.sources === undefined
+      ? LIVE_TOKEN_RATE_EXPLANATION
+      : "Live estimated output speed summed across this thread and its delegated agents."
+    : tokenRateExplanation(latestTokenRateTurn(rootProjection));
   return (
     <Tooltip>
       <TooltipTrigger

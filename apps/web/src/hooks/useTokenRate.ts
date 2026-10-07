@@ -1,5 +1,5 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   appendTokenRateSample,
   completedTurnTokenRate,
@@ -18,6 +18,11 @@ type Projection = Pick<
   "runs" | "attempts" | "providerTurns" | "turnItems"
 >;
 
+export interface TokenRateProjectionSource {
+  readonly key: string;
+  readonly projection: Projection | null | undefined;
+}
+
 /**
  * Live rolling estimate while a run is active; otherwise the latest completed-turn
  * average. Samples are keyed by run so history never leaks into the next run.
@@ -27,39 +32,66 @@ export function useTokenRate(projection: Projection | null | undefined): {
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const source = liveTokenRateSource(projection);
-  const sourceKey = source?.key ?? null;
-  const estimatedTokens = source?.estimatedTokens ?? null;
-  const [history, setHistory] = useState<{
-    readonly key: string | null;
-    readonly samples: readonly TokenRateSample[];
-  }>({ key: null, samples: [] });
+  const sources = useMemo(() => [{ key: "thread", projection }], [projection]);
+  return useTokenRateSources(sources);
+}
+
+export function useTokenRateSources(sources: readonly TokenRateProjectionSource[]): {
+  readonly live: boolean;
+  readonly rate: number | null;
+  readonly text: string | null;
+} {
+  const liveSources = useMemo(() => {
+    const seen = new Set<string>();
+    return sources.flatMap(({ key, projection }) => {
+      if (seen.has(key)) return [];
+      seen.add(key);
+      const source = liveTokenRateSource(projection);
+      return source === null
+        ? []
+        : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+    });
+  }, [sources]);
+  const [history, setHistory] = useState<ReadonlyMap<string, readonly TokenRateSample[]>>(
+    () => new Map(),
+  );
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
-    if (sourceKey === null || estimatedTokens === null) return;
+    if (liveSources.length === 0) return;
     const atMs = Date.now();
     setNowMs(atMs);
-    setHistory((previous) => ({
-      key: sourceKey,
-      samples: appendTokenRateSample(previous.key === sourceKey ? previous.samples : [], {
-        tokens: estimatedTokens,
-        atMs,
-      }),
-    }));
-  }, [sourceKey, estimatedTokens]);
+    setHistory((previous) => {
+      const next = new Map<string, readonly TokenRateSample[]>();
+      for (const source of liveSources) {
+        next.set(
+          source.key,
+          appendTokenRateSample(previous.get(source.key) ?? [], {
+            tokens: source.estimatedTokens,
+            atMs,
+          }),
+        );
+      }
+      return next;
+    });
+  }, [liveSources]);
 
   useEffect(() => {
-    if (sourceKey === null) return;
+    if (liveSources.length === 0) return;
     const id = setInterval(() => setNowMs(Date.now()), LIVE_REFRESH_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [sourceKey]);
+  }, [liveSources]);
 
-  if (sourceKey !== null) {
-    const samples = history.key === sourceKey ? history.samples : [];
-    const rate = rollingTokenRate(samples, nowMs);
+  if (liveSources.length > 0) {
+    const rates = liveSources.map((source) =>
+      rollingTokenRate(history.get(source.key) ?? [], nowMs),
+    );
+    const availableRates = rates.filter((rate): rate is number => rate !== null);
+    const rate =
+      availableRates.length === 0 ? null : availableRates.reduce((sum, value) => sum + value, 0);
     return { live: true, rate, text: formatLiveTokenRate(rate) };
   }
-  const rate = completedTurnTokenRate(latestTokenRateTurn(projection));
+  const rootProjection = sources[0]?.projection;
+  const rate = completedTurnTokenRate(latestTokenRateTurn(rootProjection));
   return { live: false, rate, text: formatTokenRate(rate) };
 }
