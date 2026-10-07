@@ -75,7 +75,13 @@ export interface AcpRegistryAdapterV2Options {
     Crypto.Crypto | Scope.Scope
   >;
   readonly assertComplete?: Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /** Lets a dedicated driver (omp) run a local ACP command under its own driver kind. */
+  readonly flavorOverrides?: AcpRegistryFlavorOverrides;
 }
+
+export type AcpRegistryFlavorOverrides = Partial<
+  Pick<AcpAdapterV2Flavor, "driver" | "runtimeHarness" | "promptTurnTokenUsage">
+>;
 
 // ─── Per-agent exceptions ────────────────────────────────────────────────────
 // This adapter serves every ACP registry agent through the plain ACP spec.
@@ -236,6 +242,7 @@ export function makeAcpRegistryAdapterV2(options: AcpRegistryAdapterV2Options) {
             runtimeCoordinator.withForegroundStartup(startupKey, effect),
         }),
     ...(options.assertComplete === undefined ? {} : { assertComplete: options.assertComplete }),
+    ...options.flavorOverrides,
   };
   return makeAcpAdapterV2({
     instanceId: options.instanceId,
@@ -279,42 +286,12 @@ export const AcpRegistryAdapterV2Driver: ProviderAdapterDriver<
   configSchema: AcpRegistrySettings,
   defaultConfig: (): AcpRegistrySettings => DEFAULT_ACP_REGISTRY_SETTINGS,
   create: Effect.fn("AcpRegistryAdapterV2Driver.create")(
-    function* (input: ProviderAdapterDriverCreateInput<AcpRegistrySettings>) {
-      const hostEnvironment = yield* HostProcessEnvironment;
-      const selfInvocation = yield* resolveSelfInvocation();
-      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const crypto = yield* Crypto.Crypto;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const idAllocator = yield* IdAllocator.IdAllocatorV2;
-      const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
-      const serverConfig = yield* ServerConfig.ServerConfig;
-      const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
-      const resolver = yield* AcpRegistrySupport.AcpRegistryCatalog;
-      const runtimeCoordinator = yield* Effect.serviceOption(
-        AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
-      );
-      return makeAcpRegistryAdapterV2({
+    (input: ProviderAdapterDriverCreateInput<AcpRegistrySettings>) =>
+      createAcpRegistryAdapterV2({
         instanceId: input.instanceId,
+        environment: input.environment,
         settings: { ...input.config, enabled: input.enabled },
-        environment: mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
-        childProcessSpawner,
-        crypto,
-        fileSystem,
-        idAllocator,
-        resolver,
-        ...(Option.isSome(runtimeCoordinator)
-          ? { runtimeCoordinator: runtimeCoordinator.value }
-          : {}),
-        serverConfig,
-        selfInvocation,
-        nativeLogging: (threadId) =>
-          makeNativeLogger({
-            nativeEventLogger: providerEventLoggers.native,
-            provider: ACP_REGISTRY_PROVIDER,
-            threadId,
-          }),
-      });
-    },
+      }),
     (effect, input) =>
       effect.pipe(
         Effect.mapError(
@@ -329,3 +306,51 @@ export const AcpRegistryAdapterV2Driver: ProviderAdapterDriver<
       ),
   ),
 };
+
+/**
+ * Builds an ACP Registry adapter from the environment's services. Dedicated
+ * drivers that launch a local ACP command reuse it with their own driver kind.
+ */
+export const createAcpRegistryAdapterV2 = Effect.fn("createAcpRegistryAdapterV2")(function* (
+  input: Pick<
+    ProviderAdapterDriverCreateInput<AcpRegistrySettings>,
+    "instanceId" | "environment"
+  > & {
+    readonly settings: AcpRegistrySettings;
+    readonly flavorOverrides?: AcpRegistryFlavorOverrides;
+  },
+) {
+  const hostEnvironment = yield* HostProcessEnvironment;
+  const selfInvocation = yield* resolveSelfInvocation();
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const idAllocator = yield* IdAllocator.IdAllocatorV2;
+  const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
+  const resolver = yield* AcpRegistrySupport.AcpRegistryCatalog;
+  const runtimeCoordinator = yield* Effect.serviceOption(
+    AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
+  );
+  return makeAcpRegistryAdapterV2({
+    instanceId: input.instanceId,
+    settings: input.settings,
+    environment: mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
+    childProcessSpawner,
+    crypto,
+    fileSystem,
+    idAllocator,
+    resolver,
+    ...(Option.isSome(runtimeCoordinator) ? { runtimeCoordinator: runtimeCoordinator.value } : {}),
+    serverConfig,
+    selfInvocation,
+    nativeLogging: (threadId) =>
+      makeNativeLogger({
+        nativeEventLogger: providerEventLoggers.native,
+        provider: input.flavorOverrides?.driver ?? ACP_REGISTRY_PROVIDER,
+        threadId,
+      }),
+    ...(input.flavorOverrides === undefined ? {} : { flavorOverrides: input.flavorOverrides }),
+  });
+});
