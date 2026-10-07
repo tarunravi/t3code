@@ -915,6 +915,39 @@ export const ZCodeSettings = makeProviderSettingsSchema(
 );
 export type ZCodeSettings = typeof ZCodeSettings.Type;
 
+export const OmpSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("omp").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the oh-my-pi CLI. T3 Code runs it as `omp acp`.",
+        providerSettingsForm: { placeholder: "omp", clearWhenEmpty: "omit" },
+      }),
+    ),
+    launchArgs: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description:
+          "Additional arguments passed after `omp acp`, for example --model provider/id --thinking high.",
+        providerSettingsForm: { clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "launchArgs"],
+  },
+);
+export type OmpSettings = typeof OmpSettings.Type;
+
 export const AcpRegistryDistributionPreference = Schema.Literals(["auto", "binary", "npx", "uvx"]);
 export type AcpRegistryDistributionPreference = typeof AcpRegistryDistributionPreference.Type;
 
