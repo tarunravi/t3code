@@ -105,18 +105,23 @@ describe("divergent migration history", () => {
         const columns = yield* sql<{
           readonly name: string;
         }>`PRAGMA table_info(projection_threads)`;
-        const tables = yield* sql`
-          SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pull_request_files_viewed'
+        const tables = yield* sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+            ('pull_request_files_viewed', 'mcp_app_model_context')
         `;
         return {
           autoSettleDisabledAt: columns.some((column) => column.name === "auto_settle_disabled_at"),
-          pullRequestFilesViewed: tables.length === 1,
+          pullRequestFilesViewed: tables.some(
+            (table) => table.name === "pull_request_files_viewed",
+          ),
+          mcpAppModelContext: tables.some((table) => table.name === "mcp_app_model_context"),
           webhooks: yield* hasWebhookSchema,
         };
       });
       assert.deepStrictEqual(yield* hasSchema, {
         autoSettleDisabledAt: false,
         pullRequestFilesViewed: false,
+        mcpAppModelContext: false,
         webhooks: false,
       });
 
@@ -125,6 +130,7 @@ describe("divergent migration history", () => {
       assert.deepStrictEqual(yield* hasSchema, {
         autoSettleDisabledAt: true,
         pullRequestFilesViewed: true,
+        mcpAppModelContext: true,
         webhooks: true,
       });
 

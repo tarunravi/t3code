@@ -152,7 +152,7 @@ export const migrationEntries = [
 
 // Safe to replay over the recognized legacy schema: every change is guarded by a
 // schema check, IF NOT EXISTS, or IF EXISTS, and none backfills rows.
-const replayableMigrationIds: ReadonlySet<number> = new Set([33, 51, 53, 54, 56, 57, 58]);
+const replayableMigrationIds: ReadonlySet<number> = new Set([33, 51, 53, 54, 56, 57, 58, 59]);
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
