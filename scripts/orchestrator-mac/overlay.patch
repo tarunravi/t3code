@@ -7,7 +7,7 @@ index ddef3ca9eb..492ecfe28e 100644
      "vite-plus": "catalog:"
    },
 -  "productName": "T3 Code (Alpha)"
-+  "productName": "T3 Code (Orchestrator)"
++  "productName": "T3 Code"
  }
 diff --git a/apps/desktop/src/app/DesktopAppIdentity.test.ts b/apps/desktop/src/app/DesktopAppIdentity.test.ts
 index 2afa963faf..932ce4e431 100644
@@ -28,8 +28,8 @@ index 2afa963faf..932ce4e431 100644
  
 -        assert.deepEqual(calls.setName, ["T3 Code (Alpha)"]);
 -        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Alpha)");
-+        assert.deepEqual(calls.setName, ["T3 Code (Orchestrator)"]);
-+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Orchestrator)");
++        assert.deepEqual(calls.setName, ["T3 Code"]);
++        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code");
          assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
          assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
          // Packaged: the bundle's own icon stands, so a custom one the user
@@ -55,7 +55,7 @@ index 6a8bc8e0ea..72aeb031ef 100644
      baseName: APP_BASE_NAME,
      stageLabel,
 -    displayName: `${APP_BASE_NAME} (${stageLabel})`,
-+    displayName: `${APP_BASE_NAME} (${stageLabel === "Alpha" ? "Orchestrator" : stageLabel})`,
++    displayName: stageLabel === "Alpha" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
    };
  }
  
@@ -88,7 +88,7 @@ index a2d4483e6d..94d763be51 100644
          assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
          assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
 -        assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Alpha)");
-+        assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Orchestrator)");
++        assert.include(identity.desktopEntry ?? "", "Name=T3 Code");
          assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
          assert.include(
            identity.desktopEntry ?? "",
@@ -139,7 +139,7 @@ index 38417a2e4f..bbde5d0470 100644
  
    it("switches desktop packaging product names to nightly for nightly builds", () => {
 -    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
-+    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Orchestrator)");
++    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code");
      assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
    });
  
@@ -148,7 +148,7 @@ index 38417a2e4f..bbde5d0470 100644
        ]);
        assert.deepStrictEqual(mac.dmg, {
 -        title: "T3 Code (Alpha) 1.2.3 Installer",
-+        title: "T3 Code (Orchestrator) 1.2.3 Installer",
++        title: "T3 Code 1.2.3 Installer",
          background: "dmg/dmg-background-latest.png",
          window: { width: 640, height: 432 },
          contents: [

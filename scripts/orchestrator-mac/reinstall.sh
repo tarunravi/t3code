@@ -1,5 +1,5 @@
 #!/bin/bash
-# Replaces the installed T3 Code (Orchestrator) with a freshly built app, from
+# Replaces the installed T3 Code with a freshly built app, from
 # inside T3 itself. Quitting T3 kills every agent in it, so the swap runs as a
 # one-shot launchd job outside T3's process tree.
 #
@@ -22,9 +22,12 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-app_name="T3 Code (Orchestrator)"
+app_name="T3 Code"
+legacy_app_name="T3 Code (Orchestrator)"
 bundle_id="com.t3tools.t3code.orchestrator"
 installed="/Applications/$app_name.app"
+legacy_installed="/Applications/$legacy_app_name.app"
+current_app=""
 label="com.t3tools.t3code.reinstall"
 work_mac="SGMD6RQH4RH6J"
 work_team="5ZL939ZR9U"
@@ -95,7 +98,7 @@ verify_app() {
       *"TeamIdentifier=$work_team"*) ;;
       *) log "not signed by Team $work_team"; return 1 ;;
     esac
-    rule="$(santactl fileinfo "$app/Contents/MacOS/$app_name" --key Rule 2>/dev/null || true)"
+    rule="$(santactl fileinfo "$app/Contents/MacOS/$(app_executable "$app")" --key Rule 2>/dev/null || true)"
     case "$rule" in
       *"Allowed (TeamID)"*) ;;
       *) log "Santa rule is '$rule', expected Allowed (TeamID)"; return 1 ;;
@@ -105,18 +108,62 @@ verify_app() {
 
 app_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown; }
 
-# PIDs of every process running from the installed app bundle. pgrep -f would
+# The first install after the rename can start from either path. If both exist,
+# stop before touching either app so neither copy can be silently replaced.
+resolve_current_app() {
+  if [ -e "$installed" ] && [ -e "$legacy_installed" ]; then
+    return 2
+  fi
+  if [ -d "$installed" ]; then
+    printf '%s\n' "$installed"
+    return 0
+  fi
+  if [ -d "$legacy_installed" ]; then
+    printf '%s\n' "$legacy_installed"
+    return 0
+  fi
+  return 1
+}
+
+app_executable() {
+  defaults read "$1/Contents/Info" CFBundleExecutable 2>/dev/null
+}
+
+# PIDs of every process running from either app bundle path. pgrep -f would
 # need the parenthesised path escaped as a regex.
 # shellcheck disable=SC2009
-app_pids() { ps -axo pid=,command= | grep -F "$installed/Contents/" | grep -v grep | awk '{print $1}' || true; }
+app_pids() {
+  ps -axo pid=,command= | awk -v current="$installed/Contents/" -v legacy="$legacy_installed/Contents/" \
+    'index($0, current) || index($0, legacy) { print $1 }' || true
+}
 
 # The Electron main process: parent is launchd, executable has no arguments.
 main_pid() {
-  ps -axo pid=,ppid=,command= | awk -v exe="$installed/Contents/MacOS/$app_name" \
-    '$2 == 1 { cmd = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd); if (cmd == exe) { print $1; exit } }'
+  local app executable pid
+  for app in "$installed" "$legacy_installed"; do
+    [ -d "$app" ] || continue
+    executable="$(app_executable "$app")"
+    [ -n "$executable" ] || continue
+    pid="$(ps -axo pid=,ppid=,command= | awk -v exe="$app/Contents/MacOS/$executable" \
+      '$2 == 1 { cmd = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd); if (cmd == exe) { print $1; exit } }')"
+    if [ -n "$pid" ]; then
+      echo "$pid"
+      return 0
+    fi
+  done
 }
 
-rpc() { "$node" "$here/t3-rpc.mjs" "$@" --app "$installed" --base-dir "$data_home"; }
+rpc() {
+  local app="${current_app:-$installed}"
+  "$node" "$here/t3-rpc.mjs" "$@" --app "$app" --base-dir "$data_home"
+}
+
+post_install_launch() {
+  local message_file="$1"
+  shift
+  rpc launch --project-root "$HOME/Documents/brain" --title "T3 Code" \
+    --provider-instance codex --model gpt-6-luna --message-file "$message_file" "$@"
+}
 
 runtime_pid() {
   "$node" -e 'try { console.log(require(process.argv[1]).pid) } catch { console.log("") }' \
@@ -234,11 +281,16 @@ preflight() {
     [ "$dry_run" -eq 1 ] || die "build.sh is still running; wait for it to finish"
     log "WARNING: build.sh is still running; a real run would stop here"
   fi
-  [ -d "$installed" ] || die "nothing installed at $installed"
+  current_app="$(resolve_current_app)" || {
+    status=$?
+    [ "$status" -eq 2 ] && die "both $installed and $legacy_installed exist; move one aside before reinstalling"
+    die "no app installed at $installed or $legacy_installed"
+  }
   [ -f "$data_home/userdata/server-runtime.json" ] || die "no server-runtime.json under $data_home"
 
-  log "verifying new app $(app_version "$new_app") (installed: $(app_version "$installed"))"
+  log "verifying new app $(app_version "$new_app") (installed: $(app_version "$current_app"))"
   verify_app "$new_app" || die "new app failed verification; not installing it"
+  verify_app "$current_app" || die "installed app failed verification; not installing over it"
 
   rpc health || die "T3 server is not healthy; refusing to hand off"
   clear_job
@@ -248,8 +300,8 @@ preflight() {
   if [ "$dry_run" -eq 1 ]; then
     backup_dir="$(mktemp -d "${TMPDIR:-/tmp}/t3-reinstall-dryrun-$ts.XXXX")"
   else
-    backup_dir="$HOME/Backups/t3-reinstall-$ts"
-    mkdir -p "$backup_dir"
+    mkdir -p "$HOME/Backups"
+    backup_dir="$(mktemp -d "$HOME/Backups/t3-reinstall-$ts.XXXXXX")"
   fi
   dbs_kb="$(du -ck "$data_home"/userdata/*.sqlite 2>/dev/null | awk 'END {print $1}')"
   free_kb="$(df -k "$HOME" | awk 'NR == 2 {print $4}')"
@@ -266,7 +318,9 @@ preflight() {
     printf 'data_home=%q\n' "$data_home"
     printf 'grace=%q\n' "$grace"
     printf 'new_version=%q\n' "$(app_version "$new_app")"
-    printf 'old_version=%q\n' "$(app_version "$installed")"
+    printf 'old_version=%q\n' "$(app_version "$current_app")"
+    printf 'old_app=%q\n' "$current_app"
+    printf 'old_app_basename=%q\n' "$(basename "$current_app")"
   } >"$backup_dir/handoff.env"
 
   log "recording active threads"
@@ -277,7 +331,7 @@ preflight() {
   fi
 
   cat >"$backup_dir/post-install-prompt.md" <<EOF
-T3 Code was just reinstalled by the detached hand-off ($(app_version "$installed") -> $(app_version "$new_app")).
+T3 Code was just reinstalled by the detached hand-off ($(app_version "$current_app") -> $(app_version "$new_app")).
 Run the **post-install phase** of the \`install-new-t3\` skill (~/Documents/brain/.agents/skills/install-new-t3/SKILL.md) with:
 
 BACKUP_DIR=$backup_dir
@@ -302,21 +356,29 @@ EOF
 stage=none
 
 rollback() {
+  local old_app old_app_basename
+  # shellcheck source=/dev/null # handoff.env is written by preflight
+  . "$backup_dir/handoff.env"
   log "ROLLBACK from stage $stage"
   case "$stage" in
-    moved | installed | launched) ;;
+    moved | installing | installed | launched) ;;
     *)
       # Nothing was swapped; bring the old app back if it was quit.
-      if [ -z "$(app_pids)" ] && [ -d "$installed" ]; then run open "$installed"; fi
+      if [ -z "$(app_pids)" ] && [ -d "$old_app" ]; then run open "$old_app"; fi
       return 0
       ;;
   esac
   if [ "$stage" = launched ]; then quit_t3 || log "could not quit the new app"; fi
-  if [ -d "$installed" ]; then
+  if { [ "$stage" = installing ] || [ "$stage" = installed ] || [ "$stage" = launched ]; } && [ -e "$installed" ]; then
     run mkdir -p "$backup_dir/failed-new"
     run mv "$installed" "$backup_dir/failed-new/"
   fi
-  run mv "$backup_dir/old/$app_name.app" "$installed"
+  if [ -e "$old_app" ]; then
+    log "cannot restore old app because $old_app now exists; leaving both copies in $backup_dir"
+    return 1
+  fi
+  run mkdir -p "$(dirname "$old_app")"
+  run mv "$backup_dir/old/$old_app_basename" "$old_app"
   if [ "$stage" = launched ]; then
     # The new build may have migrated the databases; the old one needs its copies.
     local db base
@@ -332,7 +394,7 @@ rollback() {
       run cp "$db" "$data_home/userdata/$base"
     done
   fi
-  run open "$installed"
+  run open "$old_app"
 }
 
 fail() {
@@ -345,7 +407,7 @@ fail() {
 
 handoff() {
   [ -f "$backup_dir/.t3-reinstall" ] || die "$backup_dir is not a reinstall backup dir"
-  local old_version="" new_version=""
+  local old_version="" new_version="" old_app="" old_app_basename=""
   # shellcheck source=/dev/null # handoff.env is written by preflight
   . "$backup_dir/handoff.env"
   log "hand-off: $old_version -> $new_version on $machine (dry-run=$dry_run)"
@@ -370,15 +432,18 @@ handoff() {
 
   log "3/7 keep the old app for rollback"
   run mkdir -p "$backup_dir/old"
-  run mv "$installed" "$backup_dir/old/" || fail "moving the old app"
+  run mv "$old_app" "$backup_dir/old/$old_app_basename" || fail "moving the old app"
   stage=moved
 
   log "4/7 install the new app"
+  [ ! -e "$installed" ] || fail "$installed appeared during reinstall; refusing to overwrite it"
+  stage=installing
   run ditto "$new_app" "$installed" || fail "ditto"
   stage=installed
   if [ "$dry_run" -eq 1 ]; then
     echo "  [dry-run] verify-signature.sh + Team/Santa check on $installed"
   else
+    current_app="$installed"
     verify_app "$installed" || fail "installed app failed verification"
   fi
 
@@ -394,10 +459,8 @@ handoff() {
 
   log "7/7 start the post-install thread"
   if [ "$dry_run" -eq 1 ]; then
-    rpc launch --project-root "$HOME/Documents/brain" --title "Post-install: T3 $new_version" \
-      --message-file "$backup_dir/post-install-prompt.md" --dry-run || log "launch dry-run failed"
-  elif ! rpc launch --project-root "$HOME/Documents/brain" --title "Post-install: T3 $new_version" \
-    --message-file "$backup_dir/post-install-prompt.md"; then
+    post_install_launch "$backup_dir/post-install-prompt.md" --dry-run || log "launch dry-run failed"
+  elif ! post_install_launch "$backup_dir/post-install-prompt.md"; then
     # The new app is healthy, so keep it; a person can start this phase by hand.
     log "could not start the post-install thread; start it manually with $backup_dir/post-install-prompt.md"
     echo "installed; post-install thread not started" >"$backup_dir/handoff.status"
@@ -444,6 +507,10 @@ cleanup() {
   if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then run launchctl bootout "gui/$uid/$label"; fi
 }
 
+if [ "${T3_REINSTALL_LIBRARY_ONLY:-0}" = 1 ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 case "$mode" in
   preflight) preflight ;;
   handoff)
@@ -453,7 +520,9 @@ case "$mode" in
   rollback)
     # Submitted detached: rolling back quits T3 and the agent asking for it.
     [ -f "$backup_dir/.t3-reinstall" ] || die "$backup_dir is not a reinstall backup dir"
-    [ -d "$backup_dir/old/$app_name.app" ] || die "no old app in $backup_dir/old (already cleaned up?)"
+    # shellcheck source=/dev/null # handoff.env is written by preflight
+    . "$backup_dir/handoff.env"
+    [ -d "$backup_dir/old/$old_app_basename" ] || die "no old app in $backup_dir/old (already cleaned up?)"
     node="$(find_node)" || die "node not found"
     clear_job
     write_job_plist "$backup_dir/rollback.plist" --rollback-now
