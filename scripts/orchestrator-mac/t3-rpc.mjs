@@ -4,7 +4,7 @@
 //   t3-rpc.mjs health          --app <App.app> --base-dir <home>
 //   t3-rpc.mjs active-threads  --app <App.app> --base-dir <home> [--out FILE] [--exclude ID]
 //   t3-rpc.mjs launch          --app <App.app> --base-dir <home> --project-root DIR --title T --message-file F
-//                              [--model claude-opus-5-5] [--effort medium] [--dry-run]
+//                              [--provider-instance codex] [--model gpt-6-luna] [--dry-run]
 //   t3-rpc.mjs resume          --app <App.app> --base-dir <home> --state FILE [--text T] [--include-subagents] [--dry-run]
 //
 // The bearer token is minted with the app's own server CLI
@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ACTIVE_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 const DEFAULT_RESUME_TEXT =
@@ -187,6 +188,14 @@ function projectFor(shell, root) {
   return project;
 }
 
+export function resolveLaunchModelSelection(flags) {
+  return {
+    instanceId:
+      typeof flags["provider-instance"] === "string" ? flags["provider-instance"] : "codex",
+    model: typeof flags.model === "string" ? flags.model : "gpt-6-luna",
+  };
+}
+
 async function main() {
   const { command, flags } = parseArgs(process.argv.slice(2));
   const dryRun = flags["dry-run"] === true;
@@ -231,13 +240,7 @@ async function main() {
       commandId: `t3-reinstall:launch:${randomUUID()}`,
       projectId: project.id,
       title: required(flags, "title"),
-      modelSelection: {
-        instanceId: "claudeAgent",
-        model: typeof flags.model === "string" ? flags.model : "claude-opus-5-5",
-        options: [
-          { id: "effort", value: typeof flags.effort === "string" ? flags.effort : "medium" },
-        ],
-      },
+      modelSelection: resolveLaunchModelSelection(flags),
       runtimeMode: "full-access",
       interactionMode: "default",
       workspaceStrategy: { type: "root" },
@@ -300,7 +303,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(`t3-rpc: ${error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(`t3-rpc: ${error.message}`);
+    process.exit(1);
+  });
+}

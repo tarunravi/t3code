@@ -54,6 +54,6 @@ if [[ ${#failed[@]} -gt 0 ]]; then
   echo "Remove those rows with the − button in System Settings → Privacy & Security." >&2
 fi
 
-echo "Now launch /Applications/T3 Code (Orchestrator).app, trigger the feature, and grant:"
+echo "Now launch /Applications/T3 Code.app, trigger the feature, and grant:"
 echo "  open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'"
 echo "  open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'"
