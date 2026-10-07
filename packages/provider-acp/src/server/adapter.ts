@@ -9,6 +9,7 @@ import {
   type OrchestrationV2PlanStep,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderGoal,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -27,12 +28,12 @@ import {
   type ProviderRequestKind,
   type ProviderThreadId,
   type ProviderUserInputAnswers,
+  type TurnTokenUsage,
   type RuntimeMode,
   type RuntimeRequestId,
   type ThreadTokenUsageSnapshot,
   type ThreadId,
   isRuntimeModeAbove,
-  type TurnTokenUsage,
 } from "@t3tools/contracts";
 import { AgentScope, AgentScopeThreadId } from "@t3tools/shared/AgentScope";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
@@ -57,6 +58,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -105,6 +107,11 @@ import {
   ACP_SESSION_MODE_OPTION_ID,
   flattenSelectChoices,
 } from "./sessionConfig.ts";
+import {
+  parseLocalGoalCommand,
+  runLocalGoalCommand,
+  settleLocalGoalTurn,
+} from "@t3tools/provider-core/server/localGoals";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import {
   t3AcpPromptWithInstructions,
@@ -417,6 +424,14 @@ export interface AcpAdapterV2Flavor {
   ) => Effect.Effect<void>;
   readonly subagentsIdleOnTurnCompletion?: boolean;
   readonly supportsCompaction?: boolean;
+  /** T3 runs `/goal` itself because the agent's goal mode is unreachable over ACP (omp). */
+  readonly tracksGoalsLocally?: boolean;
+  /**
+   * The agent runs turns of its own, such as background job and timer wakes
+   * (omp), and refuses a prompt during one with `sessionBusy`. Retry the
+   * prompt until that turn ends, bounded, instead of failing the run.
+   */
+  readonly retryPromptWhileSessionBusy?: boolean;
   /**
    * Native steering: `send` queues a message into the running turn and returns the
    * agent's id for it, which `injectedSteerId` reads from the update that delivers it.
@@ -453,6 +468,17 @@ export interface AcpAdapterV2Flavor {
     sessionId: string,
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly runtimeHarness?: string;
+  /**
+   * Maps the `usage` an agent returns from `session/prompt` to the provider
+   * turn's token usage. Agents disagree on whether that report covers the turn
+   * or the whole session and whether input includes cache reads, so only a
+   * flavor that knows its agent's semantics opts in.
+   */
+  readonly promptTurnTokenUsage?: (input: {
+    readonly usage: EffectAcpSchema.Usage;
+    readonly status: OrchestrationV2ProviderTurn["status"];
+    readonly hasSubagents: boolean;
+  }) => TurnTokenUsage;
   readonly registerExtensions?: (
     context: AcpAdapterV2ExtensionContext,
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
@@ -533,7 +559,23 @@ export interface AcpAdapterV2Flavor {
   ) => boolean;
 }
 
-function acpSupportsImagePrompts(input: {
+/** ACP's `sessionBusy` request error: the session is already running a turn. */
+const ACP_SESSION_BUSY_CODE = -32003;
+const SESSION_BUSY_RETRY_DELAY = "2 seconds";
+const SESSION_BUSY_RETRY_ATTEMPTS = 90;
+
+const retryPromptWhileSessionBusy = <A, E extends EffectAcpErrors.AcpError, R>(
+  prompt: Effect.Effect<A, E, R>,
+) =>
+  prompt.pipe(
+    Effect.retry({
+      times: SESSION_BUSY_RETRY_ATTEMPTS,
+      schedule: Schedule.spaced(SESSION_BUSY_RETRY_DELAY),
+      while: (error) => error._tag === "AcpRequestError" && error.code === ACP_SESSION_BUSY_CODE,
+    }),
+  );
+
+export function acpSupportsImagePrompts(input: {
   readonly flavorSupportsImagePrompts?: boolean | undefined;
   readonly negotiatedImage?: boolean | undefined;
 }): boolean {
@@ -1313,6 +1355,7 @@ interface AcpNativeBuildConfiguration {
 }
 
 interface ActiveAcpTurn {
+  readonly servedModel?: string | undefined;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeThreadId: string;
@@ -1376,6 +1419,13 @@ interface ActiveAcpTurn {
   readonly promptStarted: Deferred.Deferred<void, never>;
   promptUsage: EffectAcpSchema.Usage | undefined;
   backgroundFinalizeGeneration: number;
+  /** A locally tracked `/goal` this turn changed; `pursued` turns settle it on finalize. */
+  readonly goalUpdate?: {
+    readonly goal: OrchestrationV2ProviderGoal | null;
+    readonly pursued: boolean;
+  };
+  /** The last closed root assistant segment, read for goal completion. */
+  finalAssistantText: string;
   /** The agent's own id for this turn's prompt, from `forkFromTurn.nativeTurnId`. */
   nativePromptId: string | undefined;
 }
@@ -2769,6 +2819,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const stream = textStreamFor(context, kind);
           if (stream.current === null) return;
           yield* emitTextSegment(context, kind, true);
+          if (kind === "assistant") context.finalAssistantText = stream.current.text;
           stream.current = null;
         });
 
@@ -7372,18 +7423,25 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           status,
           startedAt: context.startedAt,
           completedAt,
-          ...(status === "running" || status === "pending"
-            ? {}
-            : {
-                // The prompt tap only captures usage for flavors that declared
-                // per-turn counters, so undeclared agents stay unavailable here.
-                turnTokenUsage: acpPerTurnPromptUsage(
-                  context.promptUsage,
-                  context.subagents.size > 0,
+          ...(context.servedModel === undefined ? {} : { servedModel: context.servedModel }),
+          ...(context.promptUsage != null && flavor.promptTurnTokenUsage !== undefined
+            ? {
+                turnTokenUsage: flavor.promptTurnTokenUsage({
+                  usage: context.promptUsage,
                   status,
-                  flavor.geminiPromptUsage,
-                ),
-              }),
+                  hasSubagents: context.subagents.size > 0,
+                }),
+              }
+            : status === "running" || status === "pending"
+              ? {}
+              : {
+                  turnTokenUsage: acpPerTurnPromptUsage(
+                    context.promptUsage,
+                    context.subagents.size > 0,
+                    status,
+                    flavor.geminiPromptUsage,
+                  ),
+                }),
         });
 
         const terminalizeOpenRunOwnedItems = Effect.fnUntraced(function* (
@@ -7549,6 +7607,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             threadId: context.input.threadId,
             providerTurn: turn,
           });
+          const goalUpdate = context.goalUpdate;
           const updatedProviderThread: OrchestrationV2ProviderThread = {
             ...context.input.providerThread,
             providerSessionId: input.providerSessionId,
@@ -7558,6 +7617,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
             contextUsage: context.contextUsage,
             nativeMetadata: context.nativeMetadata,
+            ...(goalUpdate === undefined
+              ? {}
+              : {
+                  goal:
+                    goalUpdate.pursued && goalUpdate.goal !== null
+                      ? settleLocalGoalTurn(goalUpdate.goal, {
+                          completed: settledStatus === "completed",
+                          finalAssistantText: context.finalAssistantText,
+                          tokenUsage: turn.turnTokenUsage,
+                          elapsedSeconds:
+                            (DateTime.toEpochMillis(now) -
+                              DateTime.toEpochMillis(context.startedAt)) /
+                            1_000,
+                        })
+                      : goalUpdate.goal,
+                }),
             updatedAt: now,
           };
           yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -7910,9 +7985,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 return wasRequested;
               }),
             );
-            const promptParts = isContinuationTurn
-              ? null
-              : yield* resolvePromptParts(turnInput, requestedSessionId);
+            const goalCommand =
+              flavor.tracksGoalsLocally === true &&
+              !isContinuationTurn &&
+              turnInput.message.attachments.length === 0 &&
+              turnInput.restartContinuationOfRunId === undefined
+                ? parseLocalGoalCommand(turnInput.message.text)
+                : null;
+            const goalOutcome =
+              goalCommand === null
+                ? null
+                : runLocalGoalCommand(turnInput.providerThread.goal ?? null, goalCommand);
+            const promptParts =
+              isContinuationTurn || goalOutcome?.type === "reply"
+                ? null
+                : yield* resolvePromptParts(
+                    goalOutcome === null
+                      ? turnInput
+                      : {
+                          ...turnInput,
+                          message: { ...turnInput.message, text: goalOutcome.prompt },
+                        },
+                    requestedSessionId,
+                  );
             const startedAt = yield* DateTime.now;
             const nativeTurnId = `${requestedSessionId}:turn:${turnInput.providerTurnOrdinal}`;
             const providerTurnId = deriveProviderTurnId(nativeTurnId);
@@ -7938,7 +8033,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 new Map(current).set(requestedSessionId, initialNativeMetadata),
               );
             }
+            const setup = yield* Ref.get(activeSessionSetup);
+            const confirmedModel = setup?.sessionSetupResult.models?.currentModelId;
             const context: ActiveAcpTurn = {
+              ...(confirmedModel ? { servedModel: confirmedModel } : {}),
               input: turnInput,
               providerTurnId,
               nativeThreadId: requestedSessionId,
@@ -7980,6 +8078,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               promptStarted,
               promptUsage: undefined,
               backgroundFinalizeGeneration: 0,
+              ...(goalOutcome === null
+                ? {}
+                : {
+                    goalUpdate: {
+                      goal: goalOutcome.goal,
+                      pursued: goalOutcome.type === "pursue",
+                    },
+                  }),
+              finalAssistantText: "",
               nativePromptId: undefined,
             };
             const carryover = yield* Ref.getAndSet(carryoverSubagents, null);
@@ -8016,6 +8123,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               status: "active",
               contextUsage: context.contextUsage,
               nativeMetadata: context.nativeMetadata,
+              ...(context.goalUpdate === undefined ? {} : { goal: context.goalUpdate.goal }),
               updatedAt: startedAt,
             };
             yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -8055,7 +8163,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // queued provider continuation owns wake traffic. A user turn may
             // start before that continuation and must leave its buffer intact.
             yield* projectDeferredCarryoverTerminals(rehydratedCarryoverSubagents);
-            // Retain projected terminals during wake drain so monotonic guards reject replayed spawns.
+            if (goalOutcome?.type === "reply") {
+              yield* appendText(context, "assistant", goalOutcome.reply);
+              yield* finalizeTurn(context, "completed");
+              return;
+            }
+            // Keep projected terminals addressable through the wake drain so
+            // emitSubagent's monotonic guard can reject replayed spawn frames.
             if (isContinuationTurn) {
               yield* Ref.set(continuationRequested, false);
               yield* Ref.update(wakeReports, ({ reports, offered }) => ({
@@ -8125,13 +8239,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const compactSession = isCompactionMessage(turnInput.message)
               ? flavor.compactSession
               : undefined;
-            yield* (
+            const prompt =
               compactSession === undefined
                 ? runtime.prompt({ prompt: promptParts!.prompt }, promptOptions)
                 : Deferred.succeed(context.promptDispatched, undefined).pipe(
                     Effect.andThen(compactSession(runtime, requestedSessionId)),
                     Effect.as({ stopReason: "end_turn" } satisfies EffectAcpSchema.PromptResponse),
-                  )
+                  );
+            yield* (
+              flavor.retryPromptWhileSessionBusy === true
+                ? retryPromptWhileSessionBusy(prompt)
+                : prompt
             ).pipe(
               Effect.tap(() =>
                 Ref.update(promptInstructionStates, (current) => {
@@ -8162,7 +8280,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               // response must not flip a settled turn.
               Effect.tap((result) =>
                 Effect.sync(() => {
-                  if (flavor.reportsPerTurnPromptUsage === true && !context.finalized) {
+                  if (
+                    (flavor.reportsPerTurnPromptUsage === true ||
+                      flavor.promptTurnTokenUsage !== undefined) &&
+                    !context.finalized
+                  ) {
                     context.promptUsage = result.usage ?? undefined;
                   }
                 }).pipe(
