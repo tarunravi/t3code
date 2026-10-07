@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds and signs this fork as "T3 Code" for macOS.
+# Builds and signs this fork as "T3Code" for macOS.
 #
 #   scripts/orchestrator-mac/build.sh <output-dir>
 #
@@ -56,7 +56,7 @@ if [[ -z "$flavor" ]]; then
 fi
 
 if [[ "$flavor" == "orchestrator" ]]; then
-  app_name="T3 Code"
+  app_name="T3Code"
   bundle_id="com.t3tools.t3code.orchestrator"
   data_home="${T3_ORCH_HOME:-$HOME/.t3-pr-2829}"
   patch_file="$here/overlay.patch"
@@ -105,6 +105,12 @@ app="$dest_dir/$app_name.app"
 rm -rf "$app"
 mkdir -p "$dest_dir"
 ditto "$built" "$app"
+display_name="$(defaults read "$app/Contents/Info" CFBundleDisplayName 2>/dev/null || true)"
+[[ "$display_name" == "$app_name" ]] || die "expected CFBundleDisplayName '$app_name', got '${display_name:-<missing>}'"
+app_home="$(/usr/libexec/PlistBuddy -c 'Print :LSEnvironment:T3CODE_HOME' "$app/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$app_home" == "$data_home" ]] || die "expected T3CODE_HOME '$data_home', got '${app_home:-<missing>}'"
+auto_update="$(/usr/libexec/PlistBuddy -c 'Print :LSEnvironment:T3CODE_DISABLE_AUTO_UPDATE' "$app/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$auto_update" == true ]] || die "expected T3CODE_DISABLE_AUTO_UPDATE=true, got '${auto_update:-<missing>}'"
 
 echo "==> sign with $identity"
 osx_sign="$(find "$src/node_modules/.pnpm" -maxdepth 1 -type d -name '@electron+osx-sign@1.*' | sort -V | tail -n 1)"

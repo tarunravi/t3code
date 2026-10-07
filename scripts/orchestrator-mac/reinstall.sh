@@ -3,7 +3,7 @@
 # inside T3 itself. Quitting T3 kills every agent in it, so the swap runs as a
 # one-shot launchd job outside T3's process tree.
 #
-#   reinstall.sh [--dry-run] [--new-app <App.app>] [--exclude-thread <id>] [--grace <s>]
+#   reinstall.sh [--dry-run] [--new-app <App.app>] [--exclude-thread <id>] [--grace <s>] [--no-post-install]
 #       Pre-flight, run by an agent inside T3: verifies the new app, records the
 #       active threads, and submits the hand-off to launchd. Returns at once.
 #       --dry-run uses a scratch dir, submits nothing, and then walks the
@@ -11,7 +11,7 @@
 #   reinstall.sh --handoff <backup-dir> [--dry-run]
 #       The detached hand-off (launchd runs this): back up the databases, quit
 #       T3, swap the app, relaunch, wait for the server, and start a
-#       post-install thread. Any failure after the swap rolls back.
+#       post-install thread unless --no-post-install was selected. Any failure after the swap rolls back.
 #   reinstall.sh --cleanup <backup-dir> [--keep-backups N] [--dry-run]
 #       Run by the post-install agent once verification passes.
 #   reinstall.sh --rollback <backup-dir> [--dry-run]
@@ -22,11 +22,11 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-app_name="T3 Code"
-legacy_app_name="T3 Code (Orchestrator)"
+app_name="T3Code"
 bundle_id="com.t3tools.t3code.orchestrator"
 installed="/Applications/$app_name.app"
-legacy_installed="/Applications/$legacy_app_name.app"
+legacy_installed="/Applications/T3 Code.app"
+older_installed="/Applications/T3 Code (Orchestrator).app"
 current_app=""
 label="com.t3tools.t3code.reinstall"
 work_mac="SGMD6RQH4RH6J"
@@ -45,6 +45,7 @@ mode=preflight
 backup_dir=""
 new_app="$HOME/t3-orchestrator-build/signed.noindex/$app_name.app"
 exclude_thread=""
+no_post_install=0
 grace=20
 keep_backups=2
 while [ $# -gt 0 ]; do
@@ -52,6 +53,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=1 ;;
     --new-app) new_app="$2"; shift ;;
     --exclude-thread) exclude_thread="$2"; shift ;;
+    --no-post-install) no_post_install=1 ;;
     --grace) grace="$2"; shift ;;
     --handoff) mode=handoff; backup_dir="$2"; shift ;;
     --cleanup) mode=cleanup; backup_dir="$2"; shift ;;
@@ -72,6 +74,14 @@ run() {
   else
     echo "  + $*"
     "$@"
+  fi
+}
+
+open_app() {
+  if [ "$no_post_install" -eq 1 ]; then
+    run open -g "$1"
+  else
+    run open "$1"
   fi
 }
 
@@ -108,44 +118,65 @@ verify_app() {
 
 app_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown; }
 
-# The first install after the rename can start from either path. If both exist,
-# stop before touching either app so neither copy can be silently replaced.
+# The app can still be at either previous path. If more than one copy exists,
+# stop before touching any of them.
 resolve_current_app() {
-  if [ -e "$installed" ] && [ -e "$legacy_installed" ]; then
-    return 2
-  fi
-  if [ -d "$installed" ]; then
-    printf '%s\n' "$installed"
-    return 0
-  fi
-  if [ -d "$legacy_installed" ]; then
-    printf '%s\n' "$legacy_installed"
-    return 0
-  fi
-  return 1
+  local found="" app count=0
+  for app in "$installed" "$legacy_installed" "$older_installed"; do
+    [ -e "$app" ] || continue
+    found="$app"
+    count=$((count + 1))
+  done
+  [ "$count" -le 1 ] || return 2
+  [ "$count" -eq 1 ] || return 1
+  printf '%s\n' "$found"
 }
 
 app_executable() {
   defaults read "$1/Contents/Info" CFBundleExecutable 2>/dev/null
 }
 
-# PIDs of every process running from either app bundle path. pgrep -f would
-# need the parenthesised path escaped as a regex.
-# shellcheck disable=SC2009
-app_pids() {
+# Treat ps matches as candidates only. lsof confirms that the process image is
+# actually inside a verified app bundle before a PID can be signalled.
+process_executable() {
+  local records
+  records="$(lsof -a -p "$1" -d txt -Fn 2>/dev/null)" || return 1
+  printf '%s\n' "$records" | sed -n 's/^n//p' | head -n 1
+}
+
+app_pid_candidates() {
   ps -axo pid=,command= | awk -v current="$installed/Contents/" -v legacy="$legacy_installed/Contents/" \
-    'index($0, current) || index($0, legacy) { print $1 }' || true
+    -v older="$older_installed/Contents/" 'index($0,current) || index($0,legacy) || index($0,older) { print $1 }'
+}
+
+app_pids() {
+  local candidates pid executable
+  candidates="$(app_pid_candidates)" || return 1
+  for pid in $candidates; do
+    executable="$(process_executable "$pid")" || return 1
+    [ -n "$executable" ] || return 1
+    case "$executable" in
+        "$installed/Contents/"*|"$legacy_installed/Contents/"*|"$older_installed/Contents/"*)
+          printf '%s\n' "$pid"
+          ;;
+    esac
+  done
 }
 
 # The Electron main process: parent is launchd, executable has no arguments.
 main_pid() {
   local app executable pid
-  for app in "$installed" "$legacy_installed"; do
+  for app in "$installed" "$legacy_installed" "$older_installed"; do
     [ -d "$app" ] || continue
     executable="$(app_executable "$app")"
     [ -n "$executable" ] || continue
-    pid="$(ps -axo pid=,ppid=,command= | awk -v exe="$app/Contents/MacOS/$executable" \
-      '$2 == 1 { cmd = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd); if (cmd == exe) { print $1; exit } }')"
+    pid="$(ps -axo pid=,ppid=,command= | while read -r candidate parent command; do
+      if [ "$parent" = 1 ] && [ "$command" = "$app/Contents/MacOS/$executable" ] &&
+        [ "$(process_executable "$candidate")" = "$app/Contents/MacOS/$executable" ]; then
+        printf '%s\n' "$candidate"
+        break
+      fi
+    done)"
     if [ -n "$pid" ]; then
       echo "$pid"
       return 0
@@ -165,15 +196,29 @@ post_install_launch() {
     --provider-instance codex --model gpt-6-luna --message-file "$message_file" "$@"
 }
 
+offline_reinstall_allowed() {
+  local pids
+  [ "$no_post_install" -eq 1 ] && [ ! -f "$data_home/userdata/server-runtime.json" ] || return 1
+  pids="$(app_pids)" || return 1
+  [ -z "$pids" ]
+}
+
+write_empty_active_threads() {
+  local output="$1"
+  "$node" -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({recordedAt:new Date().toISOString(),origin:null,excludedThreadId:process.argv[2] || null,threads:[]},null,2)+"\n")' \
+    "$output" "$exclude_thread"
+}
+
 runtime_pid() {
   "$node" -e 'try { console.log(require(process.argv[1]).pid) } catch { console.log("") }' \
     "$data_home/userdata/server-runtime.json"
 }
 
 wait_for_exit() {
-  local seconds="$1" i=0
+  local seconds="$1" i=0 pids
   while [ $i -lt "$seconds" ]; do
-    [ -z "$(app_pids)" ] && return 0
+    pids="$(app_pids)" || return 1
+    [ -z "$pids" ] && return 0
     sleep 1
     i=$((i + 1))
   done
@@ -183,9 +228,10 @@ wait_for_exit() {
 # SIGTERM is T3's graceful quit path (DesktopLifecycle) and, unlike
 # `osascript quit`, needs no Automation permission from a launchd job.
 quit_t3() {
-  local pid
+  local pid pids
   pid="$(main_pid)"
-  if [ -z "$pid" ] && [ -z "$(app_pids)" ]; then
+  pids="$(app_pids)" || { log "could not verify T3 executable paths"; return 1; }
+  if [ -z "$pid" ] && [ -z "$pids" ]; then
     log "T3 is not running"
     return 0
   fi
@@ -197,8 +243,8 @@ quit_t3() {
   [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
   wait_for_exit 90 && { log "T3 exited"; return 0; }
   log "T3 still running after 90s; sending SIGKILL"
-  # shellcheck disable=SC2046
-  kill -KILL $(app_pids) 2>/dev/null || true
+  pids="$(app_pids)" || return 1
+  [ -n "$pids" ] && kill -KILL $pids 2>/dev/null || true
   wait_for_exit 15 && { log "T3 killed"; return 0; }
   return 1
 }
@@ -283,16 +329,21 @@ preflight() {
   fi
   current_app="$(resolve_current_app)" || {
     status=$?
-    [ "$status" -eq 2 ] && die "both $installed and $legacy_installed exist; move one aside before reinstalling"
-    die "no app installed at $installed or $legacy_installed"
+    [ "$status" -eq 2 ] && die "multiple T3 app copies exist at the supported paths; move all but one aside before reinstalling"
+    die "no app installed at $installed, $legacy_installed, or $older_installed"
   }
-  [ -f "$data_home/userdata/server-runtime.json" ] || die "no server-runtime.json under $data_home"
 
   log "verifying new app $(app_version "$new_app") (installed: $(app_version "$current_app"))"
   verify_app "$new_app" || die "new app failed verification; not installing it"
   verify_app "$current_app" || die "installed app failed verification; not installing over it"
 
-  rpc health || die "T3 server is not healthy; refusing to hand off"
+  if [ -f "$data_home/userdata/server-runtime.json" ]; then
+    rpc health || die "T3 server is not healthy; refusing to hand off"
+  elif offline_reinstall_allowed; then
+    log "T3 is stopped; proceeding without live thread discovery or post-install launch"
+  else
+    die "no server-runtime.json under $data_home; only a stopped app with --no-post-install can be reinstalled offline"
+  fi
   clear_job
 
   local ts dbs_kb free_kb
@@ -317,6 +368,7 @@ preflight() {
     printf 'node=%q\n' "$node"
     printf 'data_home=%q\n' "$data_home"
     printf 'grace=%q\n' "$grace"
+    printf 'no_post_install=%q\n' "$no_post_install"
     printf 'new_version=%q\n' "$(app_version "$new_app")"
     printf 'old_version=%q\n' "$(app_version "$current_app")"
     printf 'old_app=%q\n' "$current_app"
@@ -324,7 +376,9 @@ preflight() {
   } >"$backup_dir/handoff.env"
 
   log "recording active threads"
-  if [ -n "$exclude_thread" ]; then
+  if [ ! -f "$data_home/userdata/server-runtime.json" ]; then
+    write_empty_active_threads "$backup_dir/active-threads.json"
+  elif [ -n "$exclude_thread" ]; then
     rpc active-threads --out "$backup_dir/active-threads.json" --exclude "$exclude_thread"
   else
     rpc active-threads --out "$backup_dir/active-threads.json"
@@ -364,7 +418,7 @@ rollback() {
     moved | installing | installed | launched) ;;
     *)
       # Nothing was swapped; bring the old app back if it was quit.
-      if [ -z "$(app_pids)" ] && [ -d "$old_app" ]; then run open "$old_app"; fi
+      if [ -z "$(app_pids)" ] && [ -d "$old_app" ]; then open_app "$old_app"; fi
       return 0
       ;;
   esac
@@ -394,7 +448,7 @@ rollback() {
       run cp "$db" "$data_home/userdata/$base"
     done
   fi
-  run open "$old_app"
+  open_app "$old_app"
 }
 
 fail() {
@@ -449,7 +503,7 @@ handoff() {
 
   log "5/7 launch"
   started="$(date +%s)"
-  run open "$installed" || fail "open"
+  open_app "$installed" || fail "open"
   stage=launched
 
   log "6/7 wait for the server"
@@ -457,18 +511,26 @@ handoff() {
   log "server healthy after $(($(date +%s) - started))s"
   stage=healthy
 
-  log "7/7 start the post-install thread"
-  if [ "$dry_run" -eq 1 ]; then
-    post_install_launch "$backup_dir/post-install-prompt.md" --dry-run || log "launch dry-run failed"
-  elif ! post_install_launch "$backup_dir/post-install-prompt.md"; then
-    # The new app is healthy, so keep it; a person can start this phase by hand.
-    log "could not start the post-install thread; start it manually with $backup_dir/post-install-prompt.md"
-    echo "installed; post-install thread not started" >"$backup_dir/handoff.status"
-    notify "T3 $new_version installed; start the post-install phase manually"
-    exit 0
+  if [ "$no_post_install" -eq 1 ]; then
+    log "7/7 post-install thread skipped by request"
+  else
+    log "7/7 start the post-install thread"
+    if [ "$dry_run" -eq 1 ]; then
+      post_install_launch "$backup_dir/post-install-prompt.md" --dry-run || log "launch dry-run failed"
+    elif ! post_install_launch "$backup_dir/post-install-prompt.md"; then
+      # The new app is healthy, so keep it; a person can start this phase by hand.
+      log "could not start the post-install thread; start it manually with $backup_dir/post-install-prompt.md"
+      echo "installed; post-install thread not started" >"$backup_dir/handoff.status"
+      notify "T3 $new_version installed; start the post-install phase manually"
+      exit 0
+    fi
   fi
   [ "$dry_run" -eq 1 ] || echo "installed $new_version" >"$backup_dir/handoff.status"
-  notify "T3 $new_version installed; post-install thread started"
+  if [ "$no_post_install" -eq 1 ]; then
+    notify "T3 $new_version installed"
+  else
+    notify "T3 $new_version installed; post-install thread started"
+  fi
   log "hand-off complete"
 }
 

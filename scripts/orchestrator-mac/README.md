@@ -1,6 +1,6 @@
-# T3 Code macOS build
+# T3Code macOS build
 
-Builds this fork as `T3 Code`: bundle id `com.t3tools.t3code.orchestrator`, desktop profile `t3code-pr-2829`, backend home `~/.t3-pr-2829`, auto-update off. `overlay.patch` applies that identity in a scratch worktree, so the source tree keeps upstream's identity.
+Builds this fork as `T3Code`: bundle id `com.t3tools.t3code.orchestrator`, desktop profile `t3code-pr-2829`, backend home from `T3_ORCH_HOME` (use `~/.t3` for Tarun's install), auto-update off. `overlay.patch` applies that identity in a scratch worktree, so the source tree keeps upstream's identity.
 
 ## Build
 
@@ -8,10 +8,10 @@ Requires Node 24.13 or newer, pnpm 11, Xcode command-line tools, and a code-sign
 
 ```sh
 security find-identity -v -p codesigning   # pick the identity's SHA-1
-T3_ORCH=1 T3_SIGNING_IDENTITY=<sha1> scripts/orchestrator-mac/build.sh ~/t3-orchestrator-build
+T3_ORCH=1 T3_ORCH_HOME="$HOME/.t3" T3_SIGNING_IDENTITY=<sha1> scripts/orchestrator-mac/build.sh ~/t3-orchestrator-build
 ```
 
-The signed app lands in `<output-dir>/signed.noindex/T3 Code.app`, with `build.log` and `BUILD-INFO.txt` beside it. The script refuses ad hoc signing and a dirty checkout. It finishes by running `verify-signature.sh`, which fails unless the designated requirement names the bundle id and certificate instead of a cdhash.
+The signed app lands in `<output-dir>/signed.noindex/T3Code.app`, with `build.log` and `BUILD-INFO.txt` beside it. The script refuses ad hoc signing and a dirty checkout. It finishes by running `verify-signature.sh`, which fails unless the designated requirement names the bundle id and certificate instead of a cdhash.
 
 ## Why the signing identity matters
 
@@ -23,8 +23,8 @@ macOS stores each Accessibility and Screen Recording grant with the designated r
 ## Install
 
 1. Start the reinstall flow from inside T3 Code. The detached hand-off records active threads, then quits the app after the initiating turn finishes.
-2. Use `scripts/orchestrator-mac/reinstall.sh` to migrate an existing `/Applications/T3 Code (Orchestrator).app` into `/Applications/T3 Code.app`. The detached hand-off keeps the prior app under the backup's `old/` directory for rollback. If both paths already exist, move one aside before running the installer.
-3. Run `scripts/orchestrator-mac/verify-signature.sh "/Applications/T3 Code.app"`.
+2. Use `scripts/orchestrator-mac/reinstall.sh` to migrate an existing `/Applications/T3 Code (Orchestrator).app` or `/Applications/T3 Code.app` into `/Applications/T3Code.app`. The detached hand-off keeps the prior app under the backup's `old/` directory for rollback. If multiple supported paths exist, move all but one aside before running the installer.
+3. Run `scripts/orchestrator-mac/verify-signature.sh "/Applications/T3Code.app"`.
 4. The first time you switch an app to stable signing, or when stale rows appear, run `scripts/orchestrator-mac/reset-tcc-grants.sh` (dry run) and then `reset-tcc-grants.sh --apply`. Rows for apps no longer on disk cannot be reset by `tccutil`; remove them with the − button in System Settings.
 5. Launch the app and grant Accessibility and Screen Recording again when asked. Later rebuilds signed with the same identity keep these grants.
 
@@ -32,9 +32,12 @@ macOS stores each Accessibility and Screen Recording grant with the designated r
 
 Quitting T3 stops every agent in it, so an agent can't swap the app directly. `reinstall.sh` verifies the new build, records the active threads, and hands the swap to a one-shot launchd job outside T3's process tree. The job backs up the databases, quits T3, installs the new app, relaunches it, and starts a post-install thread. If a step after the swap fails, it restores the old app (and the database backups, if the new app had launched).
 
+From Codex Desktop, use `--no-post-install` to skip that provider-dependent thread. With no server runtime file, this option is accepted only when no process is running from a supported T3 app bundle; the hand-off records an empty active-thread list.
+
 ```sh
 scripts/orchestrator-mac/reinstall.sh --dry-run --exclude-thread <calling thread id>   # rehearse; changes nothing
 scripts/orchestrator-mac/reinstall.sh --exclude-thread <calling thread id>             # hand off
+scripts/orchestrator-mac/reinstall.sh --no-post-install                               # skip the provider-dependent post-install thread
 scripts/orchestrator-mac/reinstall.sh --rollback ~/Backups/t3-reinstall-<ts>           # detached rollback
 scripts/orchestrator-mac/reinstall.sh --cleanup ~/Backups/t3-reinstall-<ts>            # after verification
 ```
