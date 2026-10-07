@@ -15,7 +15,7 @@ const LIVE_REFRESH_INTERVAL_MS = 1_000;
 
 type Projection = Pick<
   OrchestrationV2ThreadProjection,
-  "runs" | "attempts" | "providerTurns" | "turnItems"
+  "runs" | "attempts" | "providerTurns" | "turnItems" | "nodes"
 >;
 
 export interface TokenRateProjectionSource {
