@@ -19,7 +19,7 @@ const state = vi.hoisted(() => ({
   sessionError: false,
   turnError: false,
   limited: false,
-  subagent: false,
+  relationshipToParent: null as "subagent" | "side" | "fork" | null,
   background: [] as Array<{ taskId: string; kind: "command" | "monitor" }>,
   add: vi.fn(
     (_toast: { title: string; description: string; actionProps: { onClick: () => void } }) =>
@@ -49,8 +49,8 @@ function mockThreadShell() {
     activeProviderThreadId: null,
     lineage: {
       rootThreadId: "thread-1",
-      parentThreadId: state.subagent ? "parent" : null,
-      relationshipToParent: state.subagent ? "subagent" : null,
+      parentThreadId: state.relationshipToParent ? "parent" : null,
+      relationshipToParent: state.relationshipToParent,
     },
     forkedFrom: null,
     createdBy: "user",
@@ -152,7 +152,7 @@ beforeEach(() => {
     sessionError: false,
     turnError: false,
     limited: false,
-    subagent: false,
+    relationshipToParent: null,
     background: [],
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -175,12 +175,77 @@ afterEach(async () => {
 });
 
 describe("thread notifications", () => {
-  it.each([true, false])("keeps subagents silent with focus=%s", async (focused) => {
-    state.subagent = true;
-    state.focused = focused;
+  it.each([
+    ["off", false, false],
+    ["notifications", true, false],
+    ["sound", false, true],
+    ["notifications-and-sound", true, true],
+  ] as const)(
+    "uses %s for subagent completion with in-app notifications disabled",
+    async (mode, desktop, sound) => {
+      state.relationshipToParent = "subagent";
+      state.focused = false;
+      state.inApp = false;
+      state.mode = mode;
+      await render();
+      await complete();
+      await render();
+      expect(state.add).not.toHaveBeenCalled();
+      expect(state.notification).toHaveBeenCalledTimes(desktop ? 1 : 0);
+      expect(state.sound).toHaveBeenCalledTimes(sound ? 1 : 0);
+      if (desktop) {
+        expect(state.notification).toHaveBeenCalledWith("Thread completed", {
+          body: "Fix the login form",
+          tag: "env-1:thread-1",
+          silent: true,
+        });
+      }
+      if (sound) {
+        expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "respects the in-app toggle for subagent completion: %s",
+    async (inApp) => {
+      state.relationshipToParent = "subagent";
+      state.inApp = inApp;
+      state.mode = "notifications-and-sound";
+      await render();
+      await complete();
+      await render();
+      expect(state.add).toHaveBeenCalledTimes(inApp ? 1 : 0);
+      expect(state.sound).toHaveBeenCalledExactlyOnceWith("completion", expect.any(Function));
+      expect(state.notification).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["input", "approval", "sessionError", "turnError", "limited"] as const)(
+    "keeps subagent %s silent",
+    async (event) => {
+      state.relationshipToParent = "subagent";
+      state.mode = "notifications-and-sound";
+      await render();
+      state[event] = true;
+      await render();
+      state.focused = false;
+      state[event] = false;
+      await render();
+      state[event] = true;
+      await render();
+      expect(state.sound).not.toHaveBeenCalled();
+      expect(state.add).not.toHaveBeenCalled();
+      expect(state.notification).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["side", "fork"] as const)("keeps %s threads silent", async (relationship) => {
+    state.relationshipToParent = relationship;
     state.mode = "notifications-and-sound";
     await render();
     await complete();
+    state.focused = false;
     state.input = true;
     await render();
     expect(state.sound).not.toHaveBeenCalled();
@@ -293,14 +358,18 @@ describe("thread notifications", () => {
     expect(state.add).toHaveBeenCalledTimes(1);
   });
 
-  it("does not replay completed threads on first load or reconnect", async () => {
-    await complete();
-    state.live = false;
-    await render();
-    state.live = true;
-    await render();
-    expect(state.add).not.toHaveBeenCalled();
-  });
+  it.each([null, "subagent"] as const)(
+    "does not replay %s completions on first load or reconnect",
+    async (relationship) => {
+      state.relationshipToParent = relationship;
+      await complete();
+      state.live = false;
+      await render();
+      state.live = true;
+      await render();
+      expect(state.add).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps sound but replaces the system popup when showing a toast", async () => {
     state.mode = "notifications-and-sound";
