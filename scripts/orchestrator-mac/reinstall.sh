@@ -487,7 +487,7 @@ handoff() {
   stage=moved
 
   log "4/7 install the new app"
-  [ ! -e "$installed" ] || fail "$installed appeared during reinstall; refusing to overwrite it"
+  [ "$dry_run" -eq 1 ] || [ ! -e "$installed" ] || fail "$installed appeared during reinstall; refusing to overwrite it"
   stage=installing
   run ditto "$new_app" "$installed" || fail "ditto"
   stage=installed
