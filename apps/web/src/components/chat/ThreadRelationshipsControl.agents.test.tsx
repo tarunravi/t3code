@@ -295,6 +295,207 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).toContain("Lineage · 1 running");
 });
 
+it("keeps a settled agent in current work while a follow-up run is active on its thread", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const childShell = {
+    id: "child-1",
+    title: "Checker",
+    status: "completed",
+    activityRunStatus: null,
+    activityRunStartedAt: null,
+    forkedFrom: null,
+    lineage: { rootThreadId: "parent", parentThreadId: "parent", relationshipToParent: "subagent" },
+  };
+  state.projection = {
+    thread: { id: "parent", lineage: { relationshipToParent: null }, activeProviderThreadId: null },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [
+      {
+        id: "agent-1",
+        driver: "codex",
+        providerInstanceId: "codex",
+        childThreadId: "child-1",
+        title: "Checker",
+        prompt: "Check the change",
+        model: "gpt-5.4",
+        status: "completed",
+        result: "Done",
+        startedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+        completedAt: DateTime.makeUnsafe("2026-09-16T12:02:15Z"),
+        updatedAt: DateTime.makeUnsafe("2026-09-16T12:02:15Z"),
+      },
+    ],
+  };
+  const panel = (
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("parent")}
+    />
+  );
+  const text = () =>
+    renderer.root
+      .findAll((node) => typeof node.type === "string")
+      .flatMap((node) => node.children.filter((child) => typeof child === "string"))
+      .join(" ")
+      .replace(/\s+/g, " ");
+  let mounted = false;
+  const withChildRun = async (activityRunStatus: string | null) => {
+    state.shells = [
+      {
+        environmentId: "test",
+        source: {
+          ...childShell,
+          activityRunStatus,
+          activityRunStartedAt:
+            activityRunStatus === null ? null : DateTime.makeUnsafe("2026-09-16T12:05:00Z"),
+        },
+      },
+    ];
+    await act(async () => {
+      if (mounted) renderer.update(cloneElement(panel));
+      else renderer = create(panel);
+    });
+    mounted = true;
+  };
+
+  await withChildRun(null);
+  expect(text()).toContain("Previous agents (1)");
+  expect(text()).not.toContain("Checker");
+
+  await withChildRun("running");
+  expect(text()).toContain("Lineage · 1 running");
+  expect(text()).not.toContain("Previous agents");
+  expect(text()).toContain("Checker");
+  expect(renderer.root.findByType(AgentElapsed).props.agent).toMatchObject({
+    status: "running",
+    startedAt: "2026-09-16T12:05:00.000Z",
+    completedAt: null,
+  });
+
+  await withChildRun(null);
+  expect(renderer.root.findByType("h3").children).toEqual(["Lineage"]);
+  expect(text()).toContain("Previous agents (1)");
+});
+
+it("expands and navigates a four-level subagent tree", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const environmentId = EnvironmentId.make("test");
+  const threadShell = (
+    id: string,
+    title: string,
+    parentThreadId: string,
+    relationshipToParent: "subagent" | "fork",
+  ) => ({
+    environmentId,
+    source: {
+      id,
+      title,
+      status: "running",
+      activityRunStatus: "running",
+      activityRunStartedAt: DateTime.makeUnsafe("2026-10-07T12:00:00Z"),
+      forkedFrom: null,
+      lineage: {
+        rootThreadId: "root",
+        parentThreadId,
+        relationshipToParent,
+      },
+    },
+  });
+  state.shells = [
+    threadShell("child", "Child agent", "root", "subagent"),
+    threadShell("grandchild", "Grandchild agent", "child", "subagent"),
+    threadShell("great-grandchild", "Great-grandchild agent", "grandchild", "subagent"),
+    threadShell("child-fork", "Child fork", "child", "fork"),
+    {
+      environmentId,
+      source: {
+        id: "child-transfer",
+        title: "Child transfer",
+        status: "running",
+        activityRunStatus: null,
+        forkedFrom: null,
+        lineage: {
+          rootThreadId: "root",
+          parentThreadId: null,
+          relationshipToParent: null,
+        },
+      },
+    },
+  ];
+  state.projection = {
+    thread: {
+      id: "root",
+      title: "Root conversation",
+      lineage: { rootThreadId: "root", parentThreadId: null, relationshipToParent: null },
+      activeProviderThreadId: null,
+    },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    subagents: [
+      {
+        id: "root-agent",
+        driver: "codex",
+        providerInstanceId: "codex",
+        childThreadId: "child",
+        title: "Child agent",
+        prompt: "Delegate the next level",
+        model: "gpt-5.4",
+        status: "running",
+        progress: null,
+        result: null,
+        startedAt: DateTime.makeUnsafe("2026-10-07T12:00:00Z"),
+        completedAt: null,
+        updatedAt: DateTime.makeUnsafe("2026-10-07T12:00:00Z"),
+      },
+    ],
+    contextTransfers: [
+      { sourceThreadId: "child", targetThreadId: "child-transfer", status: "consumed" },
+    ],
+  };
+  const panel = (
+    <ThreadRelationshipsPanel environmentId={environmentId} threadId={ThreadId.make("root")} />
+  );
+  const text = () =>
+    renderer.root
+      .findAll((node) => typeof node.type === "string")
+      .flatMap((node) => node.children.filter((child) => typeof child === "string"))
+      .join(" ")
+      .replace(/\s+/g, " ");
+  const expand = async (label: string) => {
+    const button = renderer.root.findByProps({ type: "button", "aria-label": label });
+    await act(async () => button.props.onClick());
+  };
+
+  await act(async () => {
+    renderer = create(panel);
+  });
+  expect(text()).toContain("Child agent");
+  expect(text()).not.toContain("Grandchild agent");
+  await expand("Show 1 subagent for Child agent");
+  expect(text()).toContain("Grandchild agent");
+  expect(text()).toContain("Running");
+  expect(text()).not.toContain("Great-grandchild agent");
+  expect(text()).not.toContain("Child fork");
+  expect(text()).not.toContain("Child transfer");
+
+  await expand("Show 1 subagent for Grandchild agent");
+  expect(text()).toContain("Great-grandchild agent");
+  expect(text()).toContain("Running");
+
+  const greatGrandchild = renderer.root.findByProps({
+    type: "button",
+    "aria-label": "Open Great-grandchild agent in this chat",
+  });
+  await act(async () => greatGrandchild.props.onClick());
+  expect(state.navigate).toHaveBeenCalledWith(
+    expect.objectContaining({ to: "/$environmentId/$threadId" }),
+  );
+});
+
 it("shows readable models and only differing workspace details in agent tooltips", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.showTooltips = true;
