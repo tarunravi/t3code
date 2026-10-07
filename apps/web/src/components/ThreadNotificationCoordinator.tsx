@@ -7,7 +7,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   type EnvironmentId,
-  isParentOwnedThread,
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -133,7 +132,8 @@ function EnvironmentNotifications({
     const next = new Map<ThreadId, NotificationState>();
     const subagentRequests = pendingSubagentRequestsByThread(threads);
     for (const rawThread of threads) {
-      if (isParentOwnedThread(rawThread.lineage)) continue;
+      const isSubagent = rawThread.lineage.relationshipToParent === "subagent";
+      if (rawThread.lineage.relationshipToParent !== null && !isSubagent) continue;
       const prior = previous.current.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
       if (prior?.raw === rawThread && prior.subagentRequest === subagentRequest) {
@@ -144,7 +144,8 @@ function EnvironmentNotifications({
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
       const attention =
-        status === "input" || status === "approval" || status === "failed" || status === "limited"
+        !isSubagent &&
+        (status === "input" || status === "approval" || status === "failed" || status === "limited")
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
