@@ -143,8 +143,17 @@ export async function reopenClosedView(
     case "pull-request":
       panels.openPullRequest(ref, surface);
       break;
-    default:
+    case "side-chat":
+      panels.openSideChat(ref, surface.threadId);
+      break;
+    case "background-task":
+      panels.openBackgroundTask(ref, surface.taskId);
+      break;
+    case "diff":
+    case "files":
+    case "pull-requests":
       panels.open(ref, surface.kind);
+      break;
   }
   return true;
 }
