@@ -24,8 +24,9 @@ import { ChildProcessSpawner } from "effect/process";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
 import {
-  AcpRegistryAdapterV2Driver,
+  createAcpRegistryAdapterV2,
   type AcpRegistryAdapterV2DriverEnv,
+  type AcpRegistryFlavorOverrides,
 } from "../../orchestration-v2/Adapters/AcpRegistryAdapterV2.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -35,6 +36,7 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
+  type ProviderDriverCreateInput,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import { providerModelsFromSettings } from "../providerSnapshot.ts";
@@ -187,6 +189,9 @@ interface SnapshotIdentity {
   readonly displayName: string | undefined;
   readonly accentColor: string | undefined;
   readonly continuationKey: string;
+  /** Set by dedicated drivers built on this one; defaults to ACP Registry. */
+  readonly driverKind?: ProviderDriverKind;
+  readonly supportsTextGeneration?: boolean;
 }
 
 function baseSnapshot(
@@ -210,7 +215,7 @@ function baseSnapshot(
         officialAcpRegistryIconUrlForAgentId(input.settings.agentId));
   return {
     instanceId: input.instanceId,
-    driver: DRIVER_KIND,
+    driver: input.driverKind ?? DRIVER_KIND,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     ...(iconUrl ? { iconUrl } : {}),
@@ -218,7 +223,7 @@ function baseSnapshot(
     // The registry driver rejects every application text-generation operation,
     // so selectors must not offer these instances for commit, PR, branch, or
     // title generation.
-    supportsTextGeneration: false,
+    supportsTextGeneration: input.supportsTextGeneration ?? false,
     enabled: input.settings.enabled,
     installed: input.installed,
     version: input.version,
@@ -465,17 +470,29 @@ export type AcpRegistryDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ServerSettings.ServerSettingsService;
 
-/** Canonical provider-instance wrapper for ACP Registry orchestration adapters. */
-export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryDriverEnv> = {
-  driverKind: DRIVER_KIND,
-  metadata: {
-    displayName: "ACP Registry",
-    supportsMultipleInstances: true,
-  },
-  configSchema: AcpRegistrySettings,
-  defaultConfig: () => decodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
+/**
+ * What a dedicated driver changes when it runs a local ACP command through
+ * this driver's discovery, live configuration, and session management.
+ */
+export interface AcpRegistryProviderVariant {
+  readonly driverKind: ProviderDriverKind;
+  readonly flavorOverrides?: Omit<AcpRegistryFlavorOverrides, "driver">;
+  /** Omitted when the agent offers no application text generation. */
+  readonly textGeneration?: TextGeneration["Service"];
+}
+
+export const makeAcpRegistryProviderInstance =
+  (variant: AcpRegistryProviderVariant) =>
+  ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }: ProviderDriverCreateInput<AcpRegistrySettings>) =>
     Effect.gen(function* () {
+      const driverKind = variant.driverKind;
       const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
       const runtimeCoordinator = yield* Effect.serviceOption(
         AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
@@ -495,7 +512,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       const serverConfig = yield* ServerConfig.ServerConfig;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
+        driverKind,
         instanceId,
       });
       const identity = {
@@ -503,21 +520,21 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         displayName,
         accentColor,
         continuationKey: continuationIdentity.continuationKey,
+        driverKind,
+        supportsTextGeneration: variant.textGeneration !== undefined,
       };
       const effectiveConfig = { ...config, enabled } satisfies AcpRegistrySettings;
       const processEnvironment = mergeProviderInstanceEnvironment(environment, hostEnvironment);
-      const orchestrationAdapter = yield* AcpRegistryAdapterV2Driver.create({
+      const orchestrationAdapter = yield* createAcpRegistryAdapterV2({
         instanceId,
-        displayName,
-        accentColor,
         environment,
-        enabled,
-        config,
+        settings: effectiveConfig,
+        flavorOverrides: { ...variant.flavorOverrides, driver: driverKind },
       }).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({
-              driver: DRIVER_KIND,
+              driver: driverKind,
               instanceId,
               detail: "Failed to build ACP Registry orchestration adapter.",
               cause,
@@ -729,7 +746,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({
-              driver: DRIVER_KIND,
+              driver: driverKind,
               instanceId,
               detail: "Failed to build the ACP Registry provider snapshot.",
               cause,
@@ -800,7 +817,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
 
       return {
         instanceId,
-        driverKind: DRIVER_KIND,
+        driverKind,
         continuationIdentity,
         displayName,
         accentColor,
@@ -813,7 +830,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
           ),
         },
         orchestrationAdapter,
-        textGeneration: makeUnsupportedTextGeneration(),
+        textGeneration: variant.textGeneration ?? makeUnsupportedTextGeneration(),
         acpSessionManagement: {
           listSessions: ({ cwd, cursor }) =>
             provideAcpManagementServices(
@@ -907,5 +924,16 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
           },
         },
       } satisfies ProviderInstance;
-    }),
+    });
+
+/** Canonical provider-instance wrapper for ACP Registry orchestration adapters. */
+export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryDriverEnv> = {
+  driverKind: DRIVER_KIND,
+  metadata: {
+    displayName: "ACP Registry",
+    supportsMultipleInstances: true,
+  },
+  configSchema: AcpRegistrySettings,
+  defaultConfig: () => decodeSettings({}),
+  create: makeAcpRegistryProviderInstance({ driverKind: DRIVER_KIND }),
 };
