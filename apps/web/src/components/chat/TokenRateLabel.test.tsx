@@ -110,6 +110,68 @@ describe("TokenRateLabel", () => {
       vi.useRealTimers();
     }
   });
+  it("aggregates unique live descendant rates while the parent waits or has completed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const parent = streaming("");
+      const child = streaming("");
+      const sources = (
+        childText: string,
+        parentText = "",
+        parentStatus: "running" | "completed" = "running",
+      ) => [
+        {
+          key: "thread:parent",
+          projection: {
+            ...parent,
+            runs: [{ ...parent.runs[0]!, status: parentStatus }],
+            turnItems: [
+              {
+                ...parent.turnItems[0]!,
+                text: parentText,
+              },
+            ],
+          },
+        },
+        {
+          key: "thread:child",
+          projection: {
+            ...child,
+            turnItems: [
+              {
+                ...child.turnItems[0]!,
+                text: childText,
+              },
+            ],
+          },
+        },
+      ];
+
+      await act(async () => root.render(<TokenRateLabel sources={sources("")} />));
+      vi.setSystemTime(2000);
+      await act(async () =>
+        root.render(<TokenRateLabel sources={sources("x".repeat(400), "x".repeat(200))} />),
+      );
+      expect(container.textContent).toBe("~75 tok/s");
+
+      const completedParent = projectionFor(completed)!;
+      await act(async () =>
+        root.render(
+          <TokenRateLabel
+            sources={[
+              { key: "thread:parent", projection: completedParent },
+              ...sources("x".repeat(400)).slice(1),
+              ...sources("x".repeat(400)).slice(1),
+            ]}
+          />,
+        ),
+      );
+      expect(container.textContent).toBe("~50 tok/s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("hides unsupported telemetry without claiming context growth as speed", async () => {
     await render({
       ...completed,
