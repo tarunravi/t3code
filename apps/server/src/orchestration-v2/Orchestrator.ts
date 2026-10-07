@@ -9980,6 +9980,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
+      const failedBeforeStart = deliveryRun.status === "failed" && deliveryRun.startedAt === null;
+      // Each run already exhausts the effect worker's bounded start retries.
+      // Allow one successor per result, using persisted history so recovery
+      // cannot reset the budget and later siblings keep their own retry.
+      const previousFailedMessageIds = new Set(
+        failedBeforeStart
+          ? projection.runs
+              .filter(
+                (run) => run.status === "failed" && run.startedAt === null && run.id !== runId,
+              )
+              .map((run) => run.userMessageId)
+          : [],
+      );
+      const retriedTaskIds = new Set(
+        projection.messages.flatMap((message) => {
+          const ownership = message.delegatedCompletion;
+          return previousFailedMessageIds.has(message.id) &&
+            ownership?.parentRunId === parentRun.id &&
+            ownership.generation < delivery.generation
+            ? ownership.taskIds
+            : [];
+        }),
+      );
       const now = yield* DateTime.now;
       const nextTaskStates = new Map<
         OrchestrationV2Subagent["id"],
@@ -9995,7 +10018,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           continue;
         }
         nextTaskStates.set(task.id, {
-          state: deliveryRun.status === "cancelled" ? "pending" : "delivered",
+          // Started failures may have delivered the prompt; a second pre-start
+          // failure exhausts this result's automatic retry budget.
+          state:
+            deliveryRun.status === "cancelled" ||
+            (failedBeforeStart && !retriedTaskIds.has(task.id))
+              ? "pending"
+              : "delivered",
           observedByRunId: null,
         });
       }
@@ -10009,9 +10038,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               nextTaskStates.get(task.id)?.state === "pending"),
         )
         .map((task) => task.id);
-      // Results that arrived while this delivery was outstanding go out
-      // together in one successor. Each child becomes pending once, so a
-      // cohort's successors are bounded by its children.
+      // Undelivered results and results that arrived while this delivery was
+      // outstanding go out together in one successor.
       const canReserveFollowUp =
         cohort.disposition === "open" &&
         projection.thread.archivedAt === null &&
