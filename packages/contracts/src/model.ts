@@ -152,6 +152,7 @@ const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ZCODE_DRIVER_KIND = ProviderDriverKind.make("zcode");
+const OMP_DRIVER_KIND = ProviderDriverKind.make("omp");
 
 export const DEFAULT_MODEL = "gpt-6-astra";
 
@@ -187,6 +188,8 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [ProviderDriverKind.make("antigravity")]: ANTIGRAVITY_DEFAULT_MODEL,
   // "default" runs whatever model the user's ZCode provider config selects.
   [ZCODE_DRIVER_KIND]: "default",
+  // "default" keeps the model omp starts with (its config or --model launch argument).
+  [OMP_DRIVER_KIND]: "default",
 };
 
 /** Per-provider text generation model defaults. */
@@ -239,4 +242,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [PI_DRIVER_KIND]: "Pi",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [ZCODE_DRIVER_KIND]: "ZCode",
+  [OMP_DRIVER_KIND]: "oh-my-pi",
 };
