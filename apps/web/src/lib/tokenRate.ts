@@ -80,7 +80,7 @@ export function latestTokenRateTurn(
 
 type TokenRateProjection = Pick<
   OrchestrationV2ThreadProjection,
-  "runs" | "attempts" | "providerTurns" | "turnItems"
+  "runs" | "attempts" | "providerTurns" | "turnItems" | "nodes"
 >;
 
 /** Rough tokenizer-agnostic estimate; good enough for a fluctuating speed readout. */
@@ -119,10 +119,23 @@ export function liveTokenRateSource(
   for (const attempt of projection.attempts)
     if (attempt.runId === run.id && attempt.rootNodeId !== null)
       rootNodeIds.add(attempt.rootNodeId);
+  const nodesById = new Map(
+    projection.nodes.filter((node) => node.runId === run.id).map((node) => [node.id, node]),
+  );
   let chars = 0;
   for (const item of projection.turnItems) {
-    if (item.runId !== run.id || item.nodeId === null || !rootNodeIds.has(item.nodeId)) continue;
-    if (item.type === "assistant_message" || item.type === "reasoning") chars += item.text.length;
+    if (item.runId !== run.id || item.nodeId === null) continue;
+    if (item.type !== "assistant_message" && item.type !== "reasoning") continue;
+    let nodeId = item.nodeId;
+    const visited = new Set<string>();
+    while (!rootNodeIds.has(nodeId) && !visited.has(nodeId)) {
+      visited.add(nodeId);
+      const node = nodesById.get(nodeId);
+      // Child output is measured in its own projection and summed by the lineage UI.
+      if (node?.kind === "subagent" || node?.parentNodeId == null) break;
+      nodeId = node.parentNodeId;
+    }
+    if (rootNodeIds.has(nodeId)) chars += item.text.length;
   }
   return { key: run.id, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
 }
