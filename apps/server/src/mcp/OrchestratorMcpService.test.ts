@@ -2200,6 +2200,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     Effect.gen(function* () {
       const delegatedChildThreadId = ThreadId.make("thread:mcp-providers-delegated-child");
       const grandchildThreadId = ThreadId.make("thread:mcp-providers-grandchild");
+      const greatGrandchildThreadId = ThreadId.make("thread:mcp-providers-great-grandchild");
       const unrosteredRootThreadId = ThreadId.make("thread:mcp-providers-unrostered-root");
       const unrosteredChildThreadId = ThreadId.make("thread:mcp-providers-unrostered-child");
       const codex = {
@@ -2273,6 +2274,12 @@ describe("OrchestratorMcpService provider resolution", () => {
               delegatedChildThreadId,
               delegated ? [task] : [],
             );
+          case greatGrandchildThreadId:
+            return subagentThread(
+              greatGrandchildThreadId,
+              grandchildThreadId,
+              delegated ? [{ ...task, threadId: greatGrandchildThreadId }] : [],
+            );
           case unrosteredRootThreadId:
             return subagentThread(unrosteredRootThreadId, null);
           case unrosteredChildThreadId:
@@ -2337,7 +2344,11 @@ describe("OrchestratorMcpService provider resolution", () => {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         const rootRoster = (yield* service.capabilities(scope)).threadRoster;
         assert.isDefined(rootRoster);
-        for (const threadId of [delegatedChildThreadId, grandchildThreadId]) {
+        for (const threadId of [
+          delegatedChildThreadId,
+          grandchildThreadId,
+          greatGrandchildThreadId,
+        ]) {
           const inherited = yield* service.capabilities(scopeForThread(threadId));
           assert.deepEqual(inherited.threadRoster, rootRoster, threadId);
         }
@@ -2363,6 +2374,30 @@ describe("OrchestratorMcpService provider resolution", () => {
             (command) => (command as { modelSelection: unknown }).modelSelection,
           ),
           [
+            {
+              instanceId: antigravityInstanceId,
+              model: "ant-model",
+              options: [{ id: "effort", value: "medium" }],
+            },
+          ],
+        );
+
+        const greatGrandchildScope = scopeForThread(greatGrandchildThreadId);
+        yield* service.delegateTask(greatGrandchildScope, {
+          task: "Summarize the nested diff.",
+          mode: "async",
+          clientRequestId: "great-grandchild-inherited-roster-default",
+        });
+        assert.deepEqual(
+          (yield* Ref.get(dispatched)).map(
+            (command) => (command as { modelSelection: unknown }).modelSelection,
+          ),
+          [
+            {
+              instanceId: antigravityInstanceId,
+              model: "ant-model",
+              options: [{ id: "effort", value: "medium" }],
+            },
             {
               instanceId: antigravityInstanceId,
               model: "ant-model",
