@@ -14,7 +14,10 @@ import { cn } from "~/lib/utils";
  */
 export function TokenRateLabel(props: {
   readonly projection?:
-    | Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns" | "turnItems">
+    | Pick<
+        OrchestrationV2ThreadProjection,
+        "runs" | "attempts" | "providerTurns" | "turnItems" | "nodes"
+      >
     | null
     | undefined;
   readonly sources?: readonly TokenRateProjectionSource[] | undefined;
