@@ -5,6 +5,7 @@ import {
   CodexSettings,
   CursorSettings,
   GrokSettings,
+  OmpSettings,
   OpenCodeSettings,
   PiSettings,
   ProviderDriverKind,
@@ -112,6 +113,12 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
         description: "Optional. Overrides ZCode's bundled provider catalog.",
       },
     ],
+  },
+  {
+    value: ProviderDriverKind.make("omp"),
+    label: "oh-my-pi",
+    settingsSchema: OmpSettings,
+    hasDefaultInstance: false,
   },
   {
     value: ProviderDriverKind.make("acpRegistry"),
