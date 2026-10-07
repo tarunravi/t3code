@@ -176,7 +176,8 @@ export function startThreadNotifications(
     const subagentRequests = pendingSubagentRequestsByThread(threads);
     const changed: Array<[NotificationState | undefined, NotificationState]> = [];
     for (const rawThread of threads) {
-      if (isParentOwnedThread(rawThread.lineage)) continue;
+      const isSubagent = rawThread.lineage.relationshipToParent === "subagent";
+      if (rawThread.lineage.relationshipToParent !== null && !isSubagent) continue;
       const prior = previous.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
       if (prior?.raw === rawThread && prior.subagentRequest === subagentRequest) {
@@ -187,11 +188,8 @@ export function startThreadNotifications(
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
       const attention =
-        status === "input" ||
-        status === "request" ||
-        status === "approval" ||
-        status === "failed" ||
-        status === "limited"
+        !isSubagent &&
+        (status === "input" || status === "request" || status === "approval" || status === "failed" || status === "limited")
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
