@@ -701,31 +701,9 @@ export function ThreadRelationshipsPanel(props: {
                   <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
                 </Tooltip>
               );
-              const canExpandSubagents =
-                isSubagent && !isParent && !isMergeTarget && edge.sourceThreadId === props.threadId;
-              return (
-                <li
-                  key={threadId}
-                  className={
-                    canExpandSubagents
-                      ? "group relative flex flex-col rounded-lg"
-                      : "group relative flex h-8 items-center rounded-lg"
-                  }
-                >
-                  {canExpandSubagents ? (
-                    <ThreadSubagentTreeDisclosure
-                      graph={graph}
-                      rowsBySourceThreadId={rowsBySourceThreadId}
-                      threadId={threadId}
-                      threadTitle={threadTitle}
-                      ancestorThreadIds={new Set([props.threadId, threadId])}
-                      onOpenThread={openThread}
-                    >
-                      {relationshipRow}
-                    </ThreadSubagentTreeDisclosure>
-                  ) : (
-                    relationshipRow
-                  )}
+              const relationshipHeader = (
+                <div className="group relative flex h-8 w-full min-w-0 items-center rounded-lg">
+                  {relationshipRow}
                   {canStop && agent ? (
                     <div className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
                       <Tooltip>
@@ -752,6 +730,33 @@ export function ThreadRelationshipsPanel(props: {
                       </Tooltip>
                     </div>
                   ) : null}
+                </div>
+              );
+              const canExpandSubagents =
+                isSubagent && !isParent && !isMergeTarget && edge.sourceThreadId === props.threadId;
+              return (
+                <li
+                  key={threadId}
+                  className={
+                    canExpandSubagents
+                      ? "flex flex-col rounded-lg"
+                      : "flex h-8 items-center rounded-lg"
+                  }
+                >
+                  {canExpandSubagents ? (
+                    <ThreadSubagentTreeDisclosure
+                      graph={graph}
+                      rowsBySourceThreadId={rowsBySourceThreadId}
+                      threadId={threadId}
+                      threadTitle={threadTitle}
+                      ancestorThreadIds={new Set([props.threadId, threadId])}
+                      onOpenThread={openThread}
+                    >
+                      {relationshipHeader}
+                    </ThreadSubagentTreeDisclosure>
+                  ) : (
+                    relationshipHeader
+                  )}
                 </li>
               );
             })
