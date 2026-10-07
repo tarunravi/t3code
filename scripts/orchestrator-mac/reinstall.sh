@@ -139,9 +139,7 @@ app_executable() {
 # Treat ps matches as candidates only. lsof confirms that the process image is
 # actually inside a verified app bundle before a PID can be signalled.
 process_executable() {
-  local records
-  records="$(lsof -a -p "$1" -d txt -Fn 2>/dev/null)" || return 1
-  printf '%s\n' "$records" | sed -n 's/^n//p' | head -n 1
+  lsof -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true
 }
 
 app_pid_candidates() {
@@ -153,8 +151,7 @@ app_pids() {
   local candidates pid executable
   candidates="$(app_pid_candidates)" || return 1
   for pid in $candidates; do
-    executable="$(process_executable "$pid")" || return 1
-    [ -n "$executable" ] || return 1
+    executable="$(process_executable "$pid")"
     case "$executable" in
         "$installed/Contents/"*|"$legacy_installed/Contents/"*|"$older_installed/Contents/"*)
           printf '%s\n' "$pid"
