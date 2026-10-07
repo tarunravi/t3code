@@ -558,6 +558,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -582,6 +583,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
@@ -674,6 +676,7 @@ describe("OrchestratorMcpService", () => {
         ],
       ]) as unknown as ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>;
       const layerDependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => Effect.succeed(projections.get(threadId)!),
@@ -723,6 +726,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-grandchild"),
@@ -2175,6 +2179,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            ServerSettings.layerTest(),
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: (threadId) =>
@@ -2192,6 +2197,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               upsert: () =>
                 Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: tasks[0]! })),
             }),
+            usageSourcesTestLayer,
           ),
         ),
       );
@@ -2243,6 +2249,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  ServerSettings.layerTest(),
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: () => Effect.succeed(null),
@@ -2261,6 +2268,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     list: () => Effect.succeed({ tasks: [task({})] }),
                   }),
+                  usageSourcesTestLayer,
                 ),
               ),
             ),
@@ -2326,6 +2334,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  ServerSettings.layerTest(),
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: (threadId) =>
@@ -2353,6 +2362,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                     upsert: () =>
                       Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: bound })),
                   }),
+                  usageSourcesTestLayer,
                 ),
               ),
             ),
