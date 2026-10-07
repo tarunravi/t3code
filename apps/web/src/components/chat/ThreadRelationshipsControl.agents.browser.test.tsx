@@ -87,6 +87,7 @@ vi.mock(import("../ui/tooltip"), async () => {
 });
 
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { AgentElapsed } from "./AgentElapsed";
 
 let root: Root;
 let container: HTMLDivElement;
