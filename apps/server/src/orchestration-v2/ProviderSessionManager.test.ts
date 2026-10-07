@@ -1148,9 +1148,8 @@ it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake"
       assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
       assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
 
-      // Nothing of the interrupted open is left behind: the next open starts a
-      // fresh process with a fresh credential that a later release revokes,
-      // which a leaked reservation would prevent.
+      // The next open starts fresh with a new bearer; stopping its provider
+      // process keeps that current bearer available for a future model switch.
       yield* Ref.set(holdHandshake, false);
       yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
       const replacement = (yield* Ref.get(mcpConfigs)).at(-1);
@@ -1161,7 +1160,7 @@ it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake"
       assert.equal(projection.providerSessions.at(-1)?.status, "ready");
 
       yield* manager.close(providerSessionId);
-      assert.isUndefined(yield* registry.resolve(replacementToken!));
+      assert.equal((yield* registry.resolve(replacementToken!))?.thread.threadId, threadId);
     });
 
     yield* effect.pipe(
@@ -2218,7 +2217,7 @@ it.effect(
 );
 
 it.effect(
-  "ProviderSessionManagerV2 revokes a reused credential after a resume stopped while checking it",
+  "ProviderSessionManagerV2 drops the reuse reservation when resume checking is stopped",
   () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
@@ -2270,9 +2269,19 @@ it.effect(
         yield* Deferred.await(paused);
         yield* Fiber.interrupt(stopped);
 
-        // Nothing holds the credential now, so a terminal release revokes it.
+        // The interrupted reattach did not claim this token. Once the thread
+        // rotates to a newer bearer, releasing the old host must revoke only
+        // the stale credential.
+        const rotated = yield* registry.issue({
+          threadId,
+          providerInstanceId: modelSelection.instanceId,
+          capabilities: new Set(["orchestration", "worktree", "pull-requests", "preview"]),
+        });
+        McpProviderSession.setMcpProviderSession(rotated.config);
         yield* manager.release({ providerSessionId, reason: "manual_shutdown" });
         assert.isUndefined(yield* registry.resolve(token));
+        const rotatedToken = rotated.config.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.equal((yield* registry.resolve(rotatedToken))?.thread.threadId, threadId);
       }).pipe(
         Effect.provide(
           layerTest({ state, idleTimeoutMs: 60_000, pauseResolve: { armed, paused } }),
