@@ -59,6 +59,7 @@ const environments = [
     environmentId: EnvironmentId.make("test-environment"),
     label: "Test environment",
     isPending: false,
+    isConnected: true,
     canReadDiagnostics: true,
     error: null,
     needsCursorKeychainAccess: false,
@@ -82,6 +83,7 @@ beforeEach(() => {
     environments,
     selectedEnvironments: environments,
     isPending: false,
+    isConnected: true,
     shown: null,
     isPartial: false,
     refresh: vi.fn(),
@@ -176,6 +178,7 @@ describe("UsagePage", () => {
         selectedEnvironments: next,
         isPending: status.isPending,
         isPartial: false,
+        shown: null,
         refresh: vi.fn(),
       });
       await act(() => renderer.render(<UsagePage />));

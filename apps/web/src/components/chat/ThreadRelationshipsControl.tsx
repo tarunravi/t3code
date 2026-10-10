@@ -252,7 +252,7 @@ function ThreadSubagentTreeDisclosure(props: {
             aria-expanded={expanded}
             aria-label={`${expanded ? "Hide" : "Show"} ${rows.length} subagent${rows.length === 1 ? "" : "s"} for ${props.threadTitle}`}
             onClick={() => setExpanded((value) => !value)}
-            className="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-black/[0.055] hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70 dark:hover:bg-white/[0.075]"
+            className="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-black/[0.055] hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70 dark:hover:bg-white/[0.075]"
           >
             <span aria-hidden="true">{rows.length}</span>
             {expanded ? (

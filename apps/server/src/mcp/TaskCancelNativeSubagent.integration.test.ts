@@ -1,3 +1,5 @@
+import * as ServerSettings from "../serverSettings.ts";
+import { usageSourcesTestLayer } from "../usage/UsageLimitSources.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -136,6 +138,8 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
       );
       const layerTest = OrchestratorMcpService.layer.pipe(
         Layer.provideMerge(layerOrchestration),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(usageSourcesTestLayer),
         Layer.provide(
           Layer.mergeAll(
             layerAdapters,

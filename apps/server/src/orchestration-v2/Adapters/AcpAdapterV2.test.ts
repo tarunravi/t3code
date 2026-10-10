@@ -693,12 +693,8 @@ describe("AcpAdapterV2", () => {
       const path = yield* Path.Path;
       const instanceId = ProviderInstanceId.make("acp-prompt-usage");
       const threadId = ThreadId.make("thread-acp-prompt-usage");
-      const adapter = makeAcpAdapterV2({
-        crypto: yield* Crypto.Crypto,
+      const adapter = yield* makeAcpAdapterV2({
         instanceId,
-        fileSystem: yield* FileSystem.FileSystem,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig,
         selfInvocation: yield* resolveSelfInvocation(),
         flavor: {
           driver: ProviderDriverKind.make("omp"),
@@ -725,7 +721,7 @@ describe("AcpAdapterV2", () => {
           }),
         },
       });
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: process.cwd(),

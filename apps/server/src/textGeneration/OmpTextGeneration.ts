@@ -15,8 +15,8 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { OMP_DEFAULT_BINARY, ompPrintArgs } from "../provider/acp/OmpAcpSupport.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-import { normalizeCliError } from "./TextGenerationUtils.ts";
+import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
+import { normalizeCliError } from "@t3tools/provider-core/server/textGenerationUtils";
 
 const OMP_TIMEOUT_MS = 180_000;
 
