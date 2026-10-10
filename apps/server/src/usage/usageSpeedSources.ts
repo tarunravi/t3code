@@ -181,7 +181,7 @@ export async function readClaudeSpeed(input: {
   }
   const samples: SpeedSample[] = [];
   for (const directory of input.directories) {
-    for (const file of await listTranscriptFiles(directory, input.sinceMs)) {
+    for (const file of (await listTranscriptFiles(directory, input.sinceMs)).files) {
       try {
         for (const sample of await readClaudeFile(file.path)) {
           if (sample.timestampMs >= input.sinceMs && sample.timestampMs < input.untilMs) {

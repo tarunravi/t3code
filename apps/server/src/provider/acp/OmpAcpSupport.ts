@@ -1,3 +1,4 @@
+import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
 /**
  * oh-my-pi (`omp`) runs as a local ACP agent (`omp acp`). Its sessions
  * advertise model and thinking-level config options, which the ACP Registry
@@ -5,12 +6,7 @@
  * holds what is specific to omp: its launch command, how it reports token
  * usage, and its one-shot print mode for text generation.
  */
-import {
-  AcpRegistrySettings,
-  ProviderDriverKind,
-  type OmpSettings,
-  type TurnTokenUsage,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, type OmpSettings, type TurnTokenUsage } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
