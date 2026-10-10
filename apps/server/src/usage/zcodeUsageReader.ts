@@ -4,7 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeTimersPromises from "node:timers/promises";
 
-import { totalTokens, type UsageRecord } from "./usageTranscripts.ts";
+import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usage";
 
 function tokens(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;

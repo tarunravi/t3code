@@ -8,35 +8,34 @@
  * (for example `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`) reach every turn.
  */
 import { ProviderDriverKind, TextGenerationError, ZCodeSettings } from "@t3tools/contracts";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/process";
 
-import type * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import {
   ZCodeAdapterV2Driver,
   type ZCodeAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/ZCodeAdapterV2.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
-import { ProviderDriverError } from "../Errors.ts";
+import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { buildInitialZCodeProviderSnapshot, checkZCodeProviderStatus } from "../ZCodeProvider.ts";
-import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
   type ProviderInstance,
-} from "../ProviderDriver.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+} from "@t3tools/provider-core/server/driver";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
-} from "../providerUpdateSettings.ts";
-import { withInstanceIdentity } from "./instanceIdentity.ts";
+} from "@t3tools/provider-core/server/snapshotSettings";
+import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 
 const DRIVER_KIND = ProviderDriverKind.make("zcode");
 const decodeZCodeSettings = Schema.decodeSync(ZCodeSettings);
@@ -63,16 +62,16 @@ const unsupportedTextGeneration: TextGeneration["Service"] = (() => {
 
 export type ZCodeDriverEnv =
   | ZCodeAdapterV2DriverEnv
-  | BackgroundPolicy.BackgroundPolicy
+  | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
-  | FileSystem.FileSystem
-  | ServerSettingsService;
+  | FileSystem.FileSystem;
 
 export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "ZCode",
     supportsMultipleInstances: true,
+    hasDefaultInstance: false,
   },
   configSchema: ZCodeSettings,
   defaultConfig: (): ZCodeSettings => decodeZCodeSettings({}),
@@ -80,10 +79,9 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fs = yield* FileSystem.FileSystem;
-      const serverSettings = yield* ServerSettingsService;
-      const processEnv = mergeProviderInstanceEnvironment(
+      const processEnv = yield* mergeProviderInstanceEnvironment(
         environment,
-        yield* HostProcessEnvironment,
+        yield* HostProcess.Environment,
       );
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -117,7 +115,7 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
         ),
       );
 
-      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
+      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<ZCodeSettings>>({
         resolveMaintenance: () => Effect.succeed(MAINTENANCE),
         getSettings: snapshotSettings.getSettings,

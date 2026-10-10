@@ -7,7 +7,7 @@ import * as NodeSqlite from "node:sqlite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { UsageAggregator } from "./usageAggregation.ts";
-import { totalTokens } from "./usageTranscripts.ts";
+import { totalTokens } from "@t3tools/provider-core/server/usage";
 import { readZCodeUsage } from "./zcodeUsageReader.ts";
 
 const START = Date.parse("2026-08-01T10:00:00Z");

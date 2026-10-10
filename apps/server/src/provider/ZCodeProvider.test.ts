@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -107,7 +107,7 @@ describe("ZCode configured model discovery", () => {
         ],
       ] as const) {
         const model = yield* readZCodeConfiguredModel(environment).pipe(
-          Effect.provideService(HostProcessPlatform, "linux"),
+          Effect.provideService(HostProcess.Platform, "linux"),
           Effect.provideService(
             FileSystem.FileSystem,
             files(config("custom", "alias"), (actual) => assert.equal(actual, path)),
@@ -121,7 +121,7 @@ describe("ZCode configured model discovery", () => {
   it.effect("uses the Windows instance home with Windows path semantics", () =>
     Effect.gen(function* () {
       const model = yield* readZCodeConfiguredModel({ USERPROFILE: "C:\\Users\\instance" }).pipe(
-        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcess.Platform, "win32"),
         Effect.provideService(
           FileSystem.FileSystem,
           files(config(), (path) =>

@@ -713,7 +713,7 @@ describe("handoff delivery", () => {
 
   it.effect("points at thread_read when the transcript cannot fit the free context", () =>
     Effect.gen(function* () {
-      let captured: ProviderAdapterV2HistoricalContext | undefined;
+      let captured: ProviderAdapter.ProviderAdapterV2HistoricalContext | undefined;
       const oversized = message("item:oversized", "user", "x".repeat(20_000));
       const result = yield* deliverContextHandoffs({
         handoffs: [

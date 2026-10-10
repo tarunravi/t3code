@@ -26,12 +26,12 @@ import { EventSinkV2 } from "./EventSink.ts";
 import { OrchestratorDispatchError, OrchestratorV2 } from "./Orchestrator.ts";
 import type {
   ProviderAdapterV2Event,
-  ProviderAdapterV2Shape,
+  ProviderAdapterV2,
   ProviderAdapterV2TurnInput,
-} from "./ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { layerSingle } from "./ProviderAdapterRegistry.ts";
 import { layerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
-import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
 const makeScenario = (name: string, capabilities: OrchestrationV2ProviderCapabilities) =>
   Effect.gen(function* () {
@@ -47,7 +47,7 @@ const makeScenario = (name: string, capabilities: OrchestrationV2ProviderCapabil
     // Session-wide work, such as Claude's background subagents or, on a
     // shared session, another thread's work.
     let sessionHasBackgroundWork = false;
-    const adapter: ProviderAdapterV2Shape = {
+    const adapter: ProviderAdapterV2["Service"] = {
       instanceId,
       driver,
       getCapabilities: () => Effect.succeed(capabilities),
