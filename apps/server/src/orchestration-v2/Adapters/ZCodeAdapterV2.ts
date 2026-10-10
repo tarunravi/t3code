@@ -1,3 +1,4 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 /**
  * ZCodeAdapterV2 — orchestrator-v2 adapter for the ZCode CLI
  * (https://github.com/zai-org/ZCode).
@@ -21,7 +22,7 @@
  * builds accept: each turn writes the thread's endpoint and bearer to a
  * private temp file that lives for that turn's process.
  */
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
   ProviderDriverKind,
@@ -48,10 +49,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
-import { IdAllocatorV2 } from "../IdAllocator.ts";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { t3OrchestrationPromptForFirstRun } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
 import {
   ProviderAdapterForkThreadError,
   ProviderAdapterInterruptError,
@@ -66,15 +67,17 @@ import {
   type ProviderAdapterV2Event,
   type ProviderAdapterV2OpenSessionInput,
   type ProviderAdapterV2SessionRuntime,
-  type ProviderAdapterV2Shape,
   type ProviderAdapterV2TurnInput,
-} from "../ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
   type ProviderAdapterDriverCreateInput,
-} from "../ProviderAdapterDriver.ts";
-import { makeProviderFailure, makeProviderFailureTurnItem } from "../ProviderFailure.ts";
+} from "@t3tools/provider-core/server/adapterDriver";
+import {
+  makeProviderFailure,
+  makeProviderFailureTurnItem,
+} from "@t3tools/provider-core/server/failure";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
   buildZCodePromptArgs,
@@ -203,6 +206,7 @@ function zcodeCapabilities(supportsMcpTools: boolean): OrchestrationV2ProviderCa
 }
 
 interface ZCodeAdapterV2Options {
+  readonly mcpSessions: McpProviderSessions.McpProviderSessions["Service"];
   readonly instanceId: ProviderInstanceId;
   readonly settings: ZCodeSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -267,7 +271,7 @@ interface ActiveZCodeTurn {
   stop: Effect.Effect<void> | null;
 }
 
-export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdapterV2Shape {
+export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdapterV2["Service"] {
   const { idAllocator } = options;
   const command = options.settings.binaryPath || "zcode";
 
@@ -334,7 +338,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
       if (input.modelSelection.model !== "default")
         return yield* protocolError(MODEL_SELECTION_MESSAGE);
       const sessionScope = yield* Effect.scope;
-      const platform = yield* HostProcessPlatform;
+      const mcpSessions = options.mcpSessions;
+      const platform = yield* HostProcess.Platform;
       const cwd = input.runtimePolicy.cwd ?? options.serverConfig.cwd;
       const createdAt = yield* DateTime.now;
       const mcpSupported = yield* supportsMcpConfig;
@@ -660,7 +665,6 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
           type: "turn_item.updated",
           driver: ZCODE_PROVIDER,
           turnItem: makeProviderFailureTurnItem({
-            idAllocator,
             driver: ZCODE_PROVIDER,
             threadId: turn.input.threadId,
             runId: turn.input.runId,
@@ -835,7 +839,7 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
               return path === null ? [] : [path];
             });
             const mcpSession = mcpSupported
-              ? McpProviderSession.readMcpProviderSession(turnInput.threadId)
+              ? yield* mcpSessions.read(turnInput.threadId)
               : undefined;
             const promptArgs = {
               prompt: t3OrchestrationPromptForFirstRun({
@@ -974,6 +978,7 @@ export type ZCodeAdapterV2DriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | IdAllocatorV2
+  | McpProviderSessions.McpProviderSessions
   | ServerConfig;
 
 export const ZCodeAdapterV2Driver: ProviderAdapterDriver<ZCodeSettings, ZCodeAdapterV2DriverEnv> = {
@@ -982,11 +987,12 @@ export const ZCodeAdapterV2Driver: ProviderAdapterDriver<ZCodeSettings, ZCodeAda
   defaultConfig: (): ZCodeSettings => DEFAULT_ZCODE_SETTINGS,
   create: Effect.fn("ZCodeAdapterV2Driver.create")(
     function* (input: ProviderAdapterDriverCreateInput<ZCodeSettings>) {
-      const hostEnvironment = yield* HostProcessEnvironment;
+      const hostEnvironment = yield* HostProcess.Environment;
       return makeZCodeAdapterV2({
+        mcpSessions: yield* McpProviderSessions.McpProviderSessions,
         instanceId: input.instanceId,
         settings: { ...input.config, enabled: input.enabled },
-        environment: mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
+        environment: yield* mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
         spawner: yield* ChildProcessSpawner.ChildProcessSpawner,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocatorV2,

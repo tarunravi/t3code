@@ -1,3 +1,5 @@
+import * as ServerSettings from "../serverSettings.ts";
+import { usageSourcesTestLayer } from "../usage/UsageLimitSources.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -31,7 +33,6 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -151,6 +152,8 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
       );
       const layerTest = layerOrchestratorService.pipe(
         Layer.provideMerge(layerOrchestration),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(usageSourcesTestLayer),
         Layer.provide(
           Layer.mergeAll(
             layerAdapters,

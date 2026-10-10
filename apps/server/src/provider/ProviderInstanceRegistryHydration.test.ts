@@ -3,8 +3,10 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerSettings as ServerSettingsSchema,
   type ServerSettings,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -90,6 +92,30 @@ describe("deriveProviderInstanceConfigMap", () => {
     const merged = deriveProviderInstanceConfigMap(settings);
 
     expect(merged[instanceId]).toBe(settings.providerInstances[instanceId]);
+  });
+});
+
+describe("optional fork providers", () => {
+  const decodeSettings = Schema.decodeUnknownSync(ServerSettingsSchema);
+
+  it("does not start ZCode or oh-my-pi without a configured instance", () => {
+    const instances = deriveProviderInstanceConfigMap(decodeSettings({}));
+    expect(
+      Object.values(instances).some(({ driver }) => driver === "zcode" || driver === "omp"),
+    ).toBe(false);
+    expect(instances[ProviderInstanceId.make("codex")]?.driver).toBe("codex");
+  });
+
+  it("keeps explicitly configured ZCode and oh-my-pi instances", () => {
+    const configured = {
+      personal: { driver: "zcode", config: { binaryPath: "zcode-personal" } },
+      local: { driver: "omp", config: { binaryPath: "omp-personal" } },
+    };
+    const instances = deriveProviderInstanceConfigMap(
+      decodeSettings({ providerInstances: configured }),
+    );
+    expect(instances[ProviderInstanceId.make("personal")]).toEqual(configured.personal);
+    expect(instances[ProviderInstanceId.make("local")]).toEqual(configured.local);
   });
 });
 

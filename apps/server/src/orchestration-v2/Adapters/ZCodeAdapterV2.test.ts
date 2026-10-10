@@ -1,3 +1,4 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 // @effect-diagnostics nodeBuiltinImport:off - the fake ZCode CLI is a real script on disk.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -28,9 +29,15 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy, type ProviderAdapterV2Event } from "../ProviderAdapter.ts";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import {
+  IdAllocatorV2,
+  layer as idAllocatorLayer,
+} from "@t3tools/provider-core/server/IdAllocator";
+import {
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2Event,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeZCodeAdapterV2 } from "./ZCodeAdapterV2.ts";
 import {
   buildZCodePromptArgs,
@@ -43,7 +50,12 @@ import {
 const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-zcode-v2-adapter-",
 }).pipe(Layer.provide(NodeServices.layer));
-const testLayer = Layer.mergeAll(NodeServices.layer, idAllocatorLayer, serverConfigLayer);
+const testLayer = Layer.mergeAll(
+  NodeServices.layer,
+  idAllocatorLayer,
+  serverConfigLayer,
+  McpProviderSessions.layer,
+);
 
 const INSTANCE_ID = ProviderInstanceId.make("zcode");
 const THREAD_ID = ThreadId.make("thread-zcode-test");
@@ -199,8 +211,8 @@ function makeFakeZCode(
 
 /** Registers the thread's T3 MCP credential, as `ProviderSessionManager` does before a turn. */
 const withMcpSession = Effect.acquireRelease(
-  Effect.sync(() =>
-    McpProviderSession.setMcpProviderSession({
+  Effect.flatMap(McpProviderSessions.McpProviderSessions, (sessions) =>
+    sessions.set({
       environmentId: EnvironmentId.make("environment-zcode-mcp"),
       threadId: THREAD_ID,
       providerSessionId: "mcp-session-zcode",
@@ -210,7 +222,10 @@ const withMcpSession = Effect.acquireRelease(
       browserToolsAvailable: false,
     }),
   ),
-  () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
+  () =>
+    Effect.flatMap(McpProviderSessions.McpProviderSessions, (sessions) =>
+      sessions.clear(THREAD_ID),
+    ),
 );
 
 const openRuntime = Effect.fnUntraced(function* (
@@ -218,6 +233,7 @@ const openRuntime = Effect.fnUntraced(function* (
   model = "default",
 ) {
   const adapter = makeZCodeAdapterV2({
+    mcpSessions: yield* McpProviderSessions.McpProviderSessions,
     instanceId: INSTANCE_ID,
     settings: { enabled: true, binaryPath: "zcode-glm" },
     environment: {},

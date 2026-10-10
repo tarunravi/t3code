@@ -9,7 +9,7 @@
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import type { ServerProviderModel, ZCodeSettings } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
@@ -27,7 +27,7 @@ import {
   spawnAndCollect,
   type ProviderProbeResult,
   type ServerProviderDraft,
-} from "./providerSnapshot.ts";
+} from "@t3tools/provider-core/server/snapshotProbe";
 
 const ZCODE_PRESENTATION = {
   displayName: "ZCode",
@@ -67,7 +67,7 @@ export const readZCodeConfiguredModel = Effect.fn("readZCodeConfiguredModel")(fu
   binaryPath = "zcode",
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const paths = platform === "win32" ? NodePath.win32 : NodePath.posix;
   const explicitPath = environment.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE?.trim();
   // A wrapper can change its config internally; ambient HOME is not evidence.
