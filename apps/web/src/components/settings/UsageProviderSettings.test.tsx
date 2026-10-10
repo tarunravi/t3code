@@ -58,6 +58,7 @@ const usage = [
     label: "ZCode device",
     error: null,
     isPending: false,
+    isConnected: true,
     canReadDiagnostics: true,
     needsCursorKeychainAccess: false,
     summary: {
