@@ -3,15 +3,16 @@ import type {
   ThreadId,
   SubagentPreset,
   SubagentPresetEntry,
-  SubagentRole,
   SubagentRosterEntry,
 } from "@t3tools/contracts";
 
 import { rosterEntryKey } from "../chat/threadSubagentRoster.logic";
 
-/** Presets and persisted rosters share selections, roles, and descriptions. */
+/** Presets and persisted rosters share selections and descriptions. */
 export function presetEntryAsRosterEntry(entry: SubagentPresetEntry): SubagentRosterEntry {
-  return { ...entry };
+  return entry.description === undefined
+    ? { selection: entry.selection }
+    : { selection: entry.selection, description: entry.description };
 }
 
 /** Re-attaches descriptions to entries the shared roster helpers returned. */
@@ -19,12 +20,19 @@ export function mergePresetDescriptions(
   entries: ReadonlyArray<SubagentPresetEntry>,
   next: ReadonlyArray<SubagentRosterEntry>,
 ): SubagentPresetEntry[] {
-  const descriptions = new Map(
-    entries.map((entry) => [rosterEntryKey(presetEntryAsRosterEntry(entry)), entry.description]),
-  );
+  const descriptions = new Map<string, (string | undefined)[]>();
+  for (const entry of entries) {
+    const key = rosterEntryKey(presetEntryAsRosterEntry(entry));
+    const matches = descriptions.get(key) ?? [];
+    matches.push(entry.description);
+    descriptions.set(key, matches);
+  }
   return next.map((entry) => {
-    const description = descriptions.get(rosterEntryKey(entry));
-    return description === undefined ? entry : { ...entry, description };
+    const matches = descriptions.get(rosterEntryKey(entry));
+    if (matches === undefined || matches.length === 0)
+      return withSubagentDescription(entry, entry.description ?? "");
+    const [previousDescription] = matches.splice(0, 1);
+    return withSubagentDescription(entry, entry.description ?? previousDescription ?? "");
   });
 }
 
@@ -51,7 +59,7 @@ export function removePreset(presets: ReadonlyArray<SubagentPreset>, id: string)
   return presets.filter((preset) => preset.id !== id);
 }
 
-/** Copies a preset into a thread roster: selection, role, and description. */
+/** Copies a preset into a thread roster: selection and description. */
 export function applyPresetToRoster(preset: SubagentPreset): SubagentRosterEntry[] {
   return preset.entries.map(presetEntryAsRosterEntry);
 }
@@ -61,42 +69,18 @@ export function findPresetForRoster(
   presets: ReadonlyArray<SubagentPreset>,
   entries: ReadonlyArray<SubagentRosterEntry>,
 ): SubagentPreset | null {
-  const keys = entries.map(
-    (entry) => `${rosterEntryKey(entry)}\u0000${entry.role ?? ""}\u0000${entry.description ?? ""}`,
-  );
+  const keys = entries.map((entry) => `${rosterEntryKey(entry)}\u0000${entry.description ?? ""}`);
   return (
     presets.find(
       (preset) =>
         preset.entries.length === keys.length &&
         preset.entries.every(
           (entry, index) =>
-            `${rosterEntryKey(presetEntryAsRosterEntry(entry))}\u0000${entry.role ?? ""}\u0000${entry.description ?? ""}` ===
+            `${rosterEntryKey(presetEntryAsRosterEntry(entry))}\u0000${entry.description ?? ""}` ===
             keys[index],
         ),
     ) ?? null
   );
-}
-
-/** A role names one entry at a time within a preset, so assigning it clears it elsewhere. */
-export function applyPresetEntryRole(
-  preset: SubagentPreset,
-  index: number,
-  role: SubagentRole | null,
-): SubagentPreset {
-  return {
-    ...preset,
-    entries: preset.entries.map((entry, entryIndex) => {
-      if (entryIndex === index) {
-        const { role: _previous, ...rest } = entry;
-        return role === null ? rest : { ...rest, role };
-      }
-      if (role !== null && entry.role === role) {
-        const { role: _cleared, ...rest } = entry;
-        return rest;
-      }
-      return entry;
-    }),
-  };
 }
 
 export function applyPresetEntryDescription(
@@ -107,8 +91,9 @@ export function applyPresetEntryDescription(
   return {
     ...preset,
     entries: preset.entries.map((entry, entryIndex) => {
-      if (entryIndex !== index) return entry;
-      return withSubagentDescription(entry, description);
+      const rosterEntry = presetEntryAsRosterEntry(entry);
+      if (entryIndex !== index) return rosterEntry;
+      return withSubagentDescription(rosterEntry, description);
     }),
   };
 }
@@ -121,17 +106,27 @@ export function draftSubagentRosterPatch(
   if (entries === undefined) return null;
   return {
     threadSubagentRosters: Object.fromEntries(
-      threadIds.map((threadId) => [threadId, entries === null ? null : { entries: [...entries] }]),
+      threadIds.map((threadId) => [
+        threadId,
+        entries === null
+          ? null
+          : {
+              entries: entries.map((entry) =>
+                withSubagentDescription(entry, entry.description ?? ""),
+              ),
+            },
+      ]),
     ),
   };
 }
 
-/** Editing notes must not strip legacy roles or model options from saved entries. */
+/** Editing notes preserves model options on saved entries. */
 export function withSubagentDescription(
   entry: SubagentRosterEntry,
   description: string,
 ): SubagentRosterEntry {
-  const { description: _previous, ...rest } = entry;
   const trimmed = description.trim();
-  return trimmed === "" ? rest : { ...rest, description: trimmed };
+  return trimmed === ""
+    ? { selection: entry.selection }
+    : { selection: entry.selection, description: trimmed };
 }

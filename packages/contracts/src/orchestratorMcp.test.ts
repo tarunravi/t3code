@@ -27,7 +27,7 @@ const encodeThreadRoster = Schema.encodeSync(OrchestratorMcpThreadRoster);
 describe("orchestrator MCP contracts", () => {
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
-      task: "Inspect the workspace and report the result.",
+      task: "Inspect the workspace and report the result.\nInclude relevant paths.",
       target: {
         providerInstanceId: "claudeAgent",
         model: "claude-sonnet-4-6",
@@ -37,6 +37,7 @@ describe("orchestrator MCP contracts", () => {
       clientRequestId: "delegate-1",
       runtimeMode: "inherit",
       interactionMode: "inherit",
+      role: "review",
     });
     const result = decodeDelegateTaskResult({
       taskId: "node-task-1",
@@ -57,6 +58,10 @@ describe("orchestrator MCP contracts", () => {
       waitTimedOut: false,
     });
 
+    expect(request.task).toBe(
+      "Inspect the workspace and report the result.\nInclude relevant paths.",
+    );
+    expect(Object.keys(request)).not.toContain("role");
     expect(request.target?.providerInstanceId).toBe("claudeAgent");
     expect(result.status).toBe("completed");
     expect(result.summary).toBe("Workspace inspected.");
@@ -136,20 +141,19 @@ describe("orchestrator MCP contracts", () => {
       "For the hardest work.",
       null,
     ]);
+    expect(Object.keys(roster.entries[0]!)).not.toContain("role");
     expect(encodeThreadRoster(roster)).toEqual({
       guidance: "The user chose these subagents for this thread.",
       entries: [
         {
           target: { providerInstanceId: "claudeAgent", model: "claude-opus-5-5" },
           label: "Opus 5.5",
-          role: "hard",
           description: "For the hardest work.",
           available: true,
         },
         {
           target: { providerInstanceId: "zcode", model: "default" },
           label: null,
-          role: null,
           description: null,
           available: false,
         },

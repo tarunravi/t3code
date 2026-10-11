@@ -13,7 +13,6 @@ import {
   draftSubagentRosterPatch,
   withSubagentDescription,
   applyPresetEntryDescription,
-  applyPresetEntryRole,
   applyPresetToRoster,
   createPreset,
   findPresetForRoster,
@@ -26,8 +25,14 @@ import {
 const decodeSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const OPUS: SubagentPresetEntry = {
-  selection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
-  role: "hard",
+  selection: {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-opus-5-5",
+    options: [
+      { id: "effort", value: "high" },
+      { id: "speed", value: "fast" },
+    ],
+  },
   description: "Tricky bugs.",
 };
 const GLM: SubagentPresetEntry = {
@@ -37,7 +42,7 @@ const GLM: SubagentPresetEntry = {
 const PRESET: SubagentPreset = { id: "hard", name: "Hard work", entries: [OPUS, GLM] };
 
 describe("subagent preset helpers", () => {
-  it("targets first-submit and multi-model destination ids without changing legacy entries", () => {
+  it("targets first-submit and multi-model destination ids while preserving options and notes", () => {
     const first = ThreadId.make("first-submit");
     const second = ThreadId.make("multi-submit");
     const patch = draftSubagentRosterPatch(applyPresetToRoster(PRESET), [first, second]);
@@ -56,7 +61,7 @@ describe("subagent preset helpers", () => {
     });
   });
 
-  it("edits and clears roster notes without destructively migrating a legacy role or options", () => {
+  it("edits and clears roster notes while preserving model options", () => {
     const legacy = {
       ...OPUS,
       selection: { ...OPUS.selection, options: [{ id: "effort", value: "medium" }] },
@@ -64,14 +69,13 @@ describe("subagent preset helpers", () => {
     const edited = withSubagentDescription(legacy, "  New notes.  ");
     expect(edited).toEqual({ ...legacy, description: "New notes." });
     const cleared = withSubagentDescription(edited, "  ");
-    expect(cleared).toEqual({ selection: legacy.selection, role: legacy.role });
+    expect(cleared).toEqual({ selection: legacy.selection });
     expect(OPUS.description).toBe("Tricky bugs.");
   });
 
   it("preserves descriptions when converting entries to roster entries", () => {
     expect(presetEntryAsRosterEntry(OPUS)).toEqual({
       selection: OPUS.selection,
-      role: "hard",
       description: "Tricky bugs.",
     });
   });
@@ -79,9 +83,31 @@ describe("subagent preset helpers", () => {
   it("re-attaches descriptions to entries the roster helpers returned", () => {
     const next = mergePresetDescriptions(PRESET.entries, [
       presetEntryAsRosterEntry(GLM),
-      { selection: OPUS.selection, role: "hard" },
+      { selection: OPUS.selection },
     ]);
     expect(next).toEqual([GLM, OPUS]);
+  });
+
+  it("preserves notes for repeated model/options entries in preference order", () => {
+    const duplicate: SubagentPresetEntry = {
+      selection: OPUS.selection,
+      description: "Verify the result mechanically.",
+    };
+    const presetEntries = [{ ...OPUS, description: "Investigate the root cause." }, duplicate];
+    const next = mergePresetDescriptions(presetEntries, [
+      { selection: OPUS.selection },
+      { selection: OPUS.selection },
+    ]);
+    expect(next).toEqual(presetEntries);
+
+    const updatedFirst = mergePresetDescriptions(presetEntries, [
+      { selection: OPUS.selection, description: "Check a new failure mode." },
+      { selection: OPUS.selection },
+    ]);
+    expect(updatedFirst).toEqual([
+      { ...OPUS, description: "Check a new failure mode." },
+      duplicate,
+    ]);
   });
 
   it("adds presets with unique names", () => {
@@ -99,35 +125,6 @@ describe("subagent preset helpers", () => {
   it("removes a preset by id", () => {
     expect(removePreset([PRESET], "hard")).toEqual([]);
     expect(removePreset([PRESET], "other")).toEqual([PRESET]);
-  });
-
-  it("names one role at a time within a preset", () => {
-    const both: SubagentPreset = {
-      id: "both",
-      name: "Both",
-      entries: [OPUS, { ...GLM, role: "hard" }],
-    };
-    const reassigned = applyPresetEntryRole(both, 1, "hard");
-    expect(reassigned.entries[0]?.role).toBeUndefined();
-    expect(reassigned.entries[1]?.role).toBe("hard");
-
-    const cleared = applyPresetEntryRole(reassigned, 1, null);
-    expect(cleared.entries[1]?.role).toBeUndefined();
-    expect(cleared.entries[1]?.description).toBe("Overnight runs.");
-  });
-
-  it("keeps a role on entries the assignment did not touch", () => {
-    const reassigned = applyPresetEntryRole(PRESET, 1, "overnight");
-    expect(reassigned.entries[0]?.role).toBe("hard");
-    expect(reassigned.entries[1]?.role).toBe("overnight");
-  });
-
-  it("keeps descriptions when clearing a role", () => {
-    const withoutRole = applyPresetEntryRole(PRESET, 0, null);
-    expect(withoutRole.entries[0]).toEqual({
-      selection: OPUS.selection,
-      description: "Tricky bugs.",
-    });
   });
 
   it("sets, trims, and clears entry descriptions", () => {
@@ -163,11 +160,9 @@ describe("subagent preset helpers", () => {
     expect(findPresetForRoster([PRESET], [{ ...OPUS, description: "Changed" }, GLM])).toBeNull();
   });
 
-  it("rejects rosters that differ from every preset in selection, role, or order", () => {
+  it("rejects rosters that differ from every preset in selection, description, or order", () => {
     const roster = applyPresetToRoster(PRESET);
     expect(findPresetForRoster([PRESET], [...roster].reverse())).toBeNull();
-    expect(findPresetForRoster([PRESET], [roster[0]!, { ...roster[1]!, role: "bulk" }])).toBeNull();
-    expect(findPresetForRoster([PRESET], [{ ...roster[1]!, role: "bulk" }, roster[0]!])).toBeNull();
     expect(
       findPresetForRoster(
         [PRESET],
@@ -176,25 +171,33 @@ describe("subagent preset helpers", () => {
     ).toBeNull();
   });
 
-  it("distinguishes same-selection entries by role", () => {
+  it("matches same-selection entries by description and preference order", () => {
     const shared = { selection: OPUS.selection };
-    const hard: SubagentPreset = {
+    const preset: SubagentPreset = {
       id: "hard",
       name: "Hard",
       entries: [
-        { ...shared, role: "hard" },
-        { ...shared, role: "bulk" },
+        { ...shared, description: "Investigate the root cause." },
+        { ...shared, description: "Verify the fix mechanically." },
       ],
     };
-    expect(findPresetForRoster([hard], [{ ...shared, role: "hard" }, { ...shared }])).toBeNull();
     expect(
       findPresetForRoster(
-        [hard],
+        [preset],
         [
-          { ...shared, role: "hard" },
-          { ...shared, role: "bulk" },
+          { ...shared, description: "Investigate the root cause." },
+          { ...shared, description: "Verify the fix mechanically." },
         ],
       ),
-    ).toBe(hard);
+    ).toBe(preset);
+    expect(
+      findPresetForRoster(
+        [preset],
+        [
+          { ...shared, description: "Verify the fix mechanically." },
+          { ...shared, description: "Investigate the root cause." },
+        ],
+      ),
+    ).toBeNull();
   });
 });

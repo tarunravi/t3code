@@ -1112,11 +1112,22 @@ describe("subagent presets", () => {
     name: "Hard work",
     entries: [
       {
-        selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
-        role: "hard",
+        selection: {
+          instanceId: "claudeAgent",
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "high" }],
+        },
         description: "For design, polish, and tricky bugs.",
       },
       { selection: { instanceId: "zcode", model: "default" } },
+      {
+        selection: {
+          instanceId: "claudeAgent",
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "high" }],
+        },
+        description: "A second preference with the same model.",
+      },
     ],
   };
 
@@ -1124,13 +1135,41 @@ describe("subagent presets", () => {
     expect(decodeServerSettings({}).subagentPresets).toEqual([]);
   });
 
-  it("round-trips presets through settings snapshots and writes", () => {
+  it("round-trips preset selections, descriptions, options, and order", () => {
     const input = { subagentPresets: [preset] };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 
-  it("keeps entries without roles or descriptions optional", () => {
+  it("loads legacy role-bearing settings while preserving descriptions, options, and order", () => {
+    const decoded = decodeServerSettings({
+      subagentHotlist: [
+        {
+          selection: preset.entries[0]!.selection,
+          role: "overnight",
+          description: "Long unattended work.",
+        },
+      ],
+      subagentPresets: [
+        {
+          ...preset,
+          entries: [
+            { ...preset.entries[0]!, role: "bulk" },
+            { ...preset.entries[1]!, role: "default" },
+            { ...preset.entries[2]!, role: "hard" },
+          ],
+        },
+      ],
+    });
+
+    expect(decoded.subagentHotlist).toEqual([
+      { selection: preset.entries[0]!.selection, description: "Long unattended work." },
+    ]);
+    expect(decoded.subagentPresets[0]?.entries).toEqual(preset.entries);
+    expect(encodeServerSettings(decoded).subagentPresets).toEqual([preset]);
+  });
+
+  it("keeps descriptions optional", () => {
     const decoded = decodeServerSettings({
       subagentPresets: [{ id: "p", name: "P", entries: [preset.entries[1]] }],
     });
@@ -1159,7 +1198,7 @@ describe("subagent presets", () => {
   it.each([
     { ...preset, id: "" },
     { ...preset, name: "" },
-    { ...preset, entries: [{ ...preset.entries[0], role: "aggressive" }] },
+    { ...preset, entries: [{ ...preset.entries[0], description: 42 }] },
   ])("rejects an invalid preset (%#)", (invalid) => {
     expect(() => decodeServerSettings({ subagentPresets: [invalid] })).toThrow();
     expect(() => decodeServerSettingsPatch({ subagentPresets: [invalid] })).toThrow();
@@ -1169,33 +1208,39 @@ describe("subagent presets", () => {
 describe("thread subagent rosters", () => {
   const entries = [
     {
-      selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
-      role: "hard",
+      selection: {
+        instanceId: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: [{ id: "effort", value: "high" }],
+      },
       description: "For the hardest work.",
     },
     { selection: { instanceId: "zcode", model: "default" } },
   ];
   const roster = { "thread-1": { entries } };
 
-  it("round-trips entries with descriptions through settings snapshots and writes", () => {
+  it("round-trips roster selections, descriptions, options, and order", () => {
     const input = { threadSubagentRosters: roster };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 
-  it("trims descriptions and keeps them optional", () => {
+  it("loads legacy role-bearing rosters and trims descriptions", () => {
     const decoded = decodeServerSettings({
       threadSubagentRosters: {
         "thread-1": {
-          entries: [{ ...entries[0]!, description: "  spaced  " }, entries[1]!],
+          entries: [{ ...entries[0]!, role: "hard", description: "  spaced  " }, entries[1]!],
         },
       },
     });
     expect(Object.values(decoded.threadSubagentRosters)[0]).toEqual({
       entries: [
         {
-          selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
-          role: "hard",
+          selection: {
+            instanceId: "claudeAgent",
+            model: "claude-opus-5-5",
+            options: [{ id: "effort", value: "high" }],
+          },
           description: "spaced",
         },
         { selection: { instanceId: "zcode", model: "default" } },

@@ -36,6 +36,7 @@ import {
 } from "@t3tools/shared/t3McpToolPresentation";
 
 const decodeMcpAttachmentInput = Schema.decodeUnknownEffect(McpAttachmentInput);
+const parseJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 it("publishes unique tool names with reference-free object-root inputs", () => {
   const names = new Set<string>();
@@ -110,7 +111,12 @@ it.effect("checks capability before accessing services through the production re
         }),
         Effect.provideService(McpSchema.McpServerClient, client),
       );
-    expect(result.structuredContent).toMatchObject({ code: "capability_denied" });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    const errorText = result.content.find((block) => block.type === "text")?.text;
+    expect(errorText).toBeDefined();
+    const failure = parseJsonText(errorText ?? "null") as Record<string, unknown>;
+    expect(failure.code).toBe("capability_denied");
   }).pipe(
     Effect.provide(
       McpHttpServer.ThreadToolkitRegistrationLive.pipe(
@@ -131,11 +137,17 @@ it.effect("returns a bounded public failure without serializing storage causes",
         Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
         Effect.provideService(McpSchema.McpServerClient, client),
       );
-    expect(result.structuredContent).toEqual({
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    const errorText = result.content.find((block) => block.type === "text")?.text;
+    expect(errorText).toBeDefined();
+    const failure = parseJsonText(errorText ?? "null") as Record<string, unknown>;
+    expect(failure).toMatchObject({
       _tag: "OrchestratorMcpFailure",
       code: "orchestration_error",
       message: "The operation could not be completed.",
     });
+    expect(errorText).not.toContain("private-storage-path");
   }).pipe(
     Effect.provide(
       McpHttpServer.ThreadToolkitRegistrationLive.pipe(

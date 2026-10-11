@@ -13,6 +13,10 @@ describe("T3 orchestration provider instructions", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "ordinary top-level T3 conversations");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Never use them merely");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "cross-provider");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "user-authored description");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "prefer earlier entries");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "passed verbatim");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "correct the arguments");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "call `delegate_task` again");
     assert.include(
       T3_CODE_ORCHESTRATION_INSTRUCTIONS,

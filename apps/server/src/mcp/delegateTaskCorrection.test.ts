@@ -17,20 +17,42 @@ const provider = (instanceId: ProviderInstanceId, models: ReadonlyArray<string>)
 });
 
 describe("delegateTaskCorrection", () => {
-  it("lists roster subagents with their descriptions and uses the default entry as the example", () => {
+  it("lists roster descriptions and uses the first available target and options", () => {
     const text = delegateTaskCorrection({
       inheritedProviderInstanceId: claude,
       inheritedModel: "claude-opus-5-5",
-      providers: [provider(claude, ["claude-opus-5-5"]), provider(zcode, ["default"])],
+      providers: [
+        {
+          ...provider(claude, ["claude-opus-5-5"]),
+          models: [
+            {
+              id: "claude-opus-5-5",
+              label: null,
+              options: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium" },
+                    { id: "high", label: "High" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        provider(zcode, ["default"]),
+      ],
       threadRoster: {
         guidance: "",
         entries: [
           {
             target: { providerInstanceId: zcode, model: "default" },
             label: null,
-            role: "overnight",
             description: "Long unattended runs.",
-            available: true,
+            available: false,
           },
           {
             target: {
@@ -39,15 +61,17 @@ describe("delegateTaskCorrection", () => {
               options: [{ id: "effort", value: "medium" }],
             },
             label: null,
-            role: "default",
             description: "Everyday implementation.",
             available: true,
           },
         ],
       },
     });
-    assert.include(text, "- zcode / default [overnight] — Long unattended runs.");
-    assert.include(text, "- claudeAgent / claude-opus-5-5 [default] — Everyday implementation.");
+    assert.include(text, "- zcode / default [unavailable] — Long unattended runs.");
+    assert.include(
+      text,
+      "- claudeAgent / claude-opus-5-5 (options: effort=low|medium|high) — Everyday implementation.",
+    );
     assert.include(
       text,
       'Example: {"task":"...","target":{"providerInstanceId":"claudeAgent","model":"claude-opus-5-5","options":{"effort":"medium"}},"mode":"async"}',
@@ -65,5 +89,19 @@ describe("delegateTaskCorrection", () => {
     });
     assert.notInclude(text, "- claudeAgent:");
     assert.include(text, '"target":{"providerInstanceId":"zcode","model":"default"}');
+  });
+
+  it("does not suggest a provider outside an empty or unavailable roster", () => {
+    const text = delegateTaskCorrection({
+      inheritedProviderInstanceId: claude,
+      inheritedModel: "claude-opus-5-5",
+      providers: [provider(claude, ["claude-opus-5-5"])],
+      threadRoster: { guidance: "", entries: [] },
+    });
+    assert.include(text, "With a thread roster, omitting target uses its first matching entry");
+    assert.include(text, "No available thread-roster target can run this task");
+    assert.notInclude(text, "Example:");
+    assert.notInclude(text, '"providerInstanceId":"claudeAgent"');
+    assert.notInclude(text, "Available targets (providerInstanceId:");
   });
 });

@@ -124,7 +124,7 @@ const PRESET = {
   id: "hard",
   name: "Hard work",
   entries: [
-    { selection: OPUS_SELECTION, role: "hard" as const, description: "Tricky bugs." },
+    { selection: OPUS_SELECTION, description: "Tricky bugs." },
     { selection: GLM_SELECTION },
   ],
 };
@@ -279,7 +279,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
       threadSubagentRosters: {
         [THREAD]: {
           entries: [
-            { selection: OPUS_SELECTION, role: "hard", description: "Tricky bugs." },
+            { selection: OPUS_SELECTION, description: "Tricky bugs." },
             { selection: GLM_SELECTION },
           ],
         },

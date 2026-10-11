@@ -9,11 +9,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   appendRosterEntries,
-  assignRosterRole,
   moveRosterEntry,
   resolvePreset,
   resolveRosterEntry,
   SUBAGENT_PRESETS,
+  withEffort,
 } from "./threadSubagentRoster.logic";
 
 const effort = {
@@ -56,7 +56,7 @@ const workPreset = SUBAGENT_PRESETS.find((preset) => preset.id === "work")!;
 const personalPreset = SUBAGENT_PRESETS.find((preset) => preset.id === "personal")!;
 
 describe("resolvePreset", () => {
-  it("instantiates the work preset with Opus at medium effort and GLM overnight", () => {
+  it("instantiates the work preset with ordered descriptions and Opus medium effort", () => {
     const instances = deriveProviderInstanceEntries([
       provider("claudeAgent", [
         { slug: "claude-haiku-4-5" },
@@ -71,9 +71,12 @@ describe("resolvePreset", () => {
           model: "claude-opus-5-5",
           options: [{ id: "effort", value: "medium" }],
         },
-        role: "default",
+        description: "Everyday coding, implementation, and normal bug fixes.",
       },
-      { selection: { instanceId: "zcode", model: "default" }, role: "overnight" },
+      {
+        selection: { instanceId: "zcode", model: "default" },
+        description: "Long unattended work that can keep running independently.",
+      },
     ]);
   });
 
@@ -83,7 +86,46 @@ describe("resolvePreset", () => {
       provider("antigravity", [{ slug: "gemini-3.8-flash-medium" }], false),
     ]);
     expect(resolvePreset(personalPreset, instances)).toEqual([
-      { selection: { instanceId: "codex", model: "gpt-7" }, role: "default" },
+      {
+        selection: { instanceId: "codex", model: "gpt-7" },
+        description: "Everyday coding, implementation, and normal bug fixes.",
+      },
+    ]);
+  });
+
+  it("keeps personal guidance in provider preference order", () => {
+    const instances = deriveProviderInstanceEntries([
+      provider("codex", [{ slug: "gpt-6-astra", withEffort: true }]),
+      provider("claudeAgent", [{ slug: "claude-opus-5-5", withEffort: true }]),
+      provider("antigravity", [{ slug: "gemini-3.8-flash-medium" }]),
+      provider("zcode", [{ slug: "default" }]),
+    ]);
+    expect(resolvePreset(personalPreset, instances)).toEqual([
+      {
+        selection: {
+          instanceId: "codex",
+          model: "gpt-6-astra",
+          options: [{ id: "effort", value: "medium" }],
+        },
+        description: "Everyday coding, implementation, and normal bug fixes.",
+      },
+      {
+        selection: {
+          instanceId: "claudeAgent",
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "medium" }],
+        },
+        description:
+          "Design direction, animation concepts and storyboarding, visual polish, taste, and tricky bugs.",
+      },
+      {
+        selection: { instanceId: "antigravity", model: "gemini-3.8-flash-medium" },
+        description: "Mechanical verification, repetitive edits, and other quick tasks.",
+      },
+      {
+        selection: { instanceId: "zcode", model: "default" },
+        description: "Long unattended work that can keep running independently.",
+      },
     ]);
   });
 });
@@ -91,24 +133,50 @@ describe("resolvePreset", () => {
 describe("roster edits", () => {
   const opus: SubagentRosterEntry = {
     selection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
-    role: "default",
+    description: "Everyday coding.",
   };
   const glm: SubagentRosterEntry = {
     selection: { instanceId: ProviderInstanceId.make("zcode"), model: "default" },
   };
 
-  it("moves a role instead of duplicating it", () => {
-    expect(assignRosterRole([opus, glm], 1, "default")).toEqual([
-      { selection: opus.selection },
-      { ...glm, role: "default" },
-    ]);
+  it("appends new model choices in preference order and preserves options and descriptions", () => {
+    const opusWithEffort = {
+      selection: {
+        ...opus.selection,
+        options: [
+          { id: "effort", value: "high" },
+          { id: "speed", value: "fast" },
+        ],
+      },
+      description: "Use for a quick, difficult review.",
+    };
+    expect(
+      appendRosterEntries(
+        [opus],
+        [{ ...opus }, opusWithEffort, { ...glm, description: "Long runs." }],
+      ),
+    ).toEqual([opus, opusWithEffort, { ...glm, description: "Long runs." }]);
   });
 
-  it("appends only new entries and drops a role already taken", () => {
-    expect(appendRosterEntries([opus], [{ ...opus }, { ...glm, role: "default" }])).toEqual([
-      opus,
-      glm,
-    ]);
+  it("changes effort without dropping another model option", () => {
+    expect(
+      withEffort(
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5-5",
+          options: [{ id: "speed", value: "fast" }],
+        },
+        "effort",
+        "high",
+      ),
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5-5",
+      options: [
+        { id: "speed", value: "fast" },
+        { id: "effort", value: "high" },
+      ],
+    });
   });
 
   it("keeps order at the edges", () => {

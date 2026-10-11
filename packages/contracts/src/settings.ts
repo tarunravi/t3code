@@ -1223,26 +1223,21 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
-/** What a roster entry is for, so agents pick the right worker for the job. */
-export const SubagentRole = Schema.Literals(["default", "hard", "bulk", "overnight"]);
-export type SubagentRole = typeof SubagentRole.Type;
-
 /**
  * One subagent a thread may delegate to: a model on a provider instance, its
- * options, its role, and when to pick it. Copied entries (for example applied
- * from a preset) carry the description along so rosters keep that intent.
+ * options, and when to pick it. Copied entries (for example applied from a
+ * preset) carry the description along so rosters keep that intent.
  */
 export const SubagentRosterEntry = Schema.Struct({
   selection: ModelSelection,
-  role: Schema.optionalKey(SubagentRole),
   description: Schema.optionalKey(TrimmedString),
 });
 export type SubagentRosterEntry = typeof SubagentRosterEntry.Type;
 
 /**
  * A thread's own subagent list. It replaces the environment-wide subagent
- * allowlist for that thread; order is preference, so the first entry (or the
- * "default" role) is the fallback when an agent names no model.
+ * allowlist for that thread; order is preference, so the first matching entry
+ * is the fallback when an agent names no model.
  */
 export const ThreadSubagentRoster = Schema.Struct({
   entries: Schema.Array(SubagentRosterEntry),
@@ -1250,14 +1245,13 @@ export const ThreadSubagentRoster = Schema.Struct({
 export type ThreadSubagentRoster = typeof ThreadSubagentRoster.Type;
 
 /**
- * One subagent in a named preset: a model, its role, and when an agent should
- * pick it. The `description` is free text ("when to use this subagent") shown
- * in tooltips and carried onto thread rosters that copy the entry, where
- * agents see it.
+ * One subagent in a named preset: a model and when an agent should pick it.
+ * The `description` is free text ("when to use this subagent") shown in
+ * tooltips and carried onto thread rosters that copy the entry, where agents
+ * see it.
  */
 export const SubagentPresetEntry = Schema.Struct({
   selection: ModelSelection,
-  role: Schema.optionalKey(SubagentRole),
   description: Schema.optionalKey(TrimmedString),
 });
 export type SubagentPresetEntry = typeof SubagentPresetEntry.Type;

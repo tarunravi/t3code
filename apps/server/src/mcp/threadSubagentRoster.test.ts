@@ -19,12 +19,15 @@ const roster = {
         options: [{ id: "effort", value: "medium" }],
       },
     },
-    { selection: { instanceId: zcode, model: "default" }, role: "overnight" as const },
+    {
+      selection: { instanceId: zcode, model: "default" },
+      description: "For long unattended runs.",
+    },
   ],
 };
 
 describe("resolveRosterTarget", () => {
-  it("uses the first entry when none is marked default", () => {
+  it("uses the first matching entry in preference order when no target is specified", () => {
     expect(resolveRosterTarget({ roster, target: undefined, providers })).toEqual(
       Result.succeed({
         providerInstanceId: claude,
@@ -60,6 +63,30 @@ describe("resolveRosterTarget", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("matches model-specific targets in preference order and preserves configured options", () => {
+    const preferred = {
+      selection: {
+        instanceId: claude,
+        model: "claude-opus-5-5",
+        options: [{ id: "effort", value: "high" }],
+      },
+      description: "For the hardest work.",
+    };
+    expect(
+      resolveRosterTarget({
+        roster: { entries: [preferred, roster.entries[0]!] },
+        target: { model: "claude-opus-5-5" },
+        providers,
+      }),
+    ).toEqual(
+      Result.succeed({
+        providerInstanceId: claude,
+        model: "claude-opus-5-5",
+        options: [{ id: "effort", value: "high" }],
+      }),
+    );
   });
 
   it("rejects every target when the roster is empty", () => {

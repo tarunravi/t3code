@@ -1319,7 +1319,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
-  it.effect("narrows subagents to a thread's roster and defaults to its default entry", () =>
+  it.effect("narrows subagents to a thread's roster and defaults by preference order", () =>
     Effect.gen(function* () {
       const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
       const codexDriver = ProviderDriverKind.make("codex");
@@ -1370,8 +1370,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             [parentThreadId]: {
               entries: [
                 {
-                  selection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
-                  role: "hard",
+                  selection: {
+                    instanceId: codexInstanceId,
+                    model: "gpt-5.6-sol",
+                    options: [{ id: "reasoning", value: "high" }],
+                  },
                   description: "For the hardest work.",
                 },
                 {
@@ -1380,7 +1383,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                     model: "ant-model",
                     options: [{ id: "effort", value: "medium" }],
                   },
-                  role: "default",
+                  description: "For quick mechanical work.",
                 },
                 {
                   selection: { instanceId: codexInstanceId, model: "does-not-exist" },
@@ -1442,15 +1445,27 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.deepEqual(
           capabilities.threadRoster?.entries.map((entry) => [
             entry.target.providerInstanceId,
-            entry.role,
             entry.label,
             entry.description,
+            entry.target.options,
             entry.available,
           ]),
           [
-            [codexInstanceId, "hard", "GPT-5.6 Sol", "For the hardest work.", true],
-            [antigravityInstanceId, "default", "ant-model", null, true],
-            [codexInstanceId, null, null, "Pick me once the model returns.", false],
+            [
+              codexInstanceId,
+              "GPT-5.6 Sol",
+              "For the hardest work.",
+              [{ id: "reasoning", value: "high" }],
+              true,
+            ],
+            [
+              antigravityInstanceId,
+              "ant-model",
+              "For quick mechanical work.",
+              [{ id: "effort", value: "medium" }],
+              true,
+            ],
+            [codexInstanceId, null, "Pick me once the model returns.", undefined, false],
           ],
         );
 
@@ -1463,12 +1478,12 @@ describe("OrchestratorMcpService provider resolution", () => {
           .pipe(Effect.flip);
         assert.equal(outside.code, "model_unavailable");
         assert.isTrue(outside.message.includes("not in this thread's subagent roster"));
-        assert.isTrue(outside.message.includes("antigravity/ant-model (default, effort=medium)"));
+        assert.isTrue(outside.message.includes("antigravity/ant-model (effort=medium)"));
 
         yield* service.delegateTask(scope, {
-          task: "Summarize the diff.",
+          task: "Summarize the diff exactly as requested.\nPreserve this second line.",
           mode: "async",
-          clientRequestId: "roster-default",
+          clientRequestId: "roster-first-preference",
         });
         yield* service.delegateTask(scope, {
           task: "Fix the hard bug.",
@@ -1481,12 +1496,23 @@ describe("OrchestratorMcpService provider resolution", () => {
         );
         assert.deepEqual(selections, [
           {
-            instanceId: antigravityInstanceId,
-            model: "ant-model",
-            options: [{ id: "effort", value: "medium" }],
+            instanceId: codexInstanceId,
+            model: "gpt-5.6-sol",
+            options: [{ id: "reasoning", value: "high" }],
           },
-          { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
+          {
+            instanceId: codexInstanceId,
+            model: "gpt-5.6-sol",
+            options: [{ id: "reasoning", value: "high" }],
+          },
         ]);
+        assert.deepEqual(
+          (yield* Ref.get(dispatched)).map((command) => (command as { task: string }).task),
+          [
+            "Summarize the diff exactly as requested.\nPreserve this second line.",
+            "Fix the hard bug.",
+          ],
+        );
       }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
     }),
   );

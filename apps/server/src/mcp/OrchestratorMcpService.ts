@@ -1345,7 +1345,6 @@ const make = Effect.gen(function* () {
                         : { options: entry.selection.options }),
                     },
                     label: model?.name ?? null,
-                    role: entry.role ?? null,
                     description: entry.description ?? null,
                     available:
                       provider !== undefined &&

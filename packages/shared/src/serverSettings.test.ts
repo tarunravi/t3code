@@ -591,7 +591,7 @@ describe("serverSettings helpers", () => {
     const opus = createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5");
     const glm = createModelSelection(ProviderInstanceId.make("zcode"), "default");
     const withHotlist = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      subagentHotlist: [{ selection: opus }, { selection: glm, role: "overnight" }],
+      subagentHotlist: [{ selection: opus }, { selection: glm }],
     });
     const shortened = applyServerSettingsPatch(withHotlist, {
       subagentHotlist: [{ selection: glm }],
@@ -602,7 +602,7 @@ describe("serverSettings helpers", () => {
     const threadB = ThreadId.make("thread-b");
     const both = applyServerSettingsPatch(shortened, {
       threadSubagentRosters: {
-        [threadA]: { entries: [{ selection: opus, role: "default" }] },
+        [threadA]: { entries: [{ selection: opus }] },
         [threadB]: { entries: [] },
       },
     });
@@ -619,7 +619,7 @@ describe("serverSettings helpers", () => {
         {
           id: "hard",
           name: "Hard work",
-          entries: [{ selection: opus, role: "hard", description: "Tricky bugs." }],
+          entries: [{ selection: opus, description: "Tricky bugs." }],
         },
       ],
     });
@@ -627,7 +627,7 @@ describe("serverSettings helpers", () => {
       {
         id: "hard",
         name: "Hard work",
-        entries: [{ selection: opus, role: "hard", description: "Tricky bugs." }],
+        entries: [{ selection: opus, description: "Tricky bugs." }],
       },
     ]);
 

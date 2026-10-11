@@ -3,34 +3,17 @@ import {
   type ModelSelection,
   type ProviderOptionDescriptor,
   type ServerProviderModel,
-  type SubagentRole,
   type SubagentRosterEntry,
 } from "@t3tools/contracts";
 
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
-
-export const SUBAGENT_ROLES: ReadonlyArray<SubagentRole> = ["default", "hard", "bulk", "overnight"];
-
-export const SUBAGENT_ROLE_META: Record<
-  SubagentRole,
-  {
-    readonly label: string;
-    readonly description: string;
-    readonly badge: "info" | "warning" | "success" | "secondary";
-  }
-> = {
-  default: { label: "Default", description: "Everyday work", badge: "info" },
-  hard: { label: "Hardest", description: "Design, polish, tricky bugs", badge: "warning" },
-  bulk: { label: "Bulk", description: "Quick mechanical work", badge: "success" },
-  overnight: { label: "Overnight", description: "Long unattended runs", badge: "secondary" },
-};
 
 interface PresetSlot {
   readonly driverKind: ProviderDriverKind;
   /** Preferred model ids in order; `"*"` accepts the instance's first model. */
   readonly models: ReadonlyArray<string>;
   readonly effort?: string;
-  readonly role: SubagentRole;
+  readonly description: string;
 }
 
 export interface SubagentPreset {
@@ -44,7 +27,7 @@ const OPUS_MODELS = ["claude-opus-5-5", "claude-opus-5", "*"];
 const GLM_SLOT: PresetSlot = {
   driverKind: ProviderDriverKind.make("zcode"),
   models: ["default", "*"],
-  role: "overnight",
+  description: "Long unattended work that can keep running independently.",
 };
 
 /** Recommended rosters from the agent model routing policy. */
@@ -52,13 +35,13 @@ export const SUBAGENT_PRESETS: ReadonlyArray<SubagentPreset> = [
   {
     id: "work",
     label: "Work",
-    description: "Opus 5.5 for everything, GLM overnight",
+    description: "Everyday coding first, followed by long unattended work.",
     slots: [
       {
         driverKind: ProviderDriverKind.make("claudeAgent"),
         models: OPUS_MODELS,
         effort: "medium",
-        role: "default",
+        description: "Everyday coding, implementation, and normal bug fixes.",
       },
       GLM_SLOT,
     ],
@@ -66,24 +49,26 @@ export const SUBAGENT_PRESETS: ReadonlyArray<SubagentPreset> = [
   {
     id: "personal",
     label: "Personal",
-    description: "Codex by default, Opus for the hardest, Gemini Flash for bulk, GLM overnight",
+    description:
+      "Codex for everyday coding; Opus for design direction, animation concepts and storyboarding, visual polish, taste, and tricky bugs; Gemini Flash for mechanical verification; GLM for long runs.",
     slots: [
       {
         driverKind: ProviderDriverKind.make("codex"),
         models: ["gpt-6-astra", "*"],
         effort: "medium",
-        role: "default",
+        description: "Everyday coding, implementation, and normal bug fixes.",
       },
       {
         driverKind: ProviderDriverKind.make("claudeAgent"),
         models: OPUS_MODELS,
         effort: "medium",
-        role: "hard",
+        description:
+          "Design direction, animation concepts and storyboarding, visual polish, taste, and tricky bugs.",
       },
       {
         driverKind: ProviderDriverKind.make("antigravity"),
         models: ["gemini-3.8-flash-medium", "gemini-3.8-flash-high", "*"],
-        role: "bulk",
+        description: "Mechanical verification, repetitive edits, and other quick tasks.",
       },
       GLM_SLOT,
     ],
@@ -147,26 +132,7 @@ export function moveRosterEntry<T>(entries: ReadonlyArray<T>, index: number, off
   return next;
 }
 
-/** A role names one entry at a time, so assigning it clears it elsewhere. */
-export function assignRosterRole(
-  entries: ReadonlyArray<SubagentRosterEntry>,
-  index: number,
-  role: SubagentRole | null,
-): SubagentRosterEntry[] {
-  return entries.map((entry, entryIndex) => {
-    if (entryIndex === index) {
-      const { role: _previous, ...rest } = entry;
-      return role === null ? rest : { ...rest, role };
-    }
-    if (role !== null && entry.role === role) {
-      const { role: _cleared, ...rest } = entry;
-      return rest;
-    }
-    return entry;
-  });
-}
-
-/** Adds entries that are not already present, keeping existing order. */
+/** Adds model/options not already present, keeping the existing preference order. */
 export function appendRosterEntries(
   entries: ReadonlyArray<SubagentRosterEntry>,
   additions: ReadonlyArray<SubagentRosterEntry>,
@@ -174,12 +140,7 @@ export function appendRosterEntries(
   const next = [...entries];
   for (const addition of additions) {
     if (next.some((entry) => sameRosterEntry(entry, addition))) continue;
-    const role =
-      addition.role !== undefined && next.some((entry) => entry.role === addition.role)
-        ? undefined
-        : addition.role;
-    const { role: _role, ...rest } = addition;
-    next.push(role === undefined ? rest : { ...rest, role });
+    next.push(addition);
   }
   return next;
 }
@@ -208,7 +169,7 @@ export function resolvePreset(
           descriptor?.options.some((choice) => choice.id === slot.effort)
             ? withEffort(selection, descriptor.id, slot.effort)
             : selection,
-        role: slot.role,
+        description: slot.description,
       });
       break;
     }

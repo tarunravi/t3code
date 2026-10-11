@@ -11,7 +11,14 @@ import {
 
 describe("orchestrator MCP tool guidance", () => {
   it("directs subagent requests to delegation instead of ordinary threads", () => {
-    assert.include(DelegateTaskTool.description ?? "", "Delegate a subagent");
+    assert.include(DelegateTaskTool.description ?? "", "Delegate one self-contained task");
+    assert.include(DelegateTaskTool.description ?? "", "exactly the supplied task prompt");
+    assert.include(DelegateTaskTool.description ?? "", "refresh capabilities");
+    assert.include(
+      OrchestratorToolkit.tools.orchestrator_capabilities.description ?? "",
+      "preference order",
+    );
+    assert.include(DelegateTaskTool.description ?? "", "cross-provider");
     assert.include(CreateThreadsTool.description ?? "", "not delegation");
     assert.include(CreateThreadsTool.description ?? "", "call delegate_task");
     assert.include(DelegateTaskTool.description ?? "", "waitTimedOut");

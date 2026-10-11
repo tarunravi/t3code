@@ -1261,8 +1261,11 @@ describe("composerDraftStore project draft thread mapping", () => {
     const store = useComposerDraftStore.getState();
     const entries = [
       {
-        selection: { instanceId: CLAUDE_AGENT_INSTANCE, model: "claude-opus-5-5" },
-        role: "hard" as const,
+        selection: {
+          instanceId: CLAUDE_AGENT_INSTANCE,
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "high" }],
+        },
         description: "Tricky bugs.",
       },
     ];

@@ -37,7 +37,6 @@ import {
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageWindow } from "./providerUsageLimits.ts";
-import { SubagentRole } from "./settings.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
@@ -473,7 +472,6 @@ export const OrchestratorMcpThreadRosterEntry = Schema.Struct({
     options: Schema.optional(Schema.Array(ProviderOptionSelection)),
   }),
   label: Schema.NullOr(Schema.String),
-  role: Schema.NullOr(SubagentRole),
   /** User-authored "when to use this subagent" intent; null when the entry has none. */
   description: Schema.NullOr(Schema.String),
   available: Schema.Boolean,

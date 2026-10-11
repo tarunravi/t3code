@@ -47,14 +47,14 @@ function selectionsToRecord(
 }
 
 function exampleTarget(capabilities: CorrectionCapabilities): Record<string, unknown> | undefined {
-  const rosterEntries = capabilities.threadRoster?.entries.filter((entry) => entry.available);
-  const rosterEntry =
-    rosterEntries?.find((entry) => entry.role === "default") ?? rosterEntries?.[0];
-  if (rosterEntry !== undefined) {
-    const options = selectionsToRecord(rosterEntry.target.options);
+  const roster = capabilities.threadRoster;
+  if (roster !== undefined) {
+    const entry = roster.entries.find((candidate) => candidate.available);
+    if (entry === undefined) return undefined;
+    const options = selectionsToRecord(entry.target.options);
     return {
-      providerInstanceId: rosterEntry.target.providerInstanceId,
-      model: rosterEntry.target.model,
+      providerInstanceId: entry.target.providerInstanceId,
+      model: entry.target.model,
       ...(options === undefined ? {} : { options }),
     };
   }
@@ -82,46 +82,60 @@ function exampleTarget(capabilities: CorrectionCapabilities): Record<string, unk
  * available right now, so an agent can retry without another discovery call.
  */
 export function delegateTaskCorrection(capabilities: CorrectionCapabilities): string {
-  const lines = [
-    "How to fix: pass a non-empty `task`, choose target.providerInstanceId and target.model from the targets below, set target.options only to listed ids and values, and use mode 'async' or 'wait'. Omit target to inherit this thread's model.",
-  ];
   const roster = capabilities.threadRoster;
+  const omittedTarget =
+    roster === undefined
+      ? "Without a thread roster, omit target to inherit this thread's provider, model, and options."
+      : "With a thread roster, omitting target uses its first matching entry in preference order; targets outside the roster are not allowed. Use an available roster target if the first entry is unavailable.";
+  const lines = [
+    `How to fix: pass a non-empty \`task\`, choose target.providerInstanceId and target.model from the targets below, set target.options only to listed ids and values, and use mode 'async' or 'wait'. ${omittedTarget}`,
+  ];
   if (roster !== undefined) {
     lines.push("This thread's subagents (use only these):");
     for (const entry of roster.entries) {
-      const details = [
-        ...(entry.role === null ? [] : [entry.role]),
-        ...(entry.available ? [] : ["unavailable"]),
-      ];
+      const model = capabilities.providers
+        .find((provider) => provider.providerInstanceId === entry.target.providerInstanceId)
+        ?.models.find((candidate) => candidate.id === entry.target.model);
+      const options = model?.options?.map(describeOption) ?? [];
+      const details = entry.available ? [] : ["unavailable"];
       const suffix = details.length === 0 ? "" : ` [${details.join(", ")}]`;
       const description = entry.description === null ? "" : ` — ${entry.description}`;
+      const optionList = options.length === 0 ? "" : ` (options: ${options.join("; ")})`;
       lines.push(
-        `- ${entry.target.providerInstanceId} / ${entry.target.model}${suffix}${description}`,
+        `- ${entry.target.providerInstanceId} / ${entry.target.model}${suffix}${optionList}${description}`,
       );
     }
   }
-  const runnable = capabilities.providers.filter(
-    (provider) => provider.canRunChildTask && provider.models.length > 0,
-  );
-  if (runnable.length === 0) {
-    lines.push("No provider can run a subagent right now; check orchestrator_capabilities.");
-  } else {
-    lines.push("Available targets (providerInstanceId: model (options)):");
-    for (const provider of runnable) {
-      const shown = provider.models.slice(0, MAX_MODELS_PER_PROVIDER).map(describeModel);
-      const hidden = provider.models.length - shown.length;
-      lines.push(
-        `- ${provider.providerInstanceId}: ${shown.join(", ")}${hidden > 0 ? `, +${hidden} more` : ""}`,
-      );
+  if (roster === undefined) {
+    const runnable = capabilities.providers.filter(
+      (provider) => provider.canRunChildTask && provider.models.length > 0,
+    );
+    if (runnable.length === 0) {
+      lines.push("No provider can run a subagent right now; check orchestrator_capabilities.");
+    } else {
+      lines.push("Available targets (providerInstanceId: model (options)):");
+      for (const provider of runnable) {
+        const shown = provider.models.slice(0, MAX_MODELS_PER_PROVIDER).map(describeModel);
+        const hidden = provider.models.length - shown.length;
+        lines.push(
+          `- ${provider.providerInstanceId}: ${shown.join(", ")}${hidden > 0 ? `, +${hidden} more` : ""}`,
+        );
+      }
     }
   }
   const target = exampleTarget(capabilities);
-  lines.push(
-    `Example: ${JSON.stringify({
-      task: "...",
-      ...(target === undefined ? {} : { target }),
-      mode: "async",
-    })}`,
-  );
+  if (target !== undefined) {
+    lines.push(
+      `Example: ${JSON.stringify({
+        task: "...",
+        target,
+        mode: "async",
+      })}`,
+    );
+  } else if (roster !== undefined) {
+    lines.push(
+      "No available thread-roster target can run this task; check orchestrator_capabilities.",
+    );
+  }
   return lines.join("\n");
 }

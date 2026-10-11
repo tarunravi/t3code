@@ -1,5 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   CommandId,
   EnvironmentId,
@@ -118,6 +122,25 @@ const delegatedTaskStatusTranscriptFile = new URL(
   "../orchestration-v2/testkit/fixtures/delegated_task_status/codex_transcript.ndjson",
   import.meta.url,
 );
+const parseJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const errorObject = (result: unknown): Record<string, unknown> => {
+  if (typeof result !== "object" || result === null || !("content" in result)) return {};
+  if (!Array.isArray(result.content)) return {};
+  const block = (result.content as ReadonlyArray<unknown>).find(
+    (content): content is { type: "text"; text: string } =>
+      typeof content === "object" &&
+      content !== null &&
+      "type" in content &&
+      content.type === "text" &&
+      "text" in content &&
+      typeof content.text === "string",
+  );
+  if (block === undefined) return {};
+  const decoded = parseJsonText(block.text);
+  return typeof decoded === "object" && decoded !== null
+    ? (decoded as Record<string, unknown>)
+    : {};
+};
 
 const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTranscript")(
   function* () {
@@ -700,10 +723,90 @@ describe("orchestrator MCP toolkit", () => {
             const invoke = (name: string, args: Record<string, unknown>) =>
               invokeAs(invocation, name, args);
 
-            const pinned = yield* invoke("t3_thread_organize", { action: "pin" });
+            const serviceContext = yield* Effect.context<never>();
+            let validatingInvocation = invocation;
+            const sdkServer = new McpSdkServer(
+              { name: "T3 MCP test", version: "1.0.0" },
+              { capabilities: { tools: {} } },
+            );
+            sdkServer.setRequestHandler(ListToolsRequestSchema, () => ({
+              tools: server.tools.map(({ tool }) => ({
+                name: tool.name,
+                ...(tool.description === undefined ? {} : { description: tool.description }),
+                inputSchema: tool.inputSchema,
+                ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+                ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
+                ...(tool._meta === undefined ? {} : { _meta: tool._meta }),
+              })),
+            }));
+            sdkServer.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+              // The SDK callback is outside @effect/vitest's test fiber; run the registered tool in the captured test context.
+              // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- required to bridge the actual MCP SDK callback to Effect.
+              const result = await Effect.runPromiseWith(serviceContext)(
+                server
+                  .callTool({ name: params.name, arguments: params.arguments ?? {} })
+                  .pipe(
+                    Effect.provideService(
+                      McpInvocationContext.McpInvocationContext,
+                      validatingInvocation,
+                    ),
+                    Effect.provideService(McpSchema.McpServerClient, client),
+                  ),
+              );
+              return {
+                content: result.content,
+                ...(result.structuredContent === undefined
+                  ? {}
+                  : { structuredContent: result.structuredContent }),
+                ...(result.isError === undefined ? {} : { isError: result.isError }),
+              };
+            });
+            const [sdkClientTransport, sdkServerTransport] = InMemoryTransport.createLinkedPair();
+            const sdkClient = new McpClient({ name: "T3 MCP validating test", version: "1.0.0" });
+            yield* Effect.promise(async () => {
+              await sdkServer.connect(sdkServerTransport);
+              await sdkClient.connect(sdkClientTransport);
+            });
+            yield* Effect.addFinalizer(() =>
+              Effect.promise(async () => {
+                await sdkClient.close();
+                await sdkServer.close();
+              }),
+            );
+            const listedTools = yield* Effect.promise(() => sdkClient.listTools());
+            expect(
+              listedTools.tools.find(({ name }) => name === "delegate_task")?.outputSchema,
+            ).toBeDefined();
+            const invokeValidatedAs = (
+              callScope: McpInvocationContext.McpInvocationScope,
+              name: string,
+              args: Record<string, unknown>,
+            ) =>
+              Effect.promise(() => {
+                validatingInvocation = callScope;
+                return sdkClient.callTool({ name, arguments: args });
+              });
+            const invokeValidated = (name: string, args: Record<string, unknown>) =>
+              invokeValidatedAs(invocation, name, args);
+
+            const pinned = yield* invokeValidated("t3_thread_organize", { action: "pin" });
+            expect(pinned.isError).toBe(false);
             expect(pinned.structuredContent).toHaveProperty("sequence");
             expect((yield* orchestrator.getThreadShell(parentThreadId))?.pinnedAt).not.toBeNull();
-            yield* invoke("t3_thread_organize", { action: "unpin" });
+            const invalidThreadUpdate = yield* invokeValidated("t3_thread_update", {
+              action: "rename",
+            });
+            expect(invalidThreadUpdate.isError).toBe(true);
+            expect(invalidThreadUpdate.structuredContent).toBeUndefined();
+            expect(errorObject(invalidThreadUpdate)).toMatchObject({
+              _tag: "AiError",
+              module: "Toolkit",
+              reason: {
+                _tag: "ToolParameterValidationError",
+                description: expect.stringContaining("rename requires title"),
+              },
+            });
+            yield* invokeValidated("t3_thread_organize", { action: "unpin" });
             expect((yield* orchestrator.getThreadShell(parentThreadId))?.pinnedAt).toBeNull();
 
             if (parentRun === undefined || parentRun.rootNodeId === null) {
@@ -1162,7 +1265,9 @@ describe("orchestrator MCP toolkit", () => {
               truncated: true,
             });
             const missingQueueRead = yield* invoke("t3_queue_read", { queuedRunId: parentRun.id });
-            expect(missingQueueRead.structuredContent).toMatchObject({ code: "invalid_request" });
+            expect(missingQueueRead.isError).toBe(true);
+            expect(missingQueueRead.structuredContent).toBeUndefined();
+            expect(errorObject(missingQueueRead).code).toBe("invalid_request");
             const queueRaceStatus = yield* invoke("task_status", { taskId: queueRace.task.id });
             expect(queueRaceStatus.isError).toBe(false);
             yield* waitForProjection(
@@ -1316,10 +1421,18 @@ describe("orchestrator MCP toolkit", () => {
               "t3_thread_update",
               { action: "rename", title: "Denied title" },
             );
-            expect(deniedThreadUpdate.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
-              code: "capability_denied",
-            });
+            expect(deniedThreadUpdate.isError).toBe(true);
+            expect(deniedThreadUpdate.structuredContent).toBeUndefined();
+            expect(errorObject(deniedThreadUpdate).code).toBe("capability_denied");
+
+            const deniedValidatedThreadUpdate = yield* invokeValidatedAs(
+              { ...invocation, capabilities: new Set() },
+              "t3_thread_update",
+              { action: "rename", title: "Denied title through SDK" },
+            );
+            expect(deniedValidatedThreadUpdate.isError).toBe(true);
+            expect(deniedValidatedThreadUpdate.structuredContent).toBeUndefined();
+            expect(errorObject(deniedValidatedThreadUpdate).code).toBe("capability_denied");
             const threadSendTool = server.tools.find(({ tool }) => tool.name === "t3_thread_send");
             expect(threadSendTool?.tool.annotations?.destructiveHint).toBe(true);
             const threadWaitTool = server.tools.find(({ tool }) => tool.name === "t3_thread_wait");
@@ -1437,6 +1550,20 @@ describe("orchestrator MCP toolkit", () => {
               schedule: { type: "interval", everyMs: 3_600_000 },
               boundThreadId: parentThreadId,
             });
+            const sdkScheduleCall = yield* invokeValidated("schedule_task", {
+              prompt: "schedule from the validating client",
+              schedule: { type: "interval", everyMs: 60_000 },
+              clientRequestId: "schedule-sdk-valid-1",
+            });
+            expect(sdkScheduleCall.isError).toBe(false);
+            expect(sdkScheduleCall.structuredContent).toMatchObject({
+              prompt: "schedule from the validating client",
+              boundThreadId: parentThreadId,
+            });
+            const sdkScheduledTaskId = (
+              sdkScheduleCall.structuredContent as { scheduledTaskId: string }
+            ).scheduledTaskId;
+            yield* invoke("delete_scheduled_task", { scheduledTaskId: sdkScheduledTaskId });
             const serializedScheduledTaskId = (
               serializedScheduleCall.structuredContent as { scheduledTaskId: string }
             ).scheduledTaskId;
@@ -1445,7 +1572,7 @@ describe("orchestrator MCP toolkit", () => {
             });
             expect(yield* Ref.get(scheduledStore)).toHaveLength(0);
 
-            const delegatedCall = yield* invoke("delegate_task", {
+            const delegatedCall = yield* invokeValidated("delegate_task", {
               task: delegatedPrompt,
               target: {
                 providerInstanceId: claudeInstanceId,
@@ -1727,6 +1854,9 @@ describe("orchestrator MCP toolkit", () => {
 
             // Options outside the model's advertised descriptors are rejected
             // before any child thread is created.
+            const subagentIdsBeforeInvalidCalls = (yield* orchestrator.getThreadProjection(
+              parentThreadId,
+            )).subagents.map((task) => task.id);
             const rejectedOptionsCall = yield* invoke("delegate_task", {
               task: cancellationPrompt,
               target: {
@@ -1737,10 +1867,43 @@ describe("orchestrator MCP toolkit", () => {
               mode: "async",
               clientRequestId: "delegate-rejected-options-1",
             });
-            expect(rejectedOptionsCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
+            expect(rejectedOptionsCall.isError).toBe(true);
+            expect(rejectedOptionsCall.structuredContent).toBeUndefined();
+            expect(errorObject(rejectedOptionsCall)).toMatchObject({
               code: "invalid_request",
               message: expect.stringContaining("rejected options"),
+            });
+
+            const sdkBadOptions = yield* invokeValidated("delegate_task", {
+              task: cancellationPrompt,
+              target: {
+                providerInstanceId: codexInstanceId,
+                model: codexModel,
+                options: { reasoning: "extreme" },
+              },
+              mode: "async",
+              clientRequestId: "delegate-sdk-rejected-options-1",
+            });
+            expect(sdkBadOptions.isError).toBe(true);
+            expect(sdkBadOptions.structuredContent).toBeUndefined();
+            expect(errorObject(sdkBadOptions)).toMatchObject({
+              code: "invalid_request",
+              message: expect.stringContaining("rejected options"),
+            });
+            const badModelCall = yield* invokeValidated("delegate_task", {
+              task: cancellationPrompt,
+              target: {
+                providerInstanceId: codexInstanceId,
+                model: "codex/not-advertised",
+              },
+              mode: "async",
+              clientRequestId: "delegate-sdk-bad-model-1",
+            });
+            expect(badModelCall.isError).toBe(true);
+            expect(badModelCall.structuredContent).toBeUndefined();
+            expect(errorObject(badModelCall)).toMatchObject({
+              code: "model_unavailable",
+              message: expect.stringContaining("not advertised"),
             });
 
             // Duplicate option ids fail fast: downstream consumers disagree on
@@ -1758,13 +1921,36 @@ describe("orchestrator MCP toolkit", () => {
               mode: "async",
               clientRequestId: "delegate-duplicate-options-1",
             });
-            expect(duplicateOptionsCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
+            expect(duplicateOptionsCall.isError).toBe(true);
+            expect(duplicateOptionsCall.structuredContent).toBeUndefined();
+            expect(errorObject(duplicateOptionsCall)).toMatchObject({
               code: "invalid_request",
               message: expect.stringContaining("more than once"),
             });
 
-            const cancellableCall = yield* invoke("delegate_task", {
+            const invalidArgumentCall = yield* invokeValidated("delegate_task", {
+              task: "No target means inherit a viable default target.",
+              mode: "immediate",
+              clientRequestId: "delegate-sdk-invalid-argument-1",
+            });
+            expect(invalidArgumentCall.isError).toBe(true);
+            expect(invalidArgumentCall.structuredContent).toBeUndefined();
+            expect(errorObject(invalidArgumentCall).message).toContain("mode");
+            for (const name of ["task_status", "task_cancel"] as const) {
+              const missingTaskCall = yield* invokeValidated(name, {
+                taskId: "subagent:missing-sdk-task",
+              });
+              expect(missingTaskCall.isError).toBe(true);
+              expect(missingTaskCall.structuredContent).toBeUndefined();
+              expect(errorObject(missingTaskCall).code).toBe("task_not_found");
+            }
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.map(
+                (task) => task.id,
+              ),
+            ).toEqual(subagentIdsBeforeInvalidCalls);
+
+            const cancellableCall = yield* invokeValidated("delegate_task", {
               task: cancellationPrompt,
               target: {
                 providerInstanceId: codexInstanceId,
@@ -1775,6 +1961,8 @@ describe("orchestrator MCP toolkit", () => {
               mode: "async",
               clientRequestId: "delegate-cancel-1",
             });
+            expect(cancellableCall.isError).toBe(false);
+            expect(cancellableCall.structuredContent).toBeDefined();
             const cancellable = yield* decodeDelegateTaskResult(
               cancellableCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -2334,27 +2522,25 @@ describe("orchestrator MCP toolkit", () => {
               threadId: foreignThreadId,
               action: "pin",
             });
-            expect(foreignOrganizeCall.structuredContent).toMatchObject({
-              code: "thread_not_found",
-            });
+            expect(foreignOrganizeCall.isError).toBe(true);
+            expect(foreignOrganizeCall.structuredContent).toBeUndefined();
+            expect(errorObject(foreignOrganizeCall).code).toBe("thread_not_found");
             expect((yield* orchestrator.getThreadShell(foreignThreadId))?.pinnedAt).toBeNull();
 
             const foreignReadCall = yield* invoke("t3_thread_read", {
               threadId: foreignThreadId,
             });
-            expect(foreignReadCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
-              code: "thread_not_found",
-            });
+            expect(foreignReadCall.isError).toBe(true);
+            expect(foreignReadCall.structuredContent).toBeUndefined();
+            expect(errorObject(foreignReadCall).code).toBe("thread_not_found");
             const foreignUpdateCall = yield* invoke("t3_thread_update", {
               threadId: foreignThreadId,
               action: "rename",
               title: "Should stay foreign",
             });
-            expect(foreignUpdateCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
-              code: "thread_not_found",
-            });
+            expect(foreignUpdateCall.isError).toBe(true);
+            expect(foreignUpdateCall.structuredContent).toBeUndefined();
+            expect(errorObject(foreignUpdateCall).code).toBe("thread_not_found");
             const listCall = yield* invoke("t3_thread_list", {
               includeSubagents: false,
               limit: 100,
