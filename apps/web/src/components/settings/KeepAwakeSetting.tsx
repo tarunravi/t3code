@@ -26,13 +26,13 @@ export function KeepAwakeSetting() {
   return (
     <SettingsRow
       {...searchableSetting("keep-awake")}
-      description="Stops the Mac from sleeping so running agents don't stall. The display can still turn off."
+      description="Stops the Mac and its display from sleeping so running agents don't stall."
       status={error ? <span className="text-destructive">{error}</span> : null}
       control={
         <Switch
           checked={enabled}
           onCheckedChange={(checked) => void applyChange(checked)}
-          aria-label="Keep Mac awake while T3 Code is running"
+          aria-label="Keep Mac and display awake while T3 Code is running"
         />
       }
     />

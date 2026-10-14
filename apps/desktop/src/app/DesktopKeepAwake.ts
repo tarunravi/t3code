@@ -22,12 +22,12 @@ const STABLE_RUN = Duration.minutes(1);
 const { logInfo, logWarning } = makeComponentLogger("desktop-keep-awake");
 
 /**
- * Prevent idle sleep (-i), disk idle sleep (-m), and system sleep on AC power
- * (-s). Display sleep stays allowed. -w exits caffeinate when T3 Code dies,
- * even if it is killed before it can clean up.
+ * Prevent display sleep (-d), idle sleep (-i), disk idle sleep (-m), and system
+ * sleep on AC power (-s). -w exits caffeinate when T3 Code dies, even if it is
+ * killed before it can clean up.
  */
 export function caffeinateArgs(pid: number): ReadonlyArray<string> {
-  return ["-i", "-m", "-s", "-w", String(pid)];
+  return ["-d", "-i", "-m", "-s", "-w", String(pid)];
 }
 
 export function nextCaffeinateRestart(
@@ -94,11 +94,11 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  // The in-process blocker keeps idle sleep away even while caffeinate is
-  // missing or between restarts; caffeinate adds disk and system-sleep
-  // assertions Electron does not expose.
+  // The in-process blocker keeps the display and system awake even while
+  // caffeinate is missing or between restarts; caffeinate adds disk and
+  // system-sleep assertions Electron does not expose.
   const keepAwake = Effect.scoped(
-    powerSaveBlocker.preventAppSuspension.pipe(Effect.andThen(superviseCaffeinate)),
+    powerSaveBlocker.preventDisplaySleep.pipe(Effect.andThen(superviseCaffeinate)),
   );
 
   const setEnabled = (enabled: boolean) =>
@@ -108,7 +108,7 @@ export const make = Effect.gen(function* () {
         onNone: () =>
           Effect.forkIn(keepAwake, layerScope).pipe(
             Effect.asSome,
-            Effect.tap(() => logInfo("keeping Mac awake")),
+            Effect.tap(() => logInfo("keeping Mac and display awake")),
           ),
         onSome: (fiber) =>
           Fiber.interrupt(fiber).pipe(
