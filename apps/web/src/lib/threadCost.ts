@@ -35,10 +35,20 @@ export interface ThreadCostRow {
   readonly incompleteUsage: boolean;
 }
 
+export interface ThreadCostSubtotal {
+  readonly usd: number;
+  /** True when any of this section's usage is unpriced or unmeasured, so `usd` is a lower bound. */
+  readonly partial: boolean;
+}
+
 export interface ThreadCostEstimate {
   readonly totalUsd: number;
   /** True when any usage is unpriced or unmeasured, so `totalUsd` is a lower bound. */
   readonly partial: boolean;
+  /** The thread itself (depth 0), across all its models. */
+  readonly parent: ThreadCostSubtotal;
+  /** Every delegated descendant (depth 1 and deeper). */
+  readonly subagents: ThreadCostSubtotal;
   readonly rows: readonly ThreadCostRow[];
 }
 
@@ -137,17 +147,18 @@ export function estimateThreadCost(
   rates: ReadonlyMap<string, UsageModelRate | null>,
 ): ThreadCostEstimate {
   const rows: ThreadCostRow[] = [];
-  let totalUsd = 0;
-  let partial = false;
+  const parent = { usd: 0, partial: false };
+  const subagents = { usd: 0, partial: false };
   for (const source of sources) {
+    const section = source.depth === 0 ? parent : subagents;
     const base = { threadId: source.threadId, title: source.title, depth: source.depth };
     if (source.projection === null) {
-      partial = true;
+      section.partial = true;
       rows.push({ ...base, model: null, totalTokens: 0, costUsd: null, incompleteUsage: true });
       continue;
     }
     const { usage, incomplete } = threadUsageByModel(source.projection);
-    if (incomplete) partial = true;
+    if (incomplete) section.partial = true;
     if (usage.length === 0) {
       rows.push({ ...base, model: null, totalTokens: 0, costUsd: 0, incompleteUsage: incomplete });
       continue;
@@ -155,8 +166,8 @@ export function estimateThreadCost(
     for (const entry of usage) {
       const rate = rates.get(entry.model) ?? null;
       const costUsd = rate === null ? null : modelUsageCost(entry, rate);
-      if (costUsd === null) partial = true;
-      else totalUsd += costUsd;
+      if (costUsd === null) section.partial = true;
+      else section.usd += costUsd;
       rows.push({
         ...base,
         model: entry.model,
@@ -166,5 +177,11 @@ export function estimateThreadCost(
       });
     }
   }
-  return { totalUsd, partial, rows };
+  return {
+    totalUsd: parent.usd + subagents.usd,
+    partial: parent.partial || subagents.partial,
+    parent,
+    subagents,
+    rows,
+  };
 }
