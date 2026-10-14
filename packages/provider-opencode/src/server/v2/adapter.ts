@@ -325,6 +325,8 @@ interface Wake {
    * in its events, so only its replay names them.
    */
   readonly children: Set<string>;
+  /** When OpenCode started the execution, which its continuation turn may begin long after. */
+  readonly startedAt: DateTime.Utc;
 }
 
 interface OpenBlock {
@@ -2419,6 +2421,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         after: delivered.at(-1)?.inboxId,
         first: delivered[0]?.inboxId,
         children: new Set(),
+        startedAt: yield* DateTime.now,
       };
       state.wakes.push(wake);
       yield* Effect.logInfo("OpenCode started a turn on its own; asking for a continuation.", {
@@ -3597,6 +3600,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // The execution still runs, so the run a mark waits on is this one or
           // was over before it started: its end, still to come, is this turn's.
           if (wake.running) state.unsettled = false;
+          // Its held events replay at once, so timing it from now would leave
+          // the execution's output a near-zero duration.
+          if (turn !== undefined) {
+            turn.providerTurn = { ...turn.providerTurn, startedAt: wake.startedAt };
+          }
           yield* replay(wake);
         }),
       );
