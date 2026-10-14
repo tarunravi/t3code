@@ -8,15 +8,18 @@ import * as Electron from "electron";
 export class ElectronPowerSaveBlocker extends Context.Service<
   ElectronPowerSaveBlocker,
   {
-    /** Holds a `prevent-app-suspension` blocker until the scope closes. */
-    readonly preventAppSuspension: Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * Holds a `prevent-display-sleep` blocker until the scope closes. It also
+     * prevents app suspension.
+     */
+    readonly preventDisplaySleep: Effect.Effect<void, never, Scope.Scope>;
   }
 >()("@t3tools/desktop/electron/ElectronPowerSaveBlocker") {}
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = ElectronPowerSaveBlocker.of({
-  preventAppSuspension: Effect.acquireRelease(
-    Effect.sync(() => Electron.powerSaveBlocker.start("prevent-app-suspension")),
+  preventDisplaySleep: Effect.acquireRelease(
+    Effect.sync(() => Electron.powerSaveBlocker.start("prevent-display-sleep")),
     (id) =>
       Effect.sync(() => {
         if (Electron.powerSaveBlocker.isStarted(id)) {
