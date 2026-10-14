@@ -54,7 +54,7 @@ function layerKeepAwake(recorded: Recorded, platform: NodeJS.Platform) {
     }),
   );
   const powerSaveBlocker = ElectronPowerSaveBlocker.ElectronPowerSaveBlocker.of({
-    preventAppSuspension: Effect.acquireRelease(
+    preventDisplaySleep: Effect.acquireRelease(
       Effect.sync(() => {
         recorded.blockersHeld += 1;
       }),
@@ -78,8 +78,8 @@ function layerKeepAwake(recorded: Recorded, platform: NodeJS.Platform) {
 }
 
 describe("DesktopKeepAwake", () => {
-  it("runs caffeinate against the app pid without blocking display sleep", () => {
-    assert.deepEqual(DesktopKeepAwake.caffeinateArgs(4242), ["-i", "-m", "-s", "-w", "4242"]);
+  it("runs caffeinate against the app pid and keeps the display awake", () => {
+    assert.deepEqual(DesktopKeepAwake.caffeinateArgs(4242), ["-d", "-i", "-m", "-s", "-w", "4242"]);
   });
 
   it("backs off on repeated quick exits and resets after a stable run", () => {

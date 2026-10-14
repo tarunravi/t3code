@@ -577,9 +577,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "keep-awake",
-    title: "Keep Mac awake while T3 Code is running",
+    title: "Keep Mac and display awake while T3 Code is running",
     to: "/settings/general",
-    searchTerms: ["sleep caffeinate prevent idle power agents stall"],
+    searchTerms: ["sleep caffeinate prevent idle power agents stall display screen dim lock"],
     desktopOnly: true,
     macOnly: true,
   },
