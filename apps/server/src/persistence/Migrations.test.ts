@@ -107,7 +107,12 @@ describe("divergent migration history", () => {
         }>`PRAGMA table_info(projection_threads)`;
         const tables = yield* sql<{ readonly name: string }>`
           SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
-            ('pull_request_files_viewed', 'mcp_app_model_context')
+            ('pull_request_files_viewed', 'mcp_app_model_context', 'pull_request_review_guides')
+        `;
+        const indexes = yield* sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE type = 'index' AND name IN
+            ('orchestration_v2_projection_turn_items_user_message_idx',
+             'orchestration_v2_projection_nodes_live_idx')
         `;
         return {
           autoSettleDisabledAt: columns.some((column) => column.name === "auto_settle_disabled_at"),
@@ -115,6 +120,8 @@ describe("divergent migration history", () => {
             (table) => table.name === "pull_request_files_viewed",
           ),
           mcpAppModelContext: tables.some((table) => table.name === "mcp_app_model_context"),
+          reviewGuides: tables.some((table) => table.name === "pull_request_review_guides"),
+          snapshotWindowIndexes: indexes.length === 2,
           webhooks: yield* hasWebhookSchema,
         };
       });
@@ -122,6 +129,8 @@ describe("divergent migration history", () => {
         autoSettleDisabledAt: false,
         pullRequestFilesViewed: false,
         mcpAppModelContext: false,
+        reviewGuides: false,
+        snapshotWindowIndexes: false,
         webhooks: false,
       });
 
@@ -133,6 +142,8 @@ describe("divergent migration history", () => {
         autoSettleDisabledAt: true,
         pullRequestFilesViewed: true,
         mcpAppModelContext: true,
+        reviewGuides: true,
+        snapshotWindowIndexes: true,
         webhooks: true,
       });
 
@@ -158,11 +169,14 @@ describe("divergent migration history", () => {
       yield* WebhookRelayDeliveries;
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
 
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id > 61),
+      );
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.isTrue(yield* hasWebhookSchema);
       assert.deepStrictEqual(
-        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 61 ORDER BY migration_id`,
         ledger,
       );
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
