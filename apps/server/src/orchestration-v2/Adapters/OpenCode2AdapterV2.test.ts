@@ -4372,7 +4372,15 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  const continued = (after: ReadonlyArray<ProviderReplayEntry>) =>
+  const continued = (
+    after: ReadonlyArray<ProviderReplayEntry>,
+    options?: {
+      /** The wake's own steps, before its execution ends. */
+      readonly steps?: ReadonlyArray<ProviderReplayEntry>;
+      /** Runs between the wake's offer and its continuation turn's start. */
+      readonly beforeContinuation?: Effect.Effect<void>;
+    },
+  ) =>
     Effect.gen(function* () {
       const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
       const offered = yield* Deferred.make<void>();
@@ -4406,6 +4414,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           ordinal: 0,
           text: "CHILD_OK",
         }),
+        ...(options?.steps ?? []),
         event("session.execution.succeeded", { sessionID: SESSION }),
         ...after,
       ]).pipe(
@@ -4434,6 +4443,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       );
       yield* runtime.startTurn(withLineage(thread));
       yield* Deferred.await(offered);
+      if (options?.beforeContinuation) yield* options.beforeContinuation;
       yield* runtime.startTurn(continuationTurn(thread, offers[0]!));
       yield* Deferred.await(bothEnded);
       const [first, second] = turns;
@@ -4448,6 +4458,29 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     ],
     cursor: {},
   };
+
+  it.effect("times a continuation turn from its execution's start, not its replay", () =>
+    Effect.gen(function* () {
+      const step = (output: number, reasoning: number) =>
+        event("session.step.ended", {
+          sessionID: SESSION,
+          assistantMessageID: "msg_followup",
+          finish: "stop",
+          cost: 0,
+          tokens: { input: 30, output, reasoning, cache: { read: 12224, write: 0 } },
+        });
+      const wakeStartedAt = yield* DateTime.now;
+      // The execution ran on its own; T3 starts its continuation 30s later.
+      const { second } = yield* continued([], {
+        steps: [step(214, 663), step(178, 545)],
+        beforeContinuation: TestClock.adjust("30 seconds"),
+      });
+      assert.equal(second.status, "completed");
+      assert.equal(second.turnTokenUsage?.outputTokens, 214 + 663 + 178 + 545);
+      assert.deepEqual(second.startedAt, wakeStartedAt);
+      assert.deepEqual(second.completedAt, DateTime.add(wakeStartedAt, { seconds: 30 }));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
 
   it.effect("forks before a continuation's report, so the fork leaves out its answer", () =>
     Effect.gen(function* () {
