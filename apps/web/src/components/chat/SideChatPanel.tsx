@@ -210,9 +210,13 @@ export function SideChatPanel(props: {
   const instanceEntries = useMemo(
     () =>
       sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
+        applyProviderInstanceSettings(
+          deriveProviderInstanceEntries(providerStatuses),
+          settings,
+          sideShell?.projectId ?? null,
+        ),
       ),
-    [providerStatuses, settings],
+    [providerStatuses, settings, sideShell?.projectId],
   );
   const modelOptionsByInstance = useMemo(
     () =>
@@ -393,6 +397,7 @@ export function SideChatPanel(props: {
                   className="flex min-w-0 items-center justify-between gap-2 px-2 pb-2 sm:px-3 sm:pb-3"
                 >
                   <ProviderModelPicker
+                    environmentId={environmentId}
                     size="xs"
                     activeInstanceId={modelSelection.instanceId}
                     model={modelSelection.model}
