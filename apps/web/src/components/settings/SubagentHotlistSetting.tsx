@@ -36,6 +36,7 @@ function HotlistEditor(props: {
         />
       )}
       <SubagentRosterAddControls
+        environmentId={props.environmentId}
         entries={props.entries}
         instances={instances}
         pickerInstances={pickerInstances}
