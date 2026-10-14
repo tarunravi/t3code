@@ -1242,7 +1242,227 @@ it.layer(layerDeliveryTest)("nested delegated completion deliveries", (it) => {
       );
     }),
   );
+
+  it.effect("settles a waiting child task when its grandchild ends without waking it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const { rootThreadId, delegate, finish } = yield* startDelegatingRoot("unwoken-grandchild");
+      const child = yield* delegate(rootThreadId, "child");
+      const grandchild = yield* delegate(child.threadId, "grandchild");
+      const afterSequence = yield* sink.latestSequence();
+
+      // The child reports while its grandchild still runs, then drops the
+      // grandchild's wake (task_cancel does this), so no child run follows.
+      const childRun = (yield* orchestrator.getThreadProjection(child.threadId)).runs[0]!;
+      yield* finish(childRun, "Child result, grandchild still running.");
+      yield* orchestrator.dispatch({
+        type: "delegated_task.completion-delivery.dispose",
+        commandId: CommandId.make("command:unwoken-grandchild-dispose"),
+        parentThreadId: child.threadId,
+        taskId: grandchild.taskId,
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(rootThreadId)).subagents[0]?.status,
+        "running",
+      );
+
+      const grandchildRun = (yield* orchestrator.getThreadProjection(grandchild.threadId)).runs[0]!;
+      yield* finish(grandchildRun, "Grandchild finished.");
+      yield* awaitTaskCompleted({ afterSequence, threadId: rootThreadId, taskId: child.taskId });
+
+      const childProjection = yield* orchestrator.getThreadProjection(child.threadId);
+      assert.equal(childProjection.subagents[0]?.status, "completed");
+      assert.lengthOf(childProjection.runs, 1);
+      const root = yield* orchestrator.getThreadProjection(rootThreadId);
+      assert.equal(root.subagents[0]?.status, "completed");
+      assert.equal(root.subagents[0]?.result, "Child result, grandchild still running.");
+    }),
+  );
+
+  it.effect("settles a waiting child task when its background roster clears without a run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const { rootThreadId, delegate, finish } = yield* startDelegatingRoot("cleared-roster");
+      const child = yield* delegate(rootThreadId, "child");
+      const afterSequence = yield* sink.latestSequence();
+      const childRun = (yield* orchestrator.getThreadProjection(child.threadId)).runs[0]!;
+      const providerThread = {
+        id: ProviderThreadId.make("provider-thread:cleared-roster-child"),
+        driver,
+        providerInstanceId: modelSelection.instanceId,
+        providerSessionId: null,
+        appThreadId: child.threadId,
+        ownerNodeId: childRun.rootNodeId,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      } as const;
+      const writeRoster = (name: string, taskIds: ReadonlyArray<string>) =>
+        sink.write({
+          commandId: CommandId.make(`command:cleared-roster:${name}`),
+          events: [
+            {
+              id: EventId.make(`event:cleared-roster:${name}`),
+              type: "provider-thread.updated",
+              threadId: child.threadId,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...providerThread,
+                pendingBackgroundTasks: taskIds.map((taskId) => ({ taskId, kind: "command" })),
+              },
+            },
+          ],
+        });
+
+      // The child's turn ends while a background command it started still runs.
+      yield* writeRoster("pending", ["background-ci-watch"]);
+      yield* finish(childRun, "Child result, CI watch still running.");
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(rootThreadId)).subagents[0]?.status,
+        "running",
+      );
+
+      // Releasing an idle session clears the roster without starting a run.
+      yield* writeRoster("cleared", []);
+      yield* awaitTaskCompleted({ afterSequence, threadId: rootThreadId, taskId: child.taskId });
+      const root = yield* orchestrator.getThreadProjection(rootThreadId);
+      assert.equal(root.subagents[0]?.result, "Child result, CI watch still running.");
+    }),
+  );
 });
+
+/** A root thread with a started run that can delegate tasks and finish their runs. */
+const startDelegatingRoot = (name: string) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const projects = yield* ProjectService.ProjectService;
+    const now = yield* DateTime.now;
+    const rootThreadId = ThreadId.make(`thread:${name}-root`);
+    const projectId = ProjectId.make(`project:${name}`);
+    yield* projects.create({
+      commandId: CommandId.make(`command:${name}-project`),
+      projectId,
+      title: name,
+      workspaceRoot: `/workspace/${projectId}`,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`command:${name}-root`),
+      threadId: rootThreadId,
+      projectId,
+      title: `${name} root`,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`command:${name}-start`),
+      threadId: rootThreadId,
+      messageId: MessageId.make(`message:${name}-start`),
+      text: "Delegate work.",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const delegate = (parentThreadId: ThreadId, task: string) =>
+      Effect.gen(function* () {
+        const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(`command:${name}:${task}`),
+          parentThreadId,
+          parentRunId: parentRun.id,
+          parentNodeId: parentRun.rootNodeId!,
+          task,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          completionWake: "always",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const subagent = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents[0]!;
+        return { taskId: subagent.id, threadId: subagent.childThreadId! };
+      });
+    const finish = (run: OrchestrationV2Run, text: string) =>
+      sink.write({
+        commandId: CommandId.make(`command:${name}-finish:${run.id}`),
+        events: [
+          {
+            id: EventId.make(`event:${name}-result:${run.id}`),
+            type: "message.updated",
+            threadId: run.threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              id: MessageId.make(`message:${name}-result:${run.id}`),
+              threadId: run.threadId,
+              runId: run.id,
+              nodeId: run.rootNodeId,
+              role: "assistant",
+              text,
+              attachments: [],
+              streaming: false,
+              createdBy: "agent",
+              creationSource: "server",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          {
+            ...runEvent({
+              threadId: run.threadId,
+              runId: run.id,
+              ordinal: run.ordinal,
+              status: "completed",
+              now,
+            }),
+            payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+    return { rootThreadId, delegate, finish };
+  });
+
+/** Waits for the persisted event that marks a delegated task completed. */
+const awaitTaskCompleted = (input: {
+  readonly afterSequence: number;
+  readonly threadId: ThreadId;
+  readonly taskId: NodeId;
+}) =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const completed = yield* sink
+      .stream({ afterSequence: input.afterSequence, eventType: "subagent.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            stored.event.threadId === input.threadId &&
+            stored.event.payload.id === input.taskId &&
+            stored.event.payload.status === "completed",
+        ),
+        Stream.runHead,
+      );
+    assert.isTrue(completed._tag === "Some");
+  });
 
 /** A running app-owned task whose child thread's first run the restart cancelled. */
 const seedRestartCancelledChild = (input: {

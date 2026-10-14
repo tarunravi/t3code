@@ -20,6 +20,7 @@ import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
   CommandId,
+  isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
   type NodeId,
@@ -11458,6 +11459,48 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Stream.runForEach(handleTerminalRun),
       Effect.forkDetach,
     );
+
+  // A delegated task whose turn ended while its own work was still live
+  // (a grandchild, a background task) finishes when that work ends. When
+  // nothing wakes the child for it, no run ends either, so the task's
+  // parent would otherwise show it running until the next restart.
+  const finalizeAfterChildWorkEnded = (stored: OrchestrationV2StoredEvent) =>
+    Effect.gen(function* () {
+      const threadId = stored.event.threadId;
+      const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
+      if (parentThreadId !== undefined) {
+        yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to settle a delegated task after its work ended", {
+          threadId: stored.event.threadId,
+          sequence: stored.sequence,
+          cause,
+        }),
+      ),
+    );
+  yield* Stream.merge(
+    eventSink
+      .stream({ afterSequence: terminalEventsAfterSequence, eventType: "subagent.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            !isOrchestrationV2WorkActive(stored.event.payload.status),
+        ),
+      ),
+    eventSink
+      .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-thread.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "provider-thread.updated" &&
+            stored.event.payload.status !== "active" &&
+            (stored.event.payload.pendingBackgroundTasks?.length ?? 0) === 0,
+        ),
+      ),
+  ).pipe(Stream.runForEach(finalizeAfterChildWorkEnded), Effect.forkDetach);
 
   // Settles child results and completion deliveries whose runs ended without
   // the listener above: before this boot, or in runtime reconciliation, which
