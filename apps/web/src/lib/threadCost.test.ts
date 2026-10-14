@@ -130,6 +130,8 @@ describe("estimateThreadCost", () => {
     // child: 0.2M*1 + 0.05M*5 = 0.45; grandchild: 0.1M*0.5 + 0.01M*2 = 0.07
     expect(estimate.totalUsd).toBeCloseTo(3.15 + 0.45 + 0.07, 10);
     expect(estimate.partial).toBe(false);
+    expect(estimate.parent).toEqual({ usd: expect.closeTo(3.15, 10), partial: false });
+    expect(estimate.subagents).toEqual({ usd: expect.closeTo(0.45 + 0.07, 10), partial: false });
     expect(estimate.rows.map((row) => [row.threadId, row.depth, row.model])).toEqual([
       ["parent", 0, "parent-model"],
       ["child", 1, "child-model"],
@@ -147,11 +149,61 @@ describe("estimateThreadCost", () => {
     );
     expect(estimate.totalUsd).toBeCloseTo(3.15, 10);
     expect(estimate.partial).toBe(true);
+    // Only the subagents are partial; the parent's own price is exact.
+    expect(estimate.parent).toEqual({ usd: expect.closeTo(3.15, 10), partial: false });
+    expect(estimate.subagents).toEqual({ usd: 0, partial: true });
     expect(estimate.rows.map((row) => row.costUsd)).toEqual([
       expect.closeTo(3.15, 10),
       null,
       null,
       null,
     ]);
+  });
+  it("sums every parent model into the parent subtotal when there are no subagents", () => {
+    const twoModels = {
+      ...parent,
+      runs: [...parent.runs, { ...parent.runs[0]!, id: "run:2", providerThreadId: "pt2" }],
+      attempts: [...parent.attempts, { id: "attempt:2", runId: "run:2" }],
+      providerThreads: [{ id: "pt2", nativeMetadata: { modelSelection: { model: "glm-5.3" } } }],
+      providerTurns: [
+        ...parent.providerTurns,
+        {
+          ...parent.providerTurns[0]!,
+          id: "turn:pt2",
+          providerThreadId: "pt2",
+          runAttemptId: "attempt:2",
+          turnTokenUsage: {
+            ...parent.providerTurns[0]!.turnTokenUsage!,
+            inputTokens: 100_000,
+            cachedInputTokens: 0,
+            outputTokens: 10_000,
+          },
+        },
+      ],
+    } as unknown as ThreadCostProjection;
+    const estimate = estimateThreadCost(
+      [source("parent", 0, twoModels)],
+      new Map([
+        ["parent-model", perMillion(3, 15, 0.3)],
+        ["glm-5.3", perMillion(0.5, 2)],
+      ]),
+    );
+    expect(estimate.rows.map((row) => row.model)).toEqual(["parent-model", "glm-5.3"]);
+    expect(estimate.parent).toEqual({ usd: expect.closeTo(3.15 + 0.07, 10), partial: false });
+    expect(estimate.subagents).toEqual({ usd: 0, partial: false });
+    expect(estimate.totalUsd).toBeCloseTo(3.22, 10);
+  });
+  it("marks only the parent partial when its own model is unpriced", () => {
+    const estimate = estimateThreadCost(
+      sources,
+      new Map([
+        ["parent-model", null],
+        ["child-model", perMillion(1, 5)],
+        ["glm-5.3", perMillion(0.5, 2)],
+      ]),
+    );
+    expect(estimate.parent).toEqual({ usd: 0, partial: true });
+    expect(estimate.subagents).toEqual({ usd: expect.closeTo(0.52, 10), partial: false });
+    expect(estimate.partial).toBe(true);
   });
 });
