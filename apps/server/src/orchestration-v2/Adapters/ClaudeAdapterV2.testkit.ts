@@ -839,6 +839,9 @@ function makeReplayQueryRunner(
               mode,
             });
           }),
+        interrupt: replayEffect(() => {
+          assertNextOutboundFrame({ type: "query.interrupt" });
+        }),
         stopTask: (taskId) =>
           replayEffect(() => {
             assertNextOutboundFrame({ type: "query.stop_task", taskId });
@@ -847,13 +850,6 @@ function makeReplayQueryRunner(
           replayEffect(() => {
             assertNextOutboundFrame({ type: "query.background_tasks", toolUseId });
           }).pipe(Effect.as(true)),
-        interrupt: replayEffect(() => {
-          assertNextOutboundFrame({ type: "query.interrupt" });
-        }),
-        stopTask: (taskId) =>
-          replayEffect(() => {
-            assertNextOutboundFrame({ type: "query.stop_task", taskId });
-          }),
         close: Effect.void,
       };
     },

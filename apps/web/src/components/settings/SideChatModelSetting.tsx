@@ -29,7 +29,7 @@ export function SideChatModelSetting() {
   const mixed = useScopedSettingsMixed(["sideChatModelSelection"]);
   const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
   const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
   );
   const disabledReason = useScopedModelDisabledReason(settings, instanceEntries);
   const selection = settings.sideChatModelSelection;
@@ -55,6 +55,7 @@ export function SideChatModelSetting() {
           <div className="flex flex-wrap items-center justify-end gap-2">
             {selection !== null ? (
               <ProviderModelPicker
+                environmentId={environment?.environmentId ?? null}
                 activeInstanceId={selection.instanceId}
                 model={selection.model}
                 lockedProvider={null}
