@@ -161,6 +161,7 @@ function PresetEditor(props: {
         </ul>
       )}
       <SubagentRosterAddControls
+        environmentId={props.environmentId}
         entries={rosterEntries}
         instances={instances}
         pickerInstances={pickerInstances}

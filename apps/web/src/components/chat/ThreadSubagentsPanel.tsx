@@ -316,6 +316,7 @@ export function ThreadSubagentsPanel(props: {
               />
             )}
             <SubagentRosterAddControls
+              environmentId={props.environmentId}
               entries={roster.entries}
               instances={instances}
               pickerInstances={pickerInstances}

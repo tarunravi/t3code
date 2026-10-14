@@ -96,6 +96,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -225,6 +226,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           delegatedTaskResultPending: () =>
@@ -311,6 +313,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -390,6 +393,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -472,6 +476,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -561,6 +566,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // Its user has since raised the child to full access.
@@ -679,6 +685,7 @@ describe("OrchestratorMcpService", () => {
         ServerSettings.layerTest(),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) => Effect.succeed(projections.get(threadId)!),
           // The child still runs Supervised; its user has since raised the task under it
           // to full access.
@@ -1327,6 +1334,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       ServerSettings.layerTest(),
       NodeServices.layer,
       Layer.mock(ThreadManagementService.ThreadManagementService)({
+        hasReceipt: () => Effect.succeed(false),
         getThreadRecords: (threadId) =>
           Effect.succeed(
             threadId === parentThreadId
@@ -2451,6 +2459,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -2666,6 +2675,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) => Effect.succeed(projections(threadId)),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -2800,6 +2810,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
+          hasReceipt: () => Effect.succeed(false),
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([{ ...codex, models: codexModels }, antigravity]),

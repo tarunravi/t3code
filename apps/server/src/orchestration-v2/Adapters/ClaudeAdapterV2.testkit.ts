@@ -832,10 +832,6 @@ function makeReplayQueryRunner(
               mode,
             });
           }),
-        stopTask: (taskId) =>
-          replayEffect(() => {
-            assertNextOutboundFrame({ type: "query.stop_task", taskId });
-          }),
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
         }),

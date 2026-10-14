@@ -68,7 +68,7 @@ export function useSubagentInstances(environmentId: EnvironmentId) {
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   return useMemo(() => {
     const instances = sortProviderInstanceEntries(
-      applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+      applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
     );
     const pickerInstances = instances.filter(isProviderInstancePickerVisible);
     const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<ModelEsque>>(
@@ -275,6 +275,7 @@ export function SubagentRosterList(props: {
 
 /** "Add" controls shared by the thread panel and the hotlist setting. */
 export function SubagentRosterAddControls(props: {
+  environmentId: EnvironmentId;
   entries: ReadonlyArray<SubagentRosterEntry>;
   instances: ReadonlyArray<ProviderInstanceEntry>;
   pickerInstances: ReadonlyArray<ProviderInstanceEntry>;
@@ -374,6 +375,7 @@ export function SubagentRosterAddControls(props: {
       </Menu>
       {activeInstanceId === undefined ? null : (
         <ProviderModelPicker
+          environmentId={props.environmentId}
           activeInstanceId={activeInstanceId}
           model={anchor?.model ?? fallbackInstance?.models[0]?.slug ?? ""}
           selectedModels={entries.map((entry) => entry.selection)}
