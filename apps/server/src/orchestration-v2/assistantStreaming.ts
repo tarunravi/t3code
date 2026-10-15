@@ -107,6 +107,7 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
       return event;
     }
     if (mode === "turn") return null;
+    if (mode === "token") return event;
     const previous = delivered.get(key);
     if (previous && now - previous.at < 400) return null;
     const { ready } = splitBufferedAssistantText(message.text);

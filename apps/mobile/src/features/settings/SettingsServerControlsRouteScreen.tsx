@@ -119,6 +119,11 @@ const STREAMING_CHOICES: ReadonlyArray<{
     label: "Finished paragraphs",
     description: "Show each paragraph or code block as it completes.",
   },
+  {
+    mode: "token",
+    label: "Stream as received",
+    description: "Show each provider update immediately; update size depends on the provider.",
+  },
 ];
 
 export function SettingsEnvironmentNewThreadsRouteScreen() {
