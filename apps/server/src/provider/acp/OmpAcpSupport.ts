@@ -20,12 +20,13 @@ export const OMP_DRIVER_KIND = ProviderDriverKind.make("omp");
 export const OMP_DEFAULT_BINARY = "omp";
 
 /**
- * omp registers `/goal` only for its TUI, so T3 runs it: the goal lives on the
- * provider thread and each goal turn is an ordinary prompt.
+ * `/goal` runs on omp's own goal loop over RPC when the omp build supports
+ * it; otherwise T3 keeps the goal on the provider thread and each goal turn
+ * is an ordinary prompt.
  */
 export const OMP_GOAL_SLASH_COMMAND: ServerProviderSlashCommand = {
   name: "goal",
-  description: "Set a goal oh-my-pi works toward, tracked by T3",
+  description: "Set a goal oh-my-pi works toward until it is done",
   input: { hint: "Objective, or status, pause, resume, clear" },
 };
 
