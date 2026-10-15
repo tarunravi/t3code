@@ -569,6 +569,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["reasoning stream streaming thoughts thought expand activity row"],
   },
   {
+    id: "live-thinking",
+    title: "Live thinking",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["reasoning stream streaming thoughts thought expand activity row"],
+  },
+  {
     id: "hide-whitespace-changes",
     title: "Hide whitespace changes",
     to: "/settings/diffs",

@@ -14,6 +14,7 @@ import {
   isSettingsSearchScopeAvailable,
   movedSettingsPath,
   searchSettings,
+  searchableSetting,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SEARCH_ITEMS,
   sourceControlHostSearchItems,
@@ -227,6 +228,9 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(updates.scope, "environment")).toBe(true);
     expect(isSettingsSearchScopeAvailable(updates.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(updates.scope, "project")).toBe(false);
+    const liveThinking = getSettingsSearchTargetScope("live-thinking")!;
+    expect(liveThinking.scope).toBe("environment-defaults");
+    expect(isSettingsSearchScopeAvailable(liveThinking.scope, "project")).toBe(false);
     const fallback = getSettingsSearchTargetScope("fallback-model")!;
     expect(fallback.scope).toBe("environment-defaults");
     expect(isSettingsSearchScopeAvailable(fallback.scope, "environment")).toBe(true);
@@ -375,7 +379,6 @@ describe("fork pricing search", () => {
       expect(searchSettings(query).map((item) => item.id)).toContain("usage-model-prices");
     },
   );
-
 });
 
 describe("fork notification search", () => {
@@ -393,9 +396,11 @@ describe("fork notification search", () => {
       });
     },
   );
-
 });
 
 it("finds provider fallback", () => {
- expect(searchSettings("provider fallback")[0]).toMatchObject({ id: "fallback-model", to: "/settings/general" });
+  expect(searchSettings("provider fallback")[0]).toMatchObject({
+    id: "fallback-model",
+    to: "/settings/general",
+  });
 });
