@@ -19,9 +19,9 @@ export interface ComposerThreadItem {
 }
 
 /**
- * Threads the `@` picker offers next to file paths. The agent can only read threads on its
- * own server, so candidates stay within the composer's environment. A query is required:
- * bare `@` stays a file picker.
+ * Threads the `@` picker offers next to file paths, from every connected environment; the
+ * composer's own environment ranks first because the agent can page its full history. A query
+ * is required: bare `@` stays a file picker.
  */
 export function matchComposerThreadItems(input: {
   shells: ReadonlyArray<ComposerThreadCandidate>;
@@ -34,12 +34,16 @@ export function matchComposerThreadItems(input: {
   return input.shells
     .filter(
       (shell) =>
-        shell.environmentId === input.environmentId &&
         shell.id !== input.excludeThreadId &&
         shell.archivedAt === null &&
         shell.title.toLowerCase().includes(query),
     )
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .sort(
+      (left, right) =>
+        Number(right.environmentId === input.environmentId) -
+          Number(left.environmentId === input.environmentId) ||
+        right.updatedAt.localeCompare(left.updatedAt),
+    )
     .slice(0, COMPOSER_THREAD_RESULT_LIMIT)
     .map((shell) => ({
       id: `thread:${shell.environmentId}:${shell.id}`,

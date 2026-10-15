@@ -30,21 +30,24 @@ describe("matchComposerThreadItems", () => {
     ).toEqual([]);
   });
 
-  it("matches titles within the environment, newest first, skipping self and archived", () => {
+  it("matches titles, own environment first then newest, skipping self and archived", () => {
     const items = matchComposerThreadItems({
       shells: [
         shell("old", "Login flow", { updatedAt: "2026-01-01T00:00:00.000Z" }),
         shell("new", "Login redesign", { updatedAt: "2026-02-01T00:00:00.000Z" }),
         shell("self", "Login self"),
         shell("gone", "Login archived", { archivedAt: "2026-01-02T00:00:00.000Z" }),
-        shell("foreign", "Login elsewhere", { environmentId: otherEnv }),
+        shell("foreign", "Login elsewhere", {
+          environmentId: otherEnv,
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        }),
         shell("nope", "Unrelated"),
       ],
       environmentId: env,
       excludeThreadId: ThreadId.make("self"),
       query: "LOGIN",
     });
-    expect(items.map((item) => item.thread.threadId)).toEqual(["new", "old"]);
+    expect(items.map((item) => item.thread.threadId)).toEqual(["new", "old", "foreign"]);
     expect(items[0]).toMatchObject({ type: "thread", label: "Login redesign" });
   });
 });

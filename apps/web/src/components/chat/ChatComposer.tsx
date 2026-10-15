@@ -250,6 +250,8 @@ import {
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import { THREAD_CONTEXT_DROP_EVENT, threadContextDropTargetProps } from "./threadContextDrag";
 import { readThreadShell, useThreadShells } from "~/state/entities";
+import { resolveThreadContextRecords } from "~/lib/threadContextSnapshot";
+import { fetchThreadSnapshotMessages, readEnvironmentLabel } from "~/state/threadContextSnapshot";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type {
@@ -3410,6 +3412,54 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [attachmentTargetKey, runAttachmentImport],
   );
+  /** Thread records for this draft; foreign threads carry history fetched from their server. */
+  const resolveThreadRecords = useCallback(
+    async (
+      refs: ReadonlyArray<ScopedThreadRef>,
+      readTitle: (ref: ScopedThreadRef) => string | null = (ref) =>
+        readThreadShell(ref)?.title ?? null,
+    ): Promise<ReadonlyArray<ThreadContextRecord> | null> => {
+      const result = await resolveThreadContextRecords({
+        refs,
+        destinationEnvironmentId: environmentId,
+        readTitle,
+        readEnvironmentLabel,
+        fetchMessages: fetchThreadSnapshotMessages,
+      });
+      if (result.ok) return result.records;
+      toastManager.add({
+        type: "error",
+        title: `Couldn't read ${result.failedTitle}`,
+        description: "Its environment is not reachable. Reconnect it and attach the thread again.",
+      });
+      return null;
+    },
+    [environmentId],
+  );
+  const importForeignThreadRecord = useCallback(
+    async (record: ThreadContextRecord) => {
+      // Like attachment imports, the pasted chip is pending draft work until its history
+      // arrives, so a send cannot carry a reference the agent cannot resolve.
+      const importTargetKey = attachmentTargetKey;
+      pendingDraftWork.begin(importTargetKey);
+      try {
+        const resolved = await resolveThreadRecords([record], () => record.title);
+        const snapshot = resolved?.[0]?.snapshot;
+        if (!snapshot || attachmentTargetKeyRef.current !== importTargetKey) return;
+        addComposerDraftThreadContexts(attachmentDraftTarget, [{ ...record, snapshot }], {
+          appendReference: false,
+        });
+      } finally {
+        pendingDraftWork.end(importTargetKey);
+      }
+    },
+    [
+      addComposerDraftThreadContexts,
+      attachmentDraftTarget,
+      attachmentTargetKey,
+      resolveThreadRecords,
+    ],
+  );
   /**
    * Brings records into this draft (paste, stash restore). Binaries are transferred only
    * when `sourceEnvironmentId` is given; the stash restores its own images and files.
@@ -3498,11 +3548,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             break;
           }
           case "thread": {
-            // The agent can only read threads on its own server; a pasted foreign one is dropped.
-            if (record.environmentId !== environmentId) break;
-            addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
-              appendReference: false,
-            });
+            if (record.environmentId === environmentId) {
+              // Back on its own server, the agent pages full history instead of a stale copy.
+              const { snapshot: _snapshot, ...ownThread } = record;
+              addComposerDraftThreadContexts(attachmentDraftTarget, [ownThread], {
+                appendReference: false,
+              });
+            } else if (record.snapshot) {
+              addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+                appendReference: false,
+              });
+            } else {
+              void importForeignThreadRecord(record);
+            }
             rewritten.set(record.contextId, record.contextId);
             break;
           }
@@ -3537,6 +3595,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerDraftTarget,
       environmentId,
       importAttachmentRecord,
+      importForeignThreadRecord,
     ],
   );
   const importContextFragment = useCallback(
@@ -4264,27 +4323,36 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       if (item.type === "thread") {
         if (trigger.kind !== "path") return;
-        const shell = readThreadShell(item.thread);
-        if (!shell) return;
-        const record = threadContextRecord(item.thread, shell.title);
-        const replacement = `${formatInlineContextReference(threadContextReference(record))} `;
-        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
-          snapshot.value,
-          trigger.rangeEnd,
-          replacement,
-        );
-        const applied = applyPromptReplacement(
-          trigger.rangeStart,
-          replacementRangeEnd,
-          replacement,
-          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
-        );
-        if (applied) {
-          addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
-            appendReference: false,
-          });
-          setComposerHighlightedItemId(null);
+        const insertThread = (record: ThreadContextRecord) => {
+          const replacement = `${formatInlineContextReference(threadContextReference(record))} `;
+          const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+            snapshot.value,
+            trigger.rangeEnd,
+            replacement,
+          );
+          const applied = applyPromptReplacement(
+            trigger.rangeStart,
+            replacementRangeEnd,
+            replacement,
+            { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+          );
+          if (applied) {
+            addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+              appendReference: false,
+            });
+            setComposerHighlightedItemId(null);
+          }
+        };
+        if (item.thread.environmentId === environmentId) {
+          const shell = readThreadShell(item.thread);
+          if (shell) insertThread(threadContextRecord(item.thread, shell.title));
+          return;
         }
+        // The expected-text guard drops the insert if the user kept typing during the fetch.
+        void resolveThreadRecords([item.thread]).then((records) => {
+          const record = records?.[0];
+          if (record) insertThread(record);
+        });
         return;
       }
     },
@@ -4294,10 +4362,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       applyPromptReplacement,
       attachmentDraftTarget,
       composerDraftTarget,
+      environmentId,
       handleInteractionModeChange,
       planModeUiEnabled,
       onUsageLimitsCommand,
       resolveActiveComposerTrigger,
+      resolveThreadRecords,
     ],
   );
 
@@ -6434,21 +6504,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     const form = composerFormRef.current;
     if (!form) return;
-    const onThreadDrop = (event: Event) => {
-      const refs = (event as CustomEvent<ReadonlyArray<ScopedThreadRef>>).detail;
-      if (refs.some((ref) => ref.environmentId !== environmentId)) {
-        toastManager.add({
-          type: "error",
-          title: "Use threads from this environment",
-          description: "The agent can only read threads on its own server.",
-        });
+    const attachDroppedThreads = async (refs: ReadonlyArray<ScopedThreadRef>) => {
+      const dropTargetKey = attachmentTargetKeyRef.current;
+      const records = await resolveThreadRecords(refs);
+      // A foreign fetch can outlive the draft it was dropped on.
+      if (!records || records.length === 0 || attachmentTargetKeyRef.current !== dropTargetKey)
         return;
-      }
-      const records = refs.flatMap((ref) => {
-        const shell = readThreadShell(ref);
-        return shell ? [threadContextRecord(ref, shell.title)] : [];
-      });
-      if (records.length === 0) return;
       if (questionAttachmentTarget !== null) {
         const canAnswer =
           canOperateThread &&
@@ -6485,6 +6546,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         addComposerDraftThreadContexts(composerDraftTarget, records);
       }
     };
+    const onThreadDrop = (event: Event) => {
+      void attachDroppedThreads((event as CustomEvent<ReadonlyArray<ScopedThreadRef>>).detail);
+    };
     form.addEventListener(THREAD_CONTEXT_DROP_EVENT, onThreadDrop);
     return () => form.removeEventListener(THREAD_CONTEXT_DROP_EVENT, onThreadDrop);
   }, [
@@ -6494,13 +6558,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     applyPromptReplacement,
     canOperateThread,
     composerDraftTarget,
-    environmentId,
     expandMobileComposer,
     isComposerApprovalState,
     isComposerCollapsedMobile,
     isConnecting,
     questionAttachmentTarget,
     readComposerSnapshot,
+    resolveThreadRecords,
   ]);
 
   const onComposerMentionDragLeaveCapture = (event: React.DragEvent<HTMLFormElement>) => {
