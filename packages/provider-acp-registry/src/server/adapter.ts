@@ -77,7 +77,10 @@ export interface AcpRegistryAdapterV2Options {
 }
 
 export type AcpRegistryFlavorOverrides = Partial<
-  Pick<AcpAdapterV2Flavor, "driver" | "runtimeHarness" | "promptTurnTokenUsage">
+  Pick<
+    AcpAdapterV2Flavor,
+    "driver" | "runtimeHarness" | "promptTurnTokenUsage" | "tracksGoalsLocally"
+  >
 >;
 
 // ─── Per-agent exceptions ────────────────────────────────────────────────────
