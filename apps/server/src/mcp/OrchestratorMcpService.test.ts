@@ -1582,7 +1582,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       Layer.mock(SecretRequests.SecretRequests)({}),
       usageSourcesTestLayer,
     );
-    return OrchestratorMcpService.layer.pipe(Layer.provide(dependencies));
+    return layerOrchestratorService.pipe(Layer.provide(dependencies));
   };
 
   it.effect("ignores a legacy role argument and sends the task unchanged", () =>
@@ -2875,7 +2875,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           .pipe(Effect.flip);
         assert.equal(denied.code, "model_unavailable");
         assert.isTrue(denied.message.includes("not allowed as a subagent"));
-      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );
 
