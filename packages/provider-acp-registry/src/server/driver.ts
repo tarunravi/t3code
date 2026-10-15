@@ -6,6 +6,7 @@ import {
   type AcpRegistryOperationError,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -256,6 +257,22 @@ function baseSnapshot(
   };
 }
 
+/** T3-owned commands first, then the agent's own, which cannot shadow them. */
+function withVariantSlashCommands(
+  provider: ServerProvider,
+  variantCommands: ReadonlyArray<ServerProviderSlashCommand> | undefined,
+): ServerProvider {
+  if (variantCommands === undefined) return provider;
+  const owned = new Set(variantCommands.map((command) => command.name.toLowerCase()));
+  return {
+    ...provider,
+    slashCommands: [
+      ...variantCommands,
+      ...provider.slashCommands.filter((command) => !owned.has(command.name.toLowerCase())),
+    ],
+  };
+}
+
 export function applyAcpRegistryAvailableCommands(
   provider: ServerProvider,
   commands: Option.Option<AcpRegistryAvailableCommands>,
@@ -470,6 +487,8 @@ export type AcpRegistryDriverEnv = AcpRegistryAdapterV2DriverEnv | ProviderHost.
 export interface AcpRegistryProviderVariant {
   readonly driverKind: ProviderDriverKind;
   readonly flavorOverrides?: Omit<AcpRegistryFlavorOverrides, "driver">;
+  /** Commands T3 runs itself for this agent, listed ahead of the agent's own. */
+  readonly slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   /** Omitted when the agent offers no application text generation. */
   readonly textGeneration?: ProviderTextGeneration;
 }
@@ -559,7 +578,7 @@ export const makeAcpRegistryProviderInstance =
             (yield* confirmedAuthentication.get)
               ? { ...input, auth: { ...input.auth, status: "authenticated" as const } }
               : input;
-          return yield* Option.isNone(runtimeCoordinator)
+          const live = yield* Option.isNone(runtimeCoordinator)
             ? Effect.succeed(provider)
             : Effect.all({
                 commands: runtimeCoordinator.value.getAvailableCommands(instanceId),
@@ -580,6 +599,7 @@ export const makeAcpRegistryProviderInstance =
                   return applyAcpRegistryUrlAuthAction(withConfiguration, authAction);
                 }),
               );
+          return withVariantSlashCommands(live, variant.slashCommands);
         });
       const checkProvider = checkAcpRegistryProviderReadiness(readinessInput).pipe(
         Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog),
@@ -685,11 +705,12 @@ export const makeAcpRegistryProviderInstance =
               liveSnapshotSemaphore.withPermit(
                 getSnapshot.pipe(
                   Effect.flatMap((current) =>
-                    publishSnapshot({
-                      ...current,
-                      slashCommands,
-                      skills,
-                    }),
+                    publishSnapshot(
+                      withVariantSlashCommands(
+                        { ...current, slashCommands, skills },
+                        variant.slashCommands,
+                      ),
+                    ),
                   ),
                 ),
               ),
