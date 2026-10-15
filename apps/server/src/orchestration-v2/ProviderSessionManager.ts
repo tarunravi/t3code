@@ -1105,8 +1105,6 @@ export const layerWithOptions = (
         readonly onlyIfIdleGeneration?: number;
         readonly keepIfBusyOtherThan?: ReadonlyArray<ProviderThreadId>;
         readonly gracefulSubscribers?: boolean;
-        /** A thread that detached just before this release; its work is orphaned too. */
-        readonly detachedThreadId?: ThreadId;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -2615,7 +2613,6 @@ export const layerWithOptions = (
                 reason: "manual_shutdown",
                 detachedThreadId: input.threadId,
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
-                detachedThreadId: input.threadId,
               });
               return;
             }
