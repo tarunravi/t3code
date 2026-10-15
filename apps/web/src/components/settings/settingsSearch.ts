@@ -623,6 +623,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees start remote origin latest fetched branch local"],
   },
   {
+    id: "fallback-model",
+    title: "Fallback model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["provider fallback retry alternate model when turn start fails automatic"],
+  },
+  {
     id: "side-chat-model",
     title: "Side chat model",
     to: "/settings/general",
