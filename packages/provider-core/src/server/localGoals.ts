@@ -1,14 +1,13 @@
 /**
- * `/goal` kept by T3 for an ACP agent whose own goal mode ACP cannot reach.
- * oh-my-pi registers `/goal` only for its TUI and exposes no goal mode, method,
- * or notification over ACP, so T3 stores the goal on the provider thread and
- * pursues it with ordinary prompts. The agent never enters a native goal mode:
+ * `/goal` kept by T3 for an agent whose own goal mode T3 cannot reach: omp
+ * over ACP, and omp RPC builds older than its native RPC goals. T3 stores the
+ * goal on the provider thread and pursues it with ordinary prompts. The agent never enters a native goal mode:
  * it does not continue on its own between turns, and a goal turn that ends
  * short of done leaves the goal paused for `/goal resume`.
  */
 import type { OrchestrationV2ProviderGoal, TurnTokenUsage } from "@t3tools/contracts";
 
-export type AcpGoalCommand =
+export type LocalGoalCommand =
   | { readonly type: "show" }
   | { readonly type: "clear" }
   | { readonly type: "pause" }
@@ -20,7 +19,7 @@ export type AcpGoalCommand =
  * current goal, a bare `/goal` shows it, and any other text sets a new
  * objective. Returns null for every other message.
  */
-export function parseAcpGoalCommand(text: string): AcpGoalCommand | null {
+export function parseLocalGoalCommand(text: string): LocalGoalCommand | null {
   const match = /^\/goal(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (match === null) return null;
   const argument = (match[1] ?? "").trim();
@@ -40,9 +39,9 @@ export function parseAcpGoalCommand(text: string): AcpGoalCommand | null {
 }
 
 /** The line a goal turn ends with once the agent reports the goal achieved. */
-export const ACP_GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
+export const LOCAL_GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
 
-export type AcpGoalCommandOutcome =
+export type LocalGoalCommandOutcome =
   /** Settles without prompting the agent. */
   | {
       readonly type: "reply";
@@ -56,7 +55,7 @@ export type AcpGoalCommandOutcome =
       readonly prompt: string;
     };
 
-function describeGoal(goal: OrchestrationV2ProviderGoal): string {
+export function describeGoal(goal: OrchestrationV2ProviderGoal): string {
   return `Goal ${goal.status.replace("_", " ")}: ${goal.objective}`;
 }
 
@@ -67,15 +66,15 @@ function goalPrompt(lead: string, objective: string): string {
     objective,
     "",
     "Keep working without asking for confirmation. When the goal is fully achieved " +
-      `and verified, end your final message with a line containing only ${ACP_GOAL_COMPLETE_MARKER}. ` +
+      `and verified, end your final message with a line containing only ${LOCAL_GOAL_COMPLETE_MARKER}. ` +
       "If you stop before then, say what remains instead.",
   ].join("\n");
 }
 
-export function runAcpGoalCommand(
+export function runLocalGoalCommand(
   current: OrchestrationV2ProviderGoal | null,
-  command: AcpGoalCommand,
-): AcpGoalCommandOutcome {
+  command: LocalGoalCommand,
+): LocalGoalCommandOutcome {
   switch (command.type) {
     case "show":
       return {
@@ -119,9 +118,9 @@ export function runAcpGoalCommand(
  * Best effort: completion is read from the marker the goal prompt asks the
  * agent to end on, so an agent that omits it leaves the goal paused.
  */
-export function acpGoalCompletionReported(finalAssistantText: string): boolean {
+export function localGoalCompletionReported(finalAssistantText: string): boolean {
   const lastLine = finalAssistantText.trimEnd().split("\n").at(-1) ?? "";
-  return lastLine.replace(/[*_`.]/gu, "").trim() === ACP_GOAL_COMPLETE_MARKER;
+  return lastLine.replace(/[*_`.]/gu, "").trim() === LOCAL_GOAL_COMPLETE_MARKER;
 }
 
 /**
@@ -129,7 +128,7 @@ export function acpGoalCompletionReported(finalAssistantText: string): boolean {
  * writes, and output, as omp's own goal budget does; cache reads are reused
  * prefix.
  */
-export function settleAcpGoalTurn(
+export function settleLocalGoalTurn(
   goal: OrchestrationV2ProviderGoal,
   turn: {
     readonly completed: boolean;
@@ -147,7 +146,9 @@ export function settleAcpGoalTurn(
   return {
     ...goal,
     status:
-      turn.completed && acpGoalCompletionReported(turn.finalAssistantText) ? "complete" : "paused",
+      turn.completed && localGoalCompletionReported(turn.finalAssistantText)
+        ? "complete"
+        : "paused",
     ...(turnTokens === undefined ? {} : { tokensUsed: (goal.tokensUsed ?? 0) + turnTokens }),
     timeUsedSeconds: (goal.timeUsedSeconds ?? 0) + Math.max(0, Math.round(turn.elapsedSeconds)),
   };

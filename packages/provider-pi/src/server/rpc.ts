@@ -69,6 +69,11 @@ export interface PiRpcSpawnOptions {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string | undefined;
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * Rewrites each uncorrelated record before it reaches `events`, or drops it
+   * by returning undefined. Pi forks use it to speak Pi's protocol.
+   */
+  readonly normalizeRecord?: (record: PiRpcRecord) => PiRpcRecord | undefined;
 }
 
 export interface PiRpcConnection {
@@ -271,7 +276,9 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
           return;
         }
       }
-      yield* Queue.offer(events, record);
+      const normalized =
+        options.normalizeRecord === undefined ? record : options.normalizeRecord(record);
+      if (normalized !== undefined) yield* Queue.offer(events, normalized);
     });
 
   // Watch exit before reading stdout so immediate crashes populate exitDeferred for diagnosis.
