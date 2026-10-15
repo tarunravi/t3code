@@ -46,10 +46,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import {
-  orphanedBackgroundWorkEvents,
-  staleProviderThreadEvents,
-} from "./OrphanedBackgroundWork.ts";
+import { orphanedBackgroundWorkEvents } from "./OrphanedBackgroundWork.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -837,25 +834,16 @@ export const layerWithOptions = (
               );
               const allocateEventId = () =>
                 idAllocator.allocate.event({ threadId: settledThreadId, providerSessionId });
-              const events = [
-                ...(yield* orphanedBackgroundWorkEvents({
-                  projection,
-                  skipRunIds: liveRunIds,
-                  // A delegated child outlives this session and settles itself.
-                  settleAppOwnedSubagents: false,
-                  now,
-                  allocateEventId,
-                })),
-                // A live run still owns its provider thread and settles its roster.
-                ...(liveRunIds.size > 0
-                  ? []
-                  : yield* staleProviderThreadEvents({
-                      projection,
-                      providerSessionId,
-                      now,
-                      allocateEventId,
-                    })),
-              ];
+              // The roster itself is cleared by writeReleasedBackgroundWorkEvents,
+              // which keeps tasks a replacement session reported meanwhile.
+              const events = yield* orphanedBackgroundWorkEvents({
+                projection,
+                skipRunIds: liveRunIds,
+                // A delegated child outlives this session and settles itself.
+                settleAppOwnedSubagents: false,
+                now,
+                allocateEventId,
+              });
               if (events.length > 0) {
                 yield* eventSink.write({ events });
               }
