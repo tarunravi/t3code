@@ -9,6 +9,7 @@ import {
   type OrchestrationV2PlanStep,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderGoal,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -96,6 +97,7 @@ import {
   type AcpClientTerminals,
 } from "./clientTerminals.ts";
 import { ACP_EMPTY_OPTION_VALUE, ACP_SESSION_MODE_OPTION_ID } from "./sessionConfig.ts";
+import { parseAcpGoalCommand, runAcpGoalCommand, settleAcpGoalTurn } from "./localGoals.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import {
   t3AcpPromptWithInstructions,
@@ -316,6 +318,8 @@ export interface AcpAdapterV2Flavor {
   ) => Effect.Effect<void>;
   readonly subagentsIdleOnTurnCompletion?: boolean;
   readonly supportsCompaction?: boolean;
+  /** T3 runs `/goal` itself because the agent's goal mode is unreachable over ACP (omp). */
+  readonly tracksGoalsLocally?: boolean;
   readonly runtimeHarness?: string;
   /**
    * Maps the `usage` an agent returns from `session/prompt` to the provider
@@ -1095,6 +1099,13 @@ interface ActiveAcpTurn {
   workAccepted: boolean;
   readonly promptWireSettled: Deferred.Deferred<void, never>;
   backgroundFinalizeGeneration: number;
+  /** A locally tracked `/goal` this turn changed; `pursued` turns settle it on finalize. */
+  readonly goalUpdate?: {
+    readonly goal: OrchestrationV2ProviderGoal | null;
+    readonly pursued: boolean;
+  };
+  /** The last closed root assistant segment, read for goal completion. */
+  finalAssistantText: string;
 }
 
 type AcpRuntimeTeardownState =
@@ -2475,6 +2486,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const stream = textStreamFor(context, kind);
           if (stream.current === null) return;
           yield* emitTextSegment(context, kind, true);
+          if (kind === "assistant") context.finalAssistantText = stream.current.text;
           stream.current = null;
         });
 
@@ -7028,6 +7040,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             threadId: context.input.threadId,
             providerTurn: turn,
           });
+          const goalUpdate = context.goalUpdate;
           const updatedProviderThread: OrchestrationV2ProviderThread = {
             ...context.input.providerThread,
             providerSessionId: input.providerSessionId,
@@ -7037,6 +7050,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
             contextUsage: context.contextUsage,
             nativeMetadata: context.nativeMetadata,
+            ...(goalUpdate === undefined
+              ? {}
+              : {
+                  goal:
+                    goalUpdate.pursued && goalUpdate.goal !== null
+                      ? settleAcpGoalTurn(goalUpdate.goal, {
+                          completed: settledStatus === "completed",
+                          finalAssistantText: context.finalAssistantText,
+                          tokenUsage: turn.turnTokenUsage,
+                          elapsedSeconds:
+                            (DateTime.toEpochMillis(now) -
+                              DateTime.toEpochMillis(context.startedAt)) /
+                            1_000,
+                        })
+                      : goalUpdate.goal,
+                }),
             updatedAt: now,
           };
           yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -7368,9 +7397,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 return wasRequested;
               }),
             );
-            const promptParts = isContinuationTurn
-              ? null
-              : yield* resolvePromptParts(turnInput, requestedSessionId);
+            const goalCommand =
+              flavor.tracksGoalsLocally === true &&
+              !isContinuationTurn &&
+              turnInput.message.attachments.length === 0 &&
+              turnInput.restartContinuationOfRunId === undefined
+                ? parseAcpGoalCommand(turnInput.message.text)
+                : null;
+            const goalOutcome =
+              goalCommand === null
+                ? null
+                : runAcpGoalCommand(turnInput.providerThread.goal ?? null, goalCommand);
+            const promptParts =
+              isContinuationTurn || goalOutcome?.type === "reply"
+                ? null
+                : yield* resolvePromptParts(
+                    goalOutcome === null
+                      ? turnInput
+                      : {
+                          ...turnInput,
+                          message: { ...turnInput.message, text: goalOutcome.prompt },
+                        },
+                    requestedSessionId,
+                  );
             const startedAt = yield* DateTime.now;
             const nativeTurnId = `${requestedSessionId}:turn:${turnInput.providerTurnOrdinal}`;
             const providerTurnId = deriveProviderTurnId(nativeTurnId);
@@ -7429,6 +7478,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               workAccepted: false,
               promptWireSettled,
               backgroundFinalizeGeneration: 0,
+              ...(goalOutcome === null
+                ? {}
+                : {
+                    goalUpdate: {
+                      goal: goalOutcome.goal,
+                      pursued: goalOutcome.type === "pursue",
+                    },
+                  }),
+              finalAssistantText: "",
             };
             const carryover = yield* Ref.getAndSet(carryoverSubagents, null);
             let rehydratedCarryoverSubagents: ReadonlyArray<ActiveAcpSubagent> = [];
@@ -7464,6 +7522,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               status: "active",
               contextUsage: context.contextUsage,
               nativeMetadata: context.nativeMetadata,
+              ...(context.goalUpdate === undefined ? {} : { goal: context.goalUpdate.goal }),
               updatedAt: startedAt,
             };
             yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -7503,7 +7562,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // queued provider continuation owns wake traffic. A user turn may
             // start before that continuation and must leave its buffer intact.
             yield* projectDeferredCarryoverTerminals(rehydratedCarryoverSubagents);
-            // Retain projected terminals during wake drain so monotonic guards reject replayed spawns.
+            if (goalOutcome?.type === "reply") {
+              yield* appendText(context, "assistant", goalOutcome.reply);
+              yield* finalizeTurn(context, "completed");
+              return;
+            }
+            // Keep projected terminals addressable through the wake drain so
+            // emitSubagent's monotonic guard can reject replayed spawn frames.
             if (isContinuationTurn) {
               yield* Ref.set(continuationRequested, false);
               yield* Ref.update(wakeReports, ({ reports, offered }) => ({
