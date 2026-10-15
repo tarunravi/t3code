@@ -3,7 +3,8 @@
  * the instance runs through the ACP Registry driver's local-command path:
  * discovery publishes omp's model and thinking config options, and the ACP
  * runtime streams text, reasoning, and tool calls. omp adds turn token usage
- * from its prompt results and text generation through `omp -p`.
+ * from its prompt results, `/goal` kept by T3 (omp's goal mode is TUI-only),
+ * and text generation through `omp -p`.
  */
 import { OmpSettings } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { makeOmpTextGeneration } from "../../textGeneration/OmpTextGeneration.ts";
 import {
   OMP_DRIVER_KIND,
+  OMP_GOAL_SLASH_COMMAND,
   ompAcpRegistrySettings,
   ompPromptTurnTokenUsage,
 } from "../acp/OmpAcpSupport.ts";
@@ -48,7 +50,9 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
         flavorOverrides: {
           runtimeHarness: "oh-my-pi",
           promptTurnTokenUsage: ompPromptTurnTokenUsage,
+          tracksGoalsLocally: true,
         },
+        slashCommands: [OMP_GOAL_SLASH_COMMAND],
         textGeneration,
       })({ ...input, config: ompAcpRegistrySettings(settings) });
     }),

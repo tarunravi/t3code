@@ -6,13 +6,28 @@ import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
  * holds what is specific to omp: its launch command, how it reports token
  * usage, and its one-shot print mode for text generation.
  */
-import { ProviderDriverKind, type OmpSettings, type TurnTokenUsage } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type OmpSettings,
+  type ServerProviderSlashCommand,
+  type TurnTokenUsage,
+} from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
 export const OMP_DRIVER_KIND = ProviderDriverKind.make("omp");
 export const OMP_DEFAULT_BINARY = "omp";
+
+/**
+ * omp registers `/goal` only for its TUI, so T3 runs it: the goal lives on the
+ * provider thread and each goal turn is an ordinary prompt.
+ */
+export const OMP_GOAL_SLASH_COMMAND: ServerProviderSlashCommand = {
+  name: "goal",
+  description: "Set a goal oh-my-pi works toward, tracked by T3",
+  input: { hint: "Objective, or status, pause, resume, clear" },
+};
 
 const decodeAcpRegistrySettings = Schema.decodeSync(AcpRegistrySettings);
 
