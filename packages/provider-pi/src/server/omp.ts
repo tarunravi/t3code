@@ -139,6 +139,48 @@ export function makeOmpRecordNormalizer(): (record: PiRpcRecord) => PiRpcRecord 
   };
 }
 
+const slashed = (path: string) => path.replace(/\\/g, "/");
+const dirName = (path: string) => slashed(path).replace(/\/[^/]*$/, "");
+const baseName = (path: string) => slashed(path).replace(/^.*\//, "");
+
+/**
+ * omp names session files `<sessions root>/<cwd bucket>/<timestamp>_<id>.jsonl`.
+ * `switch_session` opens its argument as a path, so a bare id would become a
+ * new, empty session file relative to the project. Threads started on omp's
+ * ACP transport stored that bare id, and a resume before this fix stored the
+ * resulting `<cwd>/<id>` path. Both resolve back to the id's real file,
+ * searching the current session's bucket first, then the others under the same
+ * root, which follows omp's profile and session-dir settings.
+ */
+export const resolveOmpSessionFile = Effect.fn("resolveOmpSessionFile")(function* (
+  resumeId: string,
+  currentSessionFile: string | undefined,
+) {
+  if (resumeId.endsWith(".jsonl")) return resumeId;
+  const sessionId = baseName(resumeId);
+  if (sessionId.length === 0 || currentSessionFile === undefined) return null;
+  const fs = yield* FileSystem.FileSystem;
+  const suffix = `_${sessionId}.jsonl`;
+  const findIn = (dir: string) =>
+    fs.readDirectory(dir).pipe(
+      Effect.map((names) => names.find((name) => name.endsWith(suffix))),
+      Effect.map((name) => (name === undefined ? null : `${dir}/${name}`)),
+      Effect.orElseSucceed(() => null),
+    );
+  const currentBucket = dirName(currentSessionFile);
+  const local = yield* findIn(currentBucket);
+  if (local !== null) return local;
+  const root = dirName(currentBucket);
+  const buckets = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
+  for (const bucket of buckets) {
+    const dir = `${root}/${bucket}`;
+    if (dir === currentBucket) continue;
+    const match = yield* findIn(dir);
+    if (match !== null) return match;
+  }
+  return null;
+});
+
 export const OMP_RPC_FLAVOR: PiRpcFlavor = {
   driver: OMP_PROVIDER,
   defaultBinary: "omp",
@@ -161,5 +203,6 @@ export const OMP_RPC_FLAVOR: PiRpcFlavor = {
   thinkingLevels: OMP_THINKING_LEVELS,
   makeRecordNormalizer: makeOmpRecordNormalizer,
   launchArgs: materializeOmpGoalOverlay,
+  resolveSessionFile: resolveOmpSessionFile,
   goals: { fromNative: ompGoalFromNative },
 };
