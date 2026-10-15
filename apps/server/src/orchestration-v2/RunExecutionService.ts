@@ -32,6 +32,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -46,8 +47,10 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   knownProviderFailureMessage,
   makeProviderFailure,
@@ -522,6 +525,16 @@ export function routeProviderEvent(
   }
 }
 
+/**
+ * Bounds the entire workspace checkpoint baseline capture (including lock
+ * wait) in the run start path. Prompt latency beats rollback completeness:
+ * a huge workspace must not delay the first prompt dispatch, so a slow
+ * baseline is skipped and the run proceeds without one.
+ */
+export const BASELINE_CAPTURE_BUDGET_MS = 5_000;
+
+/**
+ */
 export class RunExecutionStartError extends Schema.TaggedError<RunExecutionStartError>()(
   "RunExecutionStartError",
   {
@@ -592,9 +605,11 @@ export class RunExecutionServiceV2 extends Context.Service<
   RunExecutionServiceV2Shape
 >()("t3/orchestration-v2/RunExecutionService/RunExecutionServiceV2") {}
 
-export const layer: Layer.Layer<
+export const layerFromServices: Layer.Layer<
   RunExecutionServiceV2,
   never,
+  | ProjectionStore.ProjectionStoreV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
   | CheckpointService.CheckpointServiceV2
   | EventSink.EventSinkV2
   | IdAllocator.IdAllocatorV2
@@ -607,6 +622,8 @@ export const layer: Layer.Layer<
   RunExecutionServiceV2,
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const commands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -927,6 +944,20 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
+        // Only admission is serialized with freeze/Stop; no Git or provider I/O
+        // holds the dispatch lock. Already-admitted OS work cannot be undone.
+        const admitStart = () =>
+          commands.withLock(
+            input.run.threadId,
+            Effect.gen(function* () {
+              const current = yield* projections.getThread(input.run.threadId);
+              if (current.preservationOnly === true) return false;
+              return (
+                input.shouldStartProviderTurn === undefined ||
+                (yield* input.shouldStartProviderTurn())
+              );
+            }),
+          );
         const responseStreamingMode = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
             Effect.map(
@@ -935,28 +966,87 @@ export const layer: Layer.Layer<
                   .responseStreamingMode,
             ),
           );
-          // Side chats share the parent's worktree; a snapshot would capture the parent's edits.
-          yield* (
+          // Synchronous-before-first-edit: the baseline is still awaited
+          // here so the first agent edit never races it; the budget only
+          // bounds how long the prompt dispatch waits.
+          if (!(yield* admitStart())) return null;
+          const baselineScope = input.checkpointScope;
+          const baselineOrdinalWithinScope = Math.max(0, input.run.ordinal - 1);
+          const baselineStartedAt = yield* DateTime.now;
+          yield* Effect.logDebug("orchestration V2 checkpoint baseline capture started", {
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            workspacePath: baselineScope.cwd,
+            budgetMs: BASELINE_CAPTURE_BUDGET_MS,
+          });
+          const baselineOutcome = yield* (
             input.appThread.lineage.sideChat === true
               ? Effect.void
               : checkpointService.captureBaseline({
-                  scope: input.checkpointScope,
-                  ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                  scope: baselineScope,
+                  ordinalWithinScope: baselineOrdinalWithinScope,
                 })
           ).pipe(
+            Effect.as("captured" as const),
+            Effect.timeoutOption(BASELINE_CAPTURE_BUDGET_MS),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
-              (_cause) =>
-                Effect.logWarning(
-                  "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                  { runId: input.run.id },
-                ),
+              () =>
+                Effect.gen(function* () {
+                  const baselineFailedAt = yield* DateTime.now;
+                  const elapsedMs =
+                    DateTime.toEpochMillis(baselineFailedAt) -
+                    DateTime.toEpochMillis(baselineStartedAt);
+                  yield* Effect.logDebug("orchestration V2 checkpoint baseline capture failed", {
+                    threadId: input.run.threadId,
+                    runId: input.run.id,
+                    workspacePath: baselineScope.cwd,
+                    elapsedMs,
+                  });
+                  yield* Effect.logWarning(
+                    "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                    {
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      workspacePath: baselineScope.cwd,
+                      elapsedMs,
+                    },
+                  );
+                  return Option.some("failed" as const);
+                }),
             ),
           );
-          if (
-            input.shouldStartProviderTurn !== undefined &&
-            !(yield* input.shouldStartProviderTurn())
-          ) {
+          const baselineFinishedAt = yield* DateTime.now;
+          const baselineElapsedMs =
+            DateTime.toEpochMillis(baselineFinishedAt) - DateTime.toEpochMillis(baselineStartedAt);
+          if (Option.isNone(baselineOutcome)) {
+            // No new persistence: a missing baseline ref materializes as a
+            // "missing" checkpoint later, which already marks rollback
+            // unavailability for this run.
+            yield* Effect.logWarning(
+              "orchestration V2 checkpoint baseline capture timed out; starting provider without a baseline",
+              {
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                workspacePath: baselineScope.cwd,
+                elapsedMs: baselineElapsedMs,
+                budgetMs: BASELINE_CAPTURE_BUDGET_MS,
+              },
+            );
+          } else if (baselineOutcome.value === "captured") {
+            yield* Effect.logDebug("orchestration V2 checkpoint baseline capture finished", {
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              workspacePath: baselineScope.cwd,
+              elapsedMs: baselineElapsedMs,
+            });
+          }
+          yield* Effect.logDebug("orchestration V2 prompt dispatch starting", {
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            baselineElapsedMs,
+          });
+          if (!(yield* admitStart())) {
             return null;
           }
           return responseStreamingMode;
@@ -1721,10 +1811,7 @@ export const layer: Layer.Layer<
         };
         // Check after the context read: ingestion can settle the run while
         // it awaits. A failed ownership read fails the start below.
-        const shouldStart =
-          input.shouldStartProviderTurn === undefined
-            ? Exit.succeed(true)
-            : yield* Effect.exit(input.shouldStartProviderTurn());
+        const shouldStart = yield* Effect.exit(admitStart());
         if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
           yield* Fiber.interrupt(providerEventFiber);
           return;
@@ -1813,6 +1900,7 @@ export const layer: Layer.Layer<
  * always set one, so a missing reason means a person stopped the run.
  */
 export const USER_STOP_REASON = "Stopped by user";
+export const layer = layerFromServices.pipe(Layer.provide(ThreadCommandExecutor.layer));
 
 export function makeInterruptResultTurnItem(input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
