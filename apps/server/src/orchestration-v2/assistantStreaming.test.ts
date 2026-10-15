@@ -82,6 +82,18 @@ describe("V2 assistant streaming", () => {
     expect(buffered(final, 501)).toBe(final);
   });
 
+  it("forwards incomplete provider updates immediately in token mode", () => {
+    const filter = makeAssistantStreamingFilter("token");
+    const first = message("a");
+    const next = message("ab");
+    expect(filter(first, 0)).toBe(first);
+    expect(filter(next, 1)).toBe(next);
+    const reasoning = turnItem("thinking", true, "reasoning");
+    expect(filter(reasoning, 2)).toBe(reasoning);
+    const final = message("abc", false);
+    expect(filter(final, 3)).toBe(final);
+  });
+
   it.each(["assistant_message", "reasoning"] as const)(
     "buffers %s at paragraph boundaries and flushes the final item",
     (type) => {
@@ -104,7 +116,7 @@ describe("V2 assistant streaming", () => {
     },
   );
 
-  it.each(["turn", "paragraph"] as const)(
+  it.each(["turn", "paragraph", "token"] as const)(
     "suppresses running assistant nodes in %s mode while delivering tool and completed nodes",
     (mode) => {
       const filter = makeAssistantStreamingFilter(mode);
