@@ -30,6 +30,7 @@ const activityTestState = vi.hoisted(() => ({
   expanded: false,
   expandedRuns: false,
   subagentTooltips: false,
+  liveThinking: false,
 }));
 
 // Expose tooltip contents in the renderer without requiring a browser portal.
@@ -82,10 +83,26 @@ vi.mock("./MessagesTimeline.logic", async (importOriginal) => {
   };
 });
 
+// The effective server setting comes from the connected environment, which tests do not have.
+vi.mock("~/hooks/useSettings", async (importOriginal) => {
+  const hooks = await importOriginal<typeof import("~/hooks/useSettings")>();
+  return {
+    ...hooks,
+    useEnvironmentSettings: ((
+      environmentId: Parameters<typeof hooks.useEnvironmentSettings>[0],
+      selector: (settings: unknown) => unknown = (settings) => settings,
+    ) =>
+      hooks.useEnvironmentSettings(environmentId, (settings) =>
+        selector({ ...settings, liveThinking: activityTestState.liveThinking }),
+      )) as typeof hooks.useEnvironmentSettings,
+  };
+});
+
 beforeEach(() => {
   activityTestState.subagentTooltips = false;
   activityTestState.expanded = false;
   activityTestState.expandedRuns = false;
+  activityTestState.liveThinking = false;
 });
 
 const legendListTestState = vi.hoisted(() => ({
@@ -2898,6 +2915,68 @@ describe("MessagesTimeline", () => {
       }
     },
   );
+
+  describe("live thinking", () => {
+    const FIRST_SENTENCE = "Checking the settings schema first.";
+    const STREAMED_TAIL = "Then wiring the toggle into the panel.";
+
+    async function renderStreamingThought(liveThinking: boolean) {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      vi.stubGlobal("requestAnimationFrame", () => 0);
+      vi.stubGlobal("cancelAnimationFrame", () => {});
+      activityTestState.liveThinking = liveThinking;
+      const runId = RunId.make("live-thinking-run");
+      let renderer: ReactTestRenderer | undefined;
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking
+            runningRunId={runId}
+            timelineEntries={[
+              {
+                id: "streaming-thought",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "streaming-thought",
+                  runId,
+                  createdAt: MESSAGE_CREATED_AT,
+                  label: "Thinking",
+                  detail: `${FIRST_SENTENCE} ${STREAMED_TAIL}`,
+                  tone: "thinking",
+                  itemType: "reasoning",
+                  toolLifecycleStatus: "inProgress",
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      return renderer!;
+    }
+
+    const renderedText = (renderer: ReactTestRenderer) => JSON.stringify(renderer.toJSON());
+
+    it("streams the whole thought into the live row when on", async () => {
+      const renderer = await renderStreamingThought(true);
+      try {
+        expect(renderedText(renderer)).toContain(STREAMED_TAIL);
+      } finally {
+        await act(() => renderer.unmount());
+      }
+    });
+
+    it("keeps only the first sentence in the live row when off", async () => {
+      const renderer = await renderStreamingThought(false);
+      try {
+        expect(renderedText(renderer)).toContain(FIRST_SENTENCE);
+        expect(renderedText(renderer)).not.toContain(STREAMED_TAIL);
+      } finally {
+        await act(() => renderer.unmount());
+      }
+    });
+  });
 
   it("expands and collapses a tool call through its header", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

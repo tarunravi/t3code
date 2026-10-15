@@ -416,6 +416,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["output token paragraph buffered wait turn legacy"],
   },
   {
+    id: "live-thinking",
+    title: "Live thinking",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["reasoning stream streaming thoughts thought expand activity row"],
+  },
+  {
     id: "hide-whitespace-changes",
     title: "Hide whitespace changes",
     to: "/settings/general",
