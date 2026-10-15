@@ -32,6 +32,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -517,6 +518,16 @@ export function routeProviderEvent(
   }
 }
 
+/**
+ * Bounds the entire workspace checkpoint baseline capture (including lock
+ * wait) in the run start path. Prompt latency beats rollback completeness:
+ * a huge workspace must not delay the first prompt dispatch, so a slow
+ * baseline is skipped and the run proceeds without one.
+ */
+export const BASELINE_CAPTURE_BUDGET_MS = 5_000;
+
+/**
+ */
 export class RunExecutionStartError extends Schema.TaggedError<RunExecutionStartError>()(
   "RunExecutionStartError",
   {
@@ -925,21 +936,87 @@ export const layer: Layer.Layer<
                   .responseStreamingMode,
             ),
           );
-          yield* checkpointService
-            .captureBaseline({
-              scope: input.checkpointScope,
-              ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
-            })
-            .pipe(
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (_cause) =>
-                  Effect.logWarning(
-                    "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                    { runId: input.run.id },
-                  ),
-              ),
-            );
+            // Synchronous-before-first-edit: the baseline is still awaited
+            // here so the first agent edit never races it; the budget only
+            // bounds how long the prompt dispatch waits.
+            const baselineScope = input.checkpointScope;
+            const baselineOrdinalWithinScope = Math.max(0, input.run.ordinal - 1);
+            const baselineStartedAt = yield* DateTime.now;
+            yield* Effect.logDebug("orchestration V2 checkpoint baseline capture started", {
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              workspacePath: baselineScope.cwd,
+              budgetMs: BASELINE_CAPTURE_BUDGET_MS,
+            });
+            const baselineOutcome = yield* checkpointService
+              .captureBaseline({
+                scope: baselineScope,
+                ordinalWithinScope: baselineOrdinalWithinScope,
+              })
+              .pipe(
+                Effect.as("captured" as const),
+                Effect.timeoutOption(BASELINE_CAPTURE_BUDGET_MS),
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause)
+                    : Effect.gen(function* () {
+                        const baselineFailedAt = yield* DateTime.now;
+                        const elapsedMs =
+                          DateTime.toEpochMillis(baselineFailedAt) -
+                          DateTime.toEpochMillis(baselineStartedAt);
+                        yield* Effect.logDebug(
+                          "orchestration V2 checkpoint baseline capture failed",
+                          {
+                            threadId: input.run.threadId,
+                            runId: input.run.id,
+                            workspacePath: baselineScope.cwd,
+                            elapsedMs,
+                          },
+                        );
+                        yield* Effect.logWarning(
+                          "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                          {
+                            threadId: input.run.threadId,
+                            runId: input.run.id,
+                            workspacePath: baselineScope.cwd,
+                            elapsedMs,
+                          },
+                        );
+                        return Option.some("failed" as const);
+                      }),
+                ),
+              );
+            const baselineFinishedAt = yield* DateTime.now;
+            const baselineElapsedMs =
+              DateTime.toEpochMillis(baselineFinishedAt) -
+              DateTime.toEpochMillis(baselineStartedAt);
+            if (Option.isNone(baselineOutcome)) {
+              // No new persistence: a missing baseline ref materializes as a
+              // "missing" checkpoint later, which already marks rollback
+              // unavailability for this run.
+              yield* Effect.logWarning(
+                "orchestration V2 checkpoint baseline capture timed out; starting provider without a baseline",
+                {
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  workspacePath: baselineScope.cwd,
+                  elapsedMs: baselineElapsedMs,
+                  budgetMs: BASELINE_CAPTURE_BUDGET_MS,
+                },
+              );
+            } else if (baselineOutcome.value === "captured") {
+              yield* Effect.logDebug("orchestration V2 checkpoint baseline capture finished", {
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                workspacePath: baselineScope.cwd,
+                elapsedMs: baselineElapsedMs,
+              });
+            }
+            yield* Effect.logDebug("orchestration V2 prompt dispatch starting", {
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              baselineElapsedMs,
+            });
           if (
             input.shouldStartProviderTurn !== undefined &&
             !(yield* input.shouldStartProviderTurn())
