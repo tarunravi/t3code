@@ -1481,7 +1481,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       Layer.mock(SecretRequests.SecretRequests)({}),
       usageSourcesTestLayer,
     );
-    return OrchestratorMcpService.layer.pipe(Layer.provide(dependencies));
+    return layerOrchestratorService.pipe(Layer.provide(dependencies));
   };
 
   it.effect("ignores a legacy role argument and sends the task unchanged", () =>
@@ -2667,7 +2667,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           },
           { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
         ]);
-      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );
 
@@ -2890,7 +2890,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             ?.models.map((model) => model.id),
           ["gpt-6-luna"],
         );
-      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );
 
@@ -2958,7 +2958,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           .pipe(Effect.flip);
         assert.equal(denied.code, "model_unavailable");
         assert.isTrue(denied.message.includes("not allowed as a subagent"));
-      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );
 
