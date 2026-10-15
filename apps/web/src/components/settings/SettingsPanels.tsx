@@ -494,6 +494,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
       ? ["Response streaming"]
       : []),
+    ...(settings.liveThinking !== DEFAULT_UNIFIED_SETTINGS.liveThinking ? ["Live thinking"] : []),
     ...(settings.enableProviderUpdateChecks !== DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
       ? ["Provider update checks"]
       : []),
@@ -616,6 +617,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
+      liveThinking: DEFAULT_UNIFIED_SETTINGS.liveThinking,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -1325,6 +1327,30 @@ export function DiffsSettingsPanel() {
                 </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+        <SettingsRow
+          serverScoped
+          settingKeys={["liveThinking"]}
+          {...searchableSetting("live-thinking")}
+          description="Show the model's reasoning in the live activity row as it arrives, instead of a one-sentence preview. How finely it streams follows Response streaming."
+          resetAction={
+            settings.liveThinking !== DEFAULT_UNIFIED_SETTINGS.liveThinking ? (
+              <SettingResetButton
+                label="live thinking"
+                onClick={() =>
+                  updateSettings({ liveThinking: DEFAULT_UNIFIED_SETTINGS.liveThinking })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["liveThinking"]}
+              checked={settings.liveThinking}
+              onCheckedChange={(checked) => updateSettings({ liveThinking: Boolean(checked) })}
+              aria-label="Live thinking"
+            />
           }
         />
         <SettingsRow
