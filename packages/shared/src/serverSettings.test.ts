@@ -53,6 +53,21 @@ describe("fallbackTextGenerationModelSelection", () => {
 });
 
 describe("serverSettings helpers", () => {
+  it("sets and clears the provider fallback as a pair", () => {
+    const configured = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      fallbackProviderInstanceId: ProviderInstanceId.make("claude"),
+      fallbackModel: "claude-sonnet-4-5",
+    });
+    expect(configured.fallbackProviderInstanceId).toBe("claude");
+    expect(configured.fallbackModel).toBe("claude-sonnet-4-5");
+    expect(
+      applyServerSettingsPatch(configured, {
+        fallbackProviderInstanceId: null,
+        fallbackModel: null,
+      }),
+    ).toMatchObject({ fallbackProviderInstanceId: null, fallbackModel: null });
+  });
+
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
