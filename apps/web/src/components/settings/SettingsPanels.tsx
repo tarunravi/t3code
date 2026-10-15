@@ -109,11 +109,13 @@ import { StorageCleanupSections } from "./StorageSettings";
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
   paragraph: "Show finished paragraphs",
+  token: "Stream as received",
 };
 
 const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string> = {
   turn: "Text appears once the agent finishes its turn.",
   paragraph: "Each paragraph or code block appears as soon as it is complete.",
+  token: "Show each provider update immediately; update size depends on the provider.",
 };
 
 const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string> = {
@@ -1324,6 +1326,9 @@ export function DiffsSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="split">
                   {DIFF_LAYOUT_LABELS.split}
+                </SelectItem>
+                <SelectItem hideIndicator value="token">
+                  {RESPONSE_STREAMING_MODE_LABELS.token}
                 </SelectItem>
               </SelectPopup>
             </Select>
