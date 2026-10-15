@@ -826,7 +826,7 @@ export const OmpSettings = makeProviderSettingsSchema(
     binaryPath: makeBinaryPathSetting("omp").pipe(
       Schema.annotateKey({
         title: "Binary path",
-        description: "Path to the oh-my-pi CLI. T3 Code runs it as `omp acp`.",
+        description: "Path to the oh-my-pi CLI.",
         providerSettingsForm: { placeholder: "omp", clearWhenEmpty: "omit" },
       }),
     ),
@@ -835,8 +835,24 @@ export const OmpSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Launch arguments",
         description:
-          "Additional arguments passed after `omp acp`, for example --model provider/id --thinking high.",
+          "Additional arguments passed to omp on session start, for example --model provider/id --thinking high.",
         providerSettingsForm: { clearWhenEmpty: "omit" },
+      }),
+    ),
+    transport: Schema.Literals(["rpc", "acp"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("rpc" as const)),
+      Schema.annotateKey({
+        title: "Transport",
+        description:
+          "How T3 Code drives omp. RPC (`omp --mode rpc`) supports native goals and shows work omp starts on its own; ACP (`omp acp`) supports plan mode.",
+        providerSettingsForm: {
+          control: "select",
+          options: [
+            { value: "rpc", label: "RPC" },
+            { value: "acp", label: "ACP" },
+          ],
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
@@ -845,7 +861,7 @@ export const OmpSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "launchArgs"],
+    order: ["binaryPath", "transport", "launchArgs"],
   },
 );
 export type OmpSettings = typeof OmpSettings.Type;
