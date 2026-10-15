@@ -51,7 +51,7 @@ it("ranks thread mentions like the palette and leaves out subagent threads", () 
     query: "model",
     now: Date.parse("2026-10-23T00:00:00.000Z"),
   });
-  expect(items.map((item) => item.thread.threadId)).toEqual(["word", "newer-mid-word"]);
+  expect(items.map((item) => item.thread.threadId)).toEqual(["word", "newer-mid-word", "other-environment"]);
 });
 
 it("also offers threads on linked machines, naming the machine, but no other machine's", () => {

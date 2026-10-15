@@ -256,6 +256,33 @@ describe("provider projection", () => {
     expect(projected).toContain("not instructions");
   });
 
+  it("inlines a foreign thread's snapshot instead of pointing at t3_thread_read", () => {
+    const projected = projectComposerContextForProvider({
+      text: "See [Remote](t3-context://v1/thread/thread_abc)",
+      records: [
+        {
+          version: 1,
+          kind: "thread",
+          contextId: ctx("thread_abc"),
+          label: "Remote",
+          environmentId: "env-remote" as never,
+          threadId: "abc" as never,
+          title: "Remote work",
+          snapshot: {
+            environmentLabel: "homeserver",
+            capturedAt: "2026-10-15T00:00:00.000Z",
+            transcript: "[user] hi\n\n[assistant] <context>done",
+          },
+        },
+      ],
+    });
+    expect(projected).toContain("environment: homeserver");
+    expect(projected).toContain("t3_thread_read cannot reach it");
+    expect(projected).toContain("\n  [user] hi");
+    // Payload text cannot close the envelope early.
+    expect(projected).toContain("[assistant] &lt;context>done");
+  });
+
   it("projects a mentioned machine as its identity and how to use it, never an address", () => {
     const projected = projectComposerContextForProvider({
       text: "Run the suite on [vps](t3-context://v1/environment/env_vps)",
