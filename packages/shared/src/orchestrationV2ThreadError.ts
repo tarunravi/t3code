@@ -37,6 +37,69 @@ export function latestRootProviderFailure(
   return latest?.failure ?? null;
 }
 
+/** Failures that a user can resume by replaying the failed turn's input. */
+export function isResumableProviderFailure(failure: OrchestrationV2ProviderFailure | null) {
+  return (
+    failure?.class === "usage_limit" ||
+    ((failure?.class === "provider_error" || failure?.class === "transport_error") &&
+      failure.retryable === true)
+  );
+}
+
+/** Runs in the latest uninterrupted streak of retryable provider-loop failures. */
+export function latestProviderFailureStreak(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): ReadonlyArray<OrchestrationV2Run> {
+  const executed = runs
+    .filter(
+      (run) => run.status !== "queued" && !(run.status === "cancelled" && run.startedAt === null),
+    )
+    .toSorted((left, right) => (runRanAfter(left, right) ? 1 : runRanAfter(right, left) ? -1 : 0));
+  const streak: OrchestrationV2Run[] = [];
+  for (let index = executed.length - 1; index >= 0; index -= 1) {
+    const run = executed[index]!;
+    if (run.status === "completed") break;
+    if (
+      run.status !== "failed" ||
+      !isResumableProviderFailure(latestRootProviderFailure(run, turnItems))
+    ) {
+      break;
+    }
+    streak.push(run);
+  }
+  return streak;
+}
+
+export function consecutiveProviderFailureCount(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): number {
+  return latestProviderFailureStreak(runs, turnItems).length;
+}
+
+/**
+ * The failed run to retry on the fallback model: the latest run when it ends the
+ * second consecutive resumable failure and no fallback was tried for it. A failed
+ * fallback run is never a source and extends the streak past two, so an
+ * automatic retry happens once.
+ */
+export function providerFallbackSourceRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): OrchestrationV2Run | null {
+  const streak = latestProviderFailureStreak(runs, turnItems);
+  const latest = streak[0];
+  if (
+    streak.length !== 2 ||
+    latest === undefined ||
+    latest.automaticFallbackOfRunId !== undefined
+  ) {
+    return null;
+  }
+  return runs.some((run) => run.automaticFallbackOfRunId === latest.id) ? null : latest;
+}
+
 export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
