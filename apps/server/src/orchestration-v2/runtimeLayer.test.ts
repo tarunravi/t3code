@@ -1,4 +1,6 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import * as ProviderFallbackWorker from "./ProviderFallbackWorker.ts";
+import { providerFallbackCommand } from "./ProviderFallbackWorker.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -6077,3 +6079,237 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
     );
   },
 );
+
+const fallbackSettings = {
+  fallbackProviderInstanceId: modelSelection.instanceId,
+  fallbackModel: "gpt-5.4-mini",
+};
+
+it.layer(layerTest)("provider fallback", (it) => {
+  const setup = (name: string) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make(`provider-fallback:${name}`);
+      const projectId = ProjectId.make(`provider-fallback:project:${name}`);
+      yield* seedProject({
+        projectId,
+        title: "Fallback project",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection: modelSelection,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId,
+        title: "Fallback thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      let started = 0;
+      // Starts a run on the thread and returns it as the projection recorded it.
+      const startRun = Effect.gen(function* () {
+        started += 1;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:message:${started}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${started}`),
+          text: "Work on this.",
+          attachments: [],
+          dispatchMode: { type: started === 1 ? "defer_start" : "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        return runs.at(-1) as OrchestrationV2Run;
+      });
+      const endRun = (
+        run: OrchestrationV2Run,
+        outcome: "completed" | "provider_error" | "usage_limit" | "validation_error",
+      ) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const tag = `${threadId}:end:${run.id}`;
+          yield* events.write({
+            events: [
+              {
+                id: EventId.make(`${tag}:run`),
+                type: "run.updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...run,
+                  status: outcome === "completed" ? "completed" : "failed",
+                  completedAt: now,
+                },
+              },
+              ...(outcome === "completed"
+                ? []
+                : [
+                    {
+                      id: EventId.make(`${tag}:error`),
+                      type: "turn-item.updated" as const,
+                      threadId,
+                      occurredAt: now,
+                      payload: {
+                        id: TurnItemId.make(`${tag}:error`),
+                        type: "error" as const,
+                        threadId,
+                        runId: run.id,
+                        nodeId: run.rootNodeId,
+                        providerThreadId: null,
+                        providerTurnId: null,
+                        nativeItemRef: null,
+                        parentItemId: null,
+                        ordinal: 100 + run.ordinal,
+                        status: "failed" as const,
+                        title: "Provider error",
+                        startedAt: now,
+                        completedAt: now,
+                        updatedAt: now,
+                        failure: {
+                          class: outcome,
+                          message: "The provider failed.",
+                          code: null,
+                          retryable: outcome === "provider_error" ? true : null,
+                        },
+                      },
+                    },
+                  ]),
+            ],
+          });
+        });
+      const fallbackFor = (settings: Parameters<typeof providerFallbackCommand>[1]) =>
+        orchestrator
+          .getThreadProjection(threadId)
+          .pipe(Effect.map((projection) => providerFallbackCommand(projection, settings)));
+      return { orchestrator, threadId, startRun, endRun, fallbackFor };
+    });
+
+  it.effect("retries the second consecutive provider failure on the fallback model", () =>
+    Effect.gen(function* () {
+      const { orchestrator, threadId, startRun, endRun, fallbackFor } = yield* setup("second");
+      const first = yield* startRun;
+      yield* endRun(first, "provider_error");
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+      const second = yield* startRun;
+      yield* endRun(second, "provider_error");
+
+      const command = yield* fallbackFor(fallbackSettings);
+      assert.isNotNull(command);
+      yield* orchestrator.dispatch(command!);
+
+      const { runs, turnItems } = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(runs, 3);
+      const fallback = runs[2]!;
+      assert.equal(fallback.automaticFallbackOfRunId, second.id);
+      assert.deepEqual(
+        {
+          instanceId: fallback.modelSelection.instanceId,
+          model: fallback.modelSelection.model,
+        },
+        { instanceId: fallbackSettings.fallbackProviderInstanceId, model: "gpt-5.4-mini" },
+      );
+      assert.isTrue(
+        turnItems.some(
+          (item) =>
+            item.runId === fallback.id &&
+            item.type === "system_notice" &&
+            item.title === "Provider fallback",
+        ),
+      );
+      // The attempt is recorded, so replaying the failure event cannot start a second one.
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+    }),
+  );
+
+  it.effect("resets the streak after a successful run", () =>
+    Effect.gen(function* () {
+      const { startRun, endRun, fallbackFor } = yield* setup("reset");
+      yield* endRun(yield* startRun, "provider_error");
+      yield* endRun(yield* startRun, "completed");
+      yield* endRun(yield* startRun, "provider_error");
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+      yield* endRun(yield* startRun, "provider_error");
+      assert.isNotNull(yield* fallbackFor(fallbackSettings));
+    }),
+  );
+
+  it.effect("does not retry again when the fallback run fails", () =>
+    Effect.gen(function* () {
+      const { orchestrator, startRun, endRun, fallbackFor } = yield* setup("once");
+      yield* endRun(yield* startRun, "provider_error");
+      yield* endRun(yield* startRun, "provider_error");
+      yield* orchestrator.dispatch((yield* fallbackFor(fallbackSettings))!);
+      const fallbackRun = (yield* orchestrator.getThreadProjection(
+        ThreadId.make("provider-fallback:once"),
+      )).runs.at(-1)!;
+      yield* endRun(fallbackRun, "provider_error");
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+      // A manual resume that fails too extends the streak past the single automatic retry.
+      yield* endRun(yield* startRun, "provider_error");
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+    }),
+  );
+
+  it.effect("ignores failures that cannot be resumed", () =>
+    Effect.gen(function* () {
+      const { startRun, endRun, fallbackFor } = yield* setup("not-resumable");
+      yield* endRun(yield* startRun, "provider_error");
+      yield* endRun(yield* startRun, "validation_error");
+      assert.isNull(yield* fallbackFor(fallbackSettings));
+    }),
+  );
+
+  it.effect("the worker retries a live second failure and only on that failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { orchestrator, threadId, startRun, endRun } = yield* setup("worker");
+        yield* Layer.build(
+          ProviderFallbackWorker.layer.pipe(
+            Layer.provide(ServerSettings.layerTest(fallbackSettings)),
+          ),
+        );
+        // The worker subscribes to live events from a forked fiber.
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        const runCount = orchestrator
+          .getThreadProjection(threadId)
+          .pipe(Effect.map((projection) => projection.runs.length));
+        const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)));
+
+        yield* endRun(yield* startRun, "provider_error");
+        yield* settle;
+        assert.equal(yield* runCount, 1);
+        yield* endRun(yield* startRun, "provider_error");
+        for (let attempt = 0; attempt < 40 && (yield* runCount) < 3; attempt += 1) {
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        }
+        const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(runs, 3);
+        assert.equal(runs[2]?.automaticFallbackOfRunId, runs[1]?.id);
+
+        yield* endRun(runs[2]!, "provider_error");
+        yield* settle;
+        assert.equal(yield* runCount, 3);
+      }),
+    ),
+  );
+
+  it.effect("dispatches nothing without a configured fallback", () =>
+    Effect.gen(function* () {
+      const { startRun, endRun, fallbackFor } = yield* setup("unset");
+      yield* endRun(yield* startRun, "provider_error");
+      yield* endRun(yield* startRun, "provider_error");
+      assert.isNull(yield* fallbackFor({ fallbackProviderInstanceId: null, fallbackModel: null }));
+      assert.isNull(yield* fallbackFor({ ...fallbackSettings, fallbackModel: null }));
+    }),
+  );
+});

@@ -172,6 +172,7 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { FallbackModelSetting } from "./FallbackModelSetting";
 import { SideChatModelSetting } from "./SideChatModelSetting";
 import { SubagentHotlistSetting } from "./SubagentHotlistSetting";
 import { DefaultSubagentPresetSetting, SubagentPresetsSetting } from "./SubagentPresetsSetting";
@@ -3143,6 +3144,7 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <FallbackModelSetting />
         <SideChatModelSetting />
         <SubagentHotlistSetting />
         <SubagentPresetsSetting />

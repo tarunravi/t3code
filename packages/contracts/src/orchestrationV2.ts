@@ -568,6 +568,8 @@ export const OrchestrationV2Run = Schema.Struct({
   contextHandoffId: Schema.NullOr(ContextHandoffId),
   /** Links server-generated restart continuations to the interrupted run. */
   restartContinuationOfRunId: Schema.optional(RunId),
+  /** A one-time provider fallback retry of the failed run. */
+  automaticFallbackOfRunId: Schema.optional(RunId),
   /** The delegated task this run answers, including a follow-up in an existing child thread. */
   delegatedTaskId: Schema.optional(NodeId),
   /**
@@ -2963,6 +2965,8 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: Schema.optional(ModelSelection),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
+    /** Internal marker for the one automatic retry after consecutive provider failures. */
+    automaticFallbackOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),

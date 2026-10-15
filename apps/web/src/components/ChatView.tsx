@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { InlineButton } from "./ui/button";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
+import { providerFailureResumeBannerItem } from "./chat/ProviderFailureResumeBanner";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import {
   resolveBackgroundDraftWorkspaceOptions,
@@ -30,8 +31,10 @@ import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
+  isResumableProviderFailure,
   latestExecutedRun,
   latestRootProviderFailure,
+  providerFallbackSourceRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import {
@@ -2188,12 +2191,36 @@ export default function ChatView(props: ChatViewProps) {
     if (!isServerThread || serverProjection === null) return null;
     const run = latestExecutedRun(serverProjection.runs);
     if (run?.status === "interrupted") return run.id;
+    const failure = latestRootProviderFailure(run, serverProjection.turnItems);
     return run?.status === "failed" &&
-      serverRuntime?.lastErrorClass === "usage_limit" &&
-      latestRootProviderFailure(run, serverProjection.turnItems)?.class === "usage_limit"
+      isResumableProviderFailure(failure) &&
+      serverRuntime?.lastErrorClass === failure?.class
       ? run.id
       : null;
   }, [isServerThread, serverProjection, serverRuntime?.lastErrorClass]);
+  // A usage limit has its own recovery banner. Otherwise offer the resume unless the
+  // server is about to retry this failure on the configured fallback model.
+  const providerFailureResumeRunId = useMemo(() => {
+    if (resumableRunId === null || serverProjection === null) return null;
+    const run = latestExecutedRun(serverProjection.runs);
+    if (
+      run?.status !== "failed" ||
+      latestRootProviderFailure(run, serverProjection.turnItems)?.class === "usage_limit"
+    ) {
+      return null;
+    }
+    const fallbackConfigured =
+      settings.fallbackProviderInstanceId !== null && settings.fallbackModel !== null;
+    return fallbackConfigured &&
+      providerFallbackSourceRun(serverProjection.runs, serverProjection.turnItems)?.id === run.id
+      ? null
+      : resumableRunId;
+  }, [
+    resumableRunId,
+    serverProjection,
+    settings.fallbackModel,
+    settings.fallbackProviderInstanceId,
+  ]);
   const parentSubagentThreadId =
     activeThread?.lineage.relationshipToParent === "subagent"
       ? activeThread.lineage.parentThreadId
@@ -8855,6 +8882,18 @@ export default function ChatView(props: ChatViewProps) {
       });
     }
   };
+  // Built after onResume, which the banner action calls.
+  const composerBannerItemsWithResume =
+    providerFailureResumeRunId === null
+      ? composerBannerItems
+      : [
+          providerFailureResumeBannerItem({
+            runId: providerFailureResumeRunId,
+            disabled: isSendBusy || isResuming || isConnecting,
+            onResume: () => void onResume(),
+          }),
+          ...composerBannerItems,
+        ];
 
   const onSend = async (
     e?: { preventDefault: () => void },
@@ -11972,7 +12011,7 @@ export default function ChatView(props: ChatViewProps) {
                               queuedRunsControl={queuedRunsControl}
                               bannerItems={
                                 rewritingMessage === null
-                                  ? composerBannerItems
+                                  ? composerBannerItemsWithResume
                                   : [
                                       {
                                         id: "rewrite-message",
@@ -11997,7 +12036,7 @@ export default function ChatView(props: ChatViewProps) {
                                           </Button>
                                         ),
                                       },
-                                      ...composerBannerItems,
+                                      ...composerBannerItemsWithResume,
                                     ]
                               }
                               resumeCompactionTokens={resumeCompactionTokens}

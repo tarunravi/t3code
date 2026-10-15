@@ -409,6 +409,7 @@ describe("searchSettings", () => {
 
   it.each([
     ["default model", "default-model", "/settings/general"],
+    ["provider fallback", "fallback-model", "/settings/general"],
     ["new threads", "new-threads", "/settings/general"],
     ["agent browser access", "agent-browser-access", "/settings/integrations"],
     ["automatically pull", "automatic-pull", "/settings/source-control"],

@@ -4,7 +4,10 @@ import type {
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
 import {
+  consecutiveProviderFailureCount,
+  isResumableProviderFailure,
   latestExecutedRun,
+  latestProviderFailureStreak,
   latestRootProviderFailure,
   runRanAfter,
   usageLimitBlockedRun,
@@ -4610,7 +4613,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.dispatchMode.type !== "start_immediately" ||
           source === undefined ||
           (source.status !== "interrupted" &&
-            !(source.status === "failed" && limited?.class === "usage_limit")) ||
+            !(source.status === "failed" && isResumableProviderFailure(limited))) ||
           latestExecutedRun(projection.runs)?.id !== source.id ||
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
@@ -4622,6 +4625,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: "This thread can no longer be resumed from that run.",
           });
         }
+      }
+      if (
+        command.manualContinuationOfRunId !== undefined &&
+        projection.thread.limitRecovery != null
+      ) {
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, limitRecovery: null, updatedAt: now },
+        });
+        projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       if (command.usageLimitContinuationOfRunId !== undefined) {
         const run = usageLimitBlockedRun(projection.runs, projection.turnItems, null);
@@ -4696,8 +4715,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
 
+      const continuationSourceRunId =
+        command.restartContinuationOfRunId ?? command.manualContinuationOfRunId;
       const continuedTaskId = projection.runs.find(
-        (run) => run.id === command.restartContinuationOfRunId,
+        (run) => run.id === continuationSourceRunId,
       )?.delegatedTaskId;
 
       if (projection.thread.settledOverride !== null) {
@@ -5139,6 +5160,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+          ...(command.automaticFallbackOfRunId === undefined
+            ? {}
+            : { automaticFallbackOfRunId: command.automaticFallbackOfRunId }),
           ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         };
         const attempt: OrchestrationV2RunAttempt = {
@@ -5482,6 +5506,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+          ...(command.automaticFallbackOfRunId === undefined
+            ? {}
+            : { automaticFallbackOfRunId: command.automaticFallbackOfRunId }),
           ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
             ? { workspacePreparation: dispatchMode.workspaceStrategy }
             : {}),
@@ -5671,6 +5698,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: notificationTurnItem(turnItem, message, projection.subagents),
         });
+        if (command.automaticFallbackOfRunId !== undefined) {
+          const messageText = `model switched to ${modelSelection.instanceId}/${modelSelection.model}`;
+          yield* emitEvent({
+            type: "turn-item.updated",
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            driver: adapter.driver,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: idAllocator.derive.turnItemFromProviderItem({
+                driver: adapter.driver,
+                nativeItemId: `automatic-fallback:${command.automaticFallbackOfRunId}`,
+              }),
+              threadId: command.threadId,
+              runId,
+              nodeId: rootNodeId,
+              providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: turnItem.ordinal + 1,
+              status: "completed",
+              title: "Provider fallback",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "system_notice",
+              message: messageText,
+            },
+          });
+        }
         if (preparationTurnItem !== null) {
           yield* emitEvent({
             type: "turn-item.updated",

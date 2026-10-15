@@ -51,6 +51,29 @@ describe("ServerSettings response streaming", () => {
   });
 });
 
+describe("ServerSettings fallback model", () => {
+  it("defaults to disabled and accepts set and clear patches", () => {
+    expect(DEFAULT_SERVER_SETTINGS.fallbackProviderInstanceId).toBeNull();
+    expect(DEFAULT_SERVER_SETTINGS.fallbackModel).toBeNull();
+    expect(
+      decodeServerSettings({
+        fallbackProviderInstanceId: "claude",
+        fallbackModel: "claude-sonnet-4-5",
+      }),
+    ).toMatchObject({ fallbackProviderInstanceId: "claude", fallbackModel: "claude-sonnet-4-5" });
+    expect(
+      decodeServerSettingsPatch({
+        fallbackProviderInstanceId: "claude",
+        fallbackModel: "claude-sonnet-4-5",
+      }),
+    ).toEqual({ fallbackProviderInstanceId: "claude", fallbackModel: "claude-sonnet-4-5" });
+    expect(
+      decodeServerSettingsPatch({ fallbackProviderInstanceId: null, fallbackModel: null }),
+    ).toEqual({ fallbackProviderInstanceId: null, fallbackModel: null });
+    expect(() => decodeServerSettingsPatch({ fallbackModel: " " })).toThrow();
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
