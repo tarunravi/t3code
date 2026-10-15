@@ -1,5 +1,55 @@
 import { describe, expect, it } from "vite-plus/test";
-import { splitBufferedAssistantText } from "./assistantStreaming.ts";
+import { MessageId, NodeId, ProviderDriverKind, ThreadId, TurnItemId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { makeAssistantStreamingFilter, splitBufferedAssistantText } from "./assistantStreaming.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+
+const message = (text: string, streaming = true): ProviderAdapter.ProviderAdapterV2Event => ({
+  type: "message.updated",
+  driver: ProviderDriverKind.make("codex"),
+  message: {
+    id: MessageId.make("message"),
+    threadId: ThreadId.make("thread"),
+    runId: null,
+    nodeId: null,
+    createdBy: "agent",
+    creationSource: "provider",
+    updatedAt: DateTime.makeUnsafe("2026-09-14T00:00:00Z"),
+    role: "assistant",
+    text,
+    attachments: [],
+    createdAt: DateTime.makeUnsafe("2026-09-14T00:00:00Z"),
+    streaming,
+  },
+});
+
+const turnItem = (
+  text: string,
+  streaming = true,
+  type: "assistant_message" | "reasoning" = "assistant_message",
+): ProviderAdapter.ProviderAdapterV2Event => ({
+  type: "turn_item.updated",
+  driver: ProviderDriverKind.make("codex"),
+  turnItem: {
+    id: TurnItemId.make("item"),
+    threadId: ThreadId.make("thread"),
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 0,
+    status: streaming ? "running" : "completed",
+    title: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: DateTime.makeUnsafe("2026-09-14T00:00:00Z"),
+    ...(type === "assistant_message" ? { type, messageId: MessageId.make("message") } : { type }),
+    text,
+    streaming,
+  },
+});
 
 describe("V2 assistant streaming", () => {
   it("keeps code fences intact", () => {
@@ -12,6 +62,81 @@ describe("V2 assistant streaming", () => {
       rest: "rest",
     });
   });
+  it("holds streaming text until the full response completes", () => {
+    const running = message("partial");
+    const final = message("complete", false);
+    const buffered = makeAssistantStreamingFilter("turn");
+    expect(buffered(running, 0)).toBeNull();
+    expect(buffered(message("First\n\nSecond\n\n"), 500)).toBeNull();
+    expect(buffered(final, 501)).toBe(final);
+  });
+
+  it("forwards incomplete provider updates immediately in token mode", () => {
+    const filter = makeAssistantStreamingFilter("token");
+    const first = message("a");
+    const next = message("ab");
+    expect(filter(first, 0)).toBe(first);
+    expect(filter(next, 1)).toBe(next);
+    const reasoning = turnItem("thinking", true, "reasoning");
+    expect(filter(reasoning, 2)).toBe(reasoning);
+    const final = message("abc", false);
+    expect(filter(final, 3)).toBe(final);
+  });
+
+  it.each(["assistant_message", "reasoning"] as const)(
+    "buffers %s at paragraph boundaries and flushes the final item",
+    (type) => {
+      const item = (text: string, streaming = true) => turnItem(text, streaming, type);
+      const filter = makeAssistantStreamingFilter("paragraph");
+      expect(filter(item("First"), 0)).toBeNull();
+      expect(filter(item("First\n\nSec"), 10)).toMatchObject({
+        turnItem: { text: "First\n\n", streaming: true, type },
+      });
+      expect(filter(item("First\n\nSecond\n\nThi"), 100)).toBeNull();
+      expect(filter(item("First\n\nSecond\n\nThi"), 410)).toMatchObject({
+        turnItem: { text: "First\n\nSecond\n\n", streaming: true },
+      });
+      const final = item("First\n\nSecond\n\nThird", false);
+      expect(filter(final, 420)).toBe(final);
+
+      const buffered = makeAssistantStreamingFilter("turn");
+      expect(buffered(item("First\n\nSecond"), 0)).toBeNull();
+      expect(buffered(final, 1)).toBe(final);
+    },
+  );
+
+  it.each(["turn", "paragraph", "token"] as const)(
+    "suppresses running assistant nodes in %s mode while delivering tool and completed nodes",
+    (mode) => {
+      const filter = makeAssistantStreamingFilter(mode);
+      const running: Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "node.updated" }> = {
+        type: "node.updated",
+        driver: ProviderDriverKind.make("codex"),
+        node: {
+          id: NodeId.make("node"),
+          threadId: ThreadId.make("thread"),
+          runId: null,
+          parentNodeId: null,
+          rootNodeId: NodeId.make("root"),
+          kind: "assistant_message",
+          status: "running",
+          countsForRun: false,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      };
+      expect(filter(running, 0)).toBeNull();
+      const completed = { ...running, node: { ...running.node, status: "completed" as const } };
+      expect(filter(completed, 1)).toBe(completed);
+      const tool = { ...running, node: { ...running.node, kind: "tool_call" as const } };
+      expect(filter(tool, 2)).toBe(tool);
+    },
+  );
 });
 
 it("holds a streamed section heading until its content has a boundary", () => {
