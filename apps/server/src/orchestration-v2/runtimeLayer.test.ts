@@ -2,9 +2,6 @@ import { PullRequestProviderError } from "@t3tools/source-control-core/server/Pu
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as ProviderFallbackWorker from "./ProviderFallbackWorker.ts";
 import { providerFallbackCommand } from "./ProviderFallbackWorker.ts";
-// @effect-diagnostics globalTimers:off -- the provider-fallback worker tests
-// wait on the live clock (the worker paces itself on real time); TestClock
-// sleeps would hang under the layer harness.
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -47,6 +44,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -864,6 +862,117 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "runtime capture blocks same-thread dispatch until finalization releases its lock",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = ThreadId.make("runtime-capture-lock");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Before capture",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: "/nonexistent/runtime-capture-lock",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Do not execute provider work.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        yield* threads.interruptThread({
+          projectId: ProjectId.make(`${threadId}:project`),
+          commandId: CommandId.make(`${threadId}:interrupt`),
+          threadId,
+          runId: run.id,
+          reason: "Cancel pending start without executing provider work",
+        });
+        const captureEntered = yield* Deferred.make<void>();
+        const releaseCapture = yield* Deferred.make<void>();
+        const dispatchQueued = yield* Deferred.make<void>();
+        const getContext = projections.getCheckpointCaptureContext;
+        const captureSpy = vi
+          .spyOn(projections, "getCheckpointCaptureContext")
+          .mockImplementation((...args) =>
+            Deferred.succeed(captureEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCapture)),
+              Effect.andThen(getContext(...args)),
+            ),
+          );
+        const withLock = executor.withLock;
+        let lockRequests = 0;
+        const observeLock: typeof withLock = (key, effect) => {
+          if (key !== threadId || ++lockRequests !== 2) return withLock(key, effect);
+          return Deferred.succeed(dispatchQueued, undefined).pipe(
+            Effect.andThen(withLock(key, effect)),
+          );
+        };
+        const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+        yield* Effect.gen(function* () {
+          const capture = yield* worker.runOnce.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(captureEntered),
+            Fiber.join(capture).pipe(
+              Effect.andThen(Effect.die("Runtime worker did not reach checkpoint capture.")),
+            ),
+          );
+          const dispatch = yield* orchestrator
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`${threadId}:update`),
+              threadId,
+              title: "After capture",
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(dispatchQueued),
+            Fiber.join(dispatch).pipe(
+              Effect.andThen(Effect.die("Dispatch bypassed the runtime capture lock.")),
+            ),
+          );
+          assert.isUndefined(dispatch.pollUnsafe());
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).thread.title,
+            "Before capture",
+          );
+          yield* Deferred.succeed(releaseCapture, undefined);
+          assert.isTrue(yield* Fiber.join(capture));
+          yield* Fiber.join(dispatch);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(after.thread.title, "After capture");
+          assert.equal(after.runs[0]?.status, "interrupted");
+          assert.isNotNull(after.runs[0]?.checkpointId);
+          assert.deepEqual(after.providerTurns, []);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              captureSpy.mockRestore();
+              lockSpy.mockRestore();
+            }),
+          ),
+        );
+      }),
+  );
+
   it.effect("forks a side chat from a parent run in progress and discards it with the parent", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -9146,42 +9255,75 @@ it.layer(layerTest)("provider fallback", (it) => {
     Effect.scoped(
       Effect.gen(function* () {
         const { orchestrator, threadId, startRun, endRun } = yield* setup("worker");
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const events = yield* EventSink.EventSinkV2;
+        const afterSequence = yield* events.latestSequence();
+        const ready = yield* Deferred.make<void>();
+        const processedFailures = yield* Queue.unbounded<RunId>();
+        const dispatch = vi.fn(threads.dispatch);
+        // Pin the cursor before activation: replay covers events written before
+        // the forked worker finishes subscribing, without replaying old failures.
+        const streamDomainEvents = events.stream({ afterSequence, threadId }).pipe(
+          Stream.map((stored) => stored.event),
+          Stream.mapError(
+            (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+          ),
+          Stream.rechunk(1),
+          (stream) =>
+            Stream.transformPull(stream, (pull) =>
+              Effect.sync(() => {
+                let previousFailure: RunId | undefined;
+                return Effect.gen(function* () {
+                  yield* Deferred.succeed(ready, undefined);
+                  // runForEach requests the next chunk only AFTER retry/dispatch
+                  // completes. No buffering may sit between this pull and the worker.
+                  if (previousFailure !== undefined) {
+                    yield* Queue.offer(processedFailures, previousFailure);
+                    previousFailure = undefined;
+                  }
+                  const chunk = yield* pull;
+                  const event = chunk[0];
+                  if (event.type === "run.updated" && event.payload.status === "failed") {
+                    previousFailure = event.payload.id;
+                  }
+                  return chunk;
+                });
+              }),
+            ),
+        );
         yield* Layer.build(
           ProviderFallbackWorker.layer.pipe(
             Layer.provide(ServerSettings.layerTest(fallbackSettings)),
+            Layer.provide(
+              Layer.succeed(ThreadManagementService.ThreadManagementService, {
+                ...threads,
+                dispatch,
+                streamDomainEvents,
+              }),
+            ),
           ),
         );
-        // The worker subscribes to live events from a forked fiber. Real
-        // timers: the worker's own retry pacing runs on the live clock, so a
-        // TestClock adjust would not model the wait it needs.
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        yield* Deferred.await(ready);
         const runCount = orchestrator
           .getThreadProjection(threadId)
           .pipe(Effect.map((projection) => projection.runs.length));
-        const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)));
-
-        yield* endRun(yield* startRun, "provider_error");
-        console.log("MARK endRun1");
-        yield* settle;
-        console.log("MARK settle1", yield* runCount);
+        const first = yield* startRun;
+        yield* endRun(first, "provider_error");
+        assert.equal(yield* Queue.take(processedFailures), first.id);
         assert.equal(yield* runCount, 1);
-        yield* endRun(yield* startRun, "provider_error");
-        console.log("MARK endRun2");
-        for (let attempt = 0; attempt < 40 && (yield* runCount) < 3; attempt += 1) {
-          console.log("MARK loop", attempt, yield* runCount);
-          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
-        }
-        console.log("MARK loop-done");
+        assert.equal(dispatch.mock.calls.length, 0);
+        const second = yield* startRun;
+        yield* endRun(second, "provider_error");
+        assert.equal(yield* Queue.take(processedFailures), second.id);
+        assert.equal(dispatch.mock.calls.length, 1);
         const { runs } = yield* orchestrator.getThreadProjection(threadId);
-        console.log("MARK projection", runs.length);
         assert.lengthOf(runs, 3);
         assert.equal(runs[2]?.automaticFallbackOfRunId, runs[1]?.id);
 
         yield* endRun(runs[2]!, "provider_error");
-        console.log("MARK endRun3");
-        yield* Effect.sleep("300 millis");
-        console.log("MARK sleep2");
+        assert.equal(yield* Queue.take(processedFailures), runs[2]!.id);
         assert.equal(yield* runCount, 3);
+        assert.equal(dispatch.mock.calls.length, 1);
       }),
     ),
   );
@@ -9194,5 +9336,137 @@ it.layer(layerTest)("provider fallback", (it) => {
       assert.isNull(yield* fallbackFor({ fallbackProviderInstanceId: null, fallbackModel: null }));
       assert.isNull(yield* fallbackFor({ ...fallbackSettings, fallbackModel: null }));
     }),
+  );
+});
+
+it.layer(
+  Layer.mergeAll(layerTest, layerServerConfig, layerGitWorkflowTest, layerProjectServiceTest).pipe(
+    Layer.provideMerge(layerPlatformTest),
+  ),
+)("R1-F1 real runtime startup assembly", (it) => {
+  it.effect.each(["exists", "policy"] as const)(
+    "committed freeze during %s prevents new startup IO",
+    (boundary) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const fs = yield* FileSystem.FileSystem;
+        const git = yield* GitWorkflow.GitWorkflowService;
+        const projects = yield* ProjectService.ProjectService;
+        const config = yield* ServerConfig.ServerConfig;
+        const threadId = ThreadId.make(`r1-f1-runtime-${boundary}`);
+        const projectId = ProjectId.make(`${threadId}:project`);
+        const worktreePath = `${config.worktreesDir}/project/freeze`;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId,
+          title: "Late freeze",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/freeze",
+          worktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const gate = Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const oldSnapshot = providerInstance.snapshot.getSnapshot;
+        const exists = vi
+          .spyOn(fs, "exists")
+          .mockImplementation(() =>
+            boundary === "exists" ? gate.pipe(Effect.as(false)) : Effect.succeed(true),
+          );
+        const realPath = vi
+          .spyOn(fs, "realPath")
+          .mockImplementation((target) => Effect.succeed(target));
+        const prune = vi.spyOn(git, "pruneWorktrees").mockReturnValue(Effect.void);
+        const create = vi.spyOn(git, "createWorktree").mockReturnValue(Effect.succeed({} as never));
+        const getProject = vi
+          .spyOn(projects, "getById")
+          .mockReturnValue(Effect.succeedSome({ workspaceRoot: "/fake/project" } as never));
+        const open = vi
+          .spyOn(sessions, "open")
+          .mockReturnValue(Effect.die("New provider open after freeze"));
+        const withLock = executor.withLock;
+        const observeLock: typeof withLock = (key, effect) => withLock(key, effect);
+        const lock = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+        if (boundary === "policy")
+          Object.defineProperty(providerInstance.snapshot, "getSnapshot", {
+            value: gate.pipe(Effect.as({})),
+            configurable: true,
+          });
+        yield* Effect.gen(function* () {
+          const startup = yield* worker.runOnce.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(entered),
+            Fiber.join(startup).pipe(
+              Effect.andThen(Effect.die("Real startup did not reach barrier")),
+            ),
+          );
+          const admissionsBeforeFreeze = lock.mock.calls.filter(([key]) => key === threadId).length;
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${threadId}:freeze`),
+            threadId,
+            preservationOnly: true,
+          });
+          const frozen = yield* projections.getThreadProjection(threadId);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(startup);
+          assert.deepEqual(
+            {
+              prune: prune.mock.calls.length,
+              create: create.mock.calls.length,
+              open: open.mock.calls.length,
+            },
+            { prune: 0, create: 0, open: 0 },
+          );
+          assert.isAbove(
+            admissionsBeforeFreeze,
+            0,
+            "startup must use the actual shared dispatch executor",
+          );
+          const after = yield* projections.getThreadProjection(threadId);
+          assert.deepEqual(after.runs, frozen.runs);
+          assert.deepEqual(after.attempts, frozen.attempts);
+          assert.isTrue(after.thread.preservationOnly);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              exists.mockRestore();
+              realPath.mockRestore();
+              prune.mockRestore();
+              create.mockRestore();
+              getProject.mockRestore();
+              open.mockRestore();
+              lock.mockRestore();
+              Object.defineProperty(providerInstance.snapshot, "getSnapshot", {
+                value: oldSnapshot,
+                configurable: true,
+              });
+            }),
+          ),
+        );
+      }),
   );
 });
