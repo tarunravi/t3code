@@ -43,18 +43,23 @@ export function matchComposerThreadItems(input: {
   if (query.length === 0) return [];
   const candidates = input.shells.filter(
     (shell) =>
-      (shell.environmentId === input.environmentId ||
-        input.linkedEnvironments.has(shell.environmentId)) &&
-      shell.id !== input.excludeThreadId &&
+      (shell.environmentId !== input.environmentId || shell.id !== input.excludeThreadId) &&
       shell.archivedAt === null &&
       isListedThreadLineage(shell.lineage),
   );
-  return rankSearchItems(candidates, (shell, options) =>
-    scoreThreadSearch(query, threadSearchSubject(shell, null), input.now, {
-      ...options,
-      picks: false,
-    }),
-  )
+  return [
+    ...rankSearchItems(candidates, (shell, options) =>
+      scoreThreadSearch(query, threadSearchSubject(shell, null), input.now, {
+        ...options,
+        picks: false,
+      }),
+    ),
+  ]
+    .sort(
+      (left, right) =>
+        Number(right.item.environmentId === input.environmentId) -
+        Number(left.item.environmentId === input.environmentId),
+    )
     .slice(0, COMPOSER_THREAD_RESULT_LIMIT)
     .map(({ item: shell }) => {
       const machine =
