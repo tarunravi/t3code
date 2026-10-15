@@ -1,6 +1,9 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as ProviderFallbackWorker from "./ProviderFallbackWorker.ts";
 import { providerFallbackCommand } from "./ProviderFallbackWorker.ts";
+// @effect-diagnostics globalTimers:off -- the provider-fallback worker tests
+// wait on the live clock (the worker paces itself on real time); TestClock
+// sleeps would hang under the layer harness.
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -6278,7 +6281,9 @@ it.layer(layerTest)("provider fallback", (it) => {
             Layer.provide(ServerSettings.layerTest(fallbackSettings)),
           ),
         );
-        // The worker subscribes to live events from a forked fiber.
+        // The worker subscribes to live events from a forked fiber. Real
+        // timers: the worker's own retry pacing runs on the live clock, so a
+        // TestClock adjust would not model the wait it needs.
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)));
         const runCount = orchestrator
           .getThreadProjection(threadId)
@@ -6286,18 +6291,26 @@ it.layer(layerTest)("provider fallback", (it) => {
         const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)));
 
         yield* endRun(yield* startRun, "provider_error");
+        console.log("MARK endRun1");
         yield* settle;
+        console.log("MARK settle1", yield* runCount);
         assert.equal(yield* runCount, 1);
         yield* endRun(yield* startRun, "provider_error");
+        console.log("MARK endRun2");
         for (let attempt = 0; attempt < 40 && (yield* runCount) < 3; attempt += 1) {
+          console.log("MARK loop", attempt, yield* runCount);
           yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
         }
+        console.log("MARK loop-done");
         const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        console.log("MARK projection", runs.length);
         assert.lengthOf(runs, 3);
         assert.equal(runs[2]?.automaticFallbackOfRunId, runs[1]?.id);
 
         yield* endRun(runs[2]!, "provider_error");
-        yield* settle;
+        console.log("MARK endRun3");
+        yield* Effect.sleep("300 millis");
+        console.log("MARK sleep2");
         assert.equal(yield* runCount, 3);
       }),
     ),
