@@ -50,7 +50,7 @@ export function latestProviderFailureStreak(
     .filter(
       (run) => run.status !== "queued" && !(run.status === "cancelled" && run.startedAt === null),
     )
-    .toSorted((left, right) => (runRanAfter(left, right) ? 1 : runRanAfter(right, left) ? -1 : 0));
+    .sort((left, right) => (runRanAfter(left, right) ? 1 : runRanAfter(right, left) ? -1 : 0));
   const streak: OrchestrationV2Run[] = [];
   for (let index = executed.length - 1; index >= 0; index -= 1) {
     const run = executed[index]!;

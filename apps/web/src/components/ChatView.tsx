@@ -7753,6 +7753,7 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
+    onOpenRelatedThread,
     rosterBackgroundTasks,
   ]);
   // Settled, snoozed, and woke are thread state, not composer actions: each
