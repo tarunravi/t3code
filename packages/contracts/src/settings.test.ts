@@ -421,3 +421,15 @@ describe("ServerSettings fallback model", () => {
   });
 });
 
+describe("ServerSettings live thinking", () => {
+  it("defaults to off and round-trips through snapshots and patches", () => {
+    expect(DEFAULT_SERVER_SETTINGS.liveThinking).toBe(false);
+    expect(decodeServerSettings({ liveThinking: true }).liveThinking).toBe(true);
+    expect(encodeServerSettings(decodeServerSettings({ liveThinking: true }))).toMatchObject({
+      liveThinking: true,
+    });
+    expect(decodeServerSettingsPatch({ liveThinking: true })).toEqual({ liveThinking: true });
+    expect(() => decodeServerSettingsPatch({ liveThinking: "yes" })).toThrow();
+  });
+});
+

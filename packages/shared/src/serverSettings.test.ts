@@ -76,6 +76,15 @@ describe("serverSettings helpers", () => {
     ).toMatchObject({ fallbackProviderInstanceId: null, fallbackModel: null });
   });
 
+  it("turns live thinking on and off without touching other settings", () => {
+    const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { liveThinking: true });
+    expect(on).toEqual({ ...DEFAULT_SERVER_SETTINGS, liveThinking: true });
+    expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(DEFAULT_SERVER_SETTINGS);
+    expect(applyServerSettingsPatch(on, { enableProviderUpdateChecks: false }).liveThinking).toBe(
+      true,
+    );
+  });
+
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
