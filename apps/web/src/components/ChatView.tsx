@@ -27,7 +27,7 @@ import {
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
-import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/threadExecution";
+import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   latestExecutedRun,
