@@ -1,5 +1,6 @@
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
+import { GoalRunningIndicator } from "./GoalRunningIndicator";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import {
   setThreadChangeRequestSnapshot,
@@ -2031,6 +2032,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
                   >
+                    <GoalRunningIndicator status={thread.goal?.status ?? null} />
                     {topStatus ? (
                       isWokeStatus ? (
                         <Tooltip>
