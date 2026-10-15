@@ -1,3 +1,4 @@
+import { FallbackModelSetting } from "./FallbackModelSetting";
 import { SideChatModelSetting } from "./SideChatModelSetting";
 import { SettingsGroup } from "./SettingsGroup";
 import { NotificationSettings } from "./NotificationSettings";
@@ -1589,6 +1590,7 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        <FallbackModelSetting />
         <SideChatModelSetting />
       </SettingsSection>
 
