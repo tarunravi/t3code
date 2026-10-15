@@ -471,6 +471,8 @@ handoff() {
   run mkdir -p "$backup_dir/db"
   for db in "$data_home"/userdata/*.sqlite; do
     [ -e "$db" ] || continue
+    # The running server holds an exclusive lock on this data-free file (serverOwnership.ts).
+    [ "$(basename "$db")" = server-owner.sqlite ] && continue
     run sqlite3 "$db" "VACUUM INTO '$backup_dir/db/$(basename "$db")'" || fail "backup of $db"
   done
   for f in settings.json client-settings.json; do
