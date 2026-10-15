@@ -175,6 +175,7 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { FallbackModelSetting } from "./FallbackModelSetting";
 import { SideChatModelSetting } from "./SideChatModelSetting";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
@@ -3001,6 +3002,7 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <FallbackModelSetting />
         <SideChatModelSetting />
       </SettingsSection>
 

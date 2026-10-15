@@ -558,6 +558,10 @@ export function applyServerSettingsPatch(
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),
+    ...(patch.fallbackProviderInstanceId !== undefined
+      ? { fallbackProviderInstanceId: patch.fallbackProviderInstanceId }
+      : {}),
+    ...(patch.fallbackModel !== undefined ? { fallbackModel: patch.fallbackModel } : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
