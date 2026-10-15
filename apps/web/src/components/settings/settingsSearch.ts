@@ -413,7 +413,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Response streaming",
     to: "/settings/general",
     scope: "project-defaults",
-    searchTerms: ["output token paragraph buffered wait turn legacy"],
+    searchTerms: ["output token chunk immediate provider paragraph buffered wait turn"],
   },
   {
     id: "live-thinking",

@@ -996,8 +996,9 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
  * How assistant text reaches clients while a turn runs.
  * - `turn`: hold the whole message until the turn finishes or pauses.
  * - `paragraph`: deliver each finished paragraph or closed code block.
+ * - `token`: deliver provider updates as they arrive, at provider-defined granularity.
  */
-export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
+export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph", "token"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
 
 /**
