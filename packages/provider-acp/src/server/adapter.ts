@@ -50,6 +50,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -92,7 +93,11 @@ import {
   type AcpClientTerminals,
 } from "./clientTerminals.ts";
 import { ACP_EMPTY_OPTION_VALUE, ACP_SESSION_MODE_OPTION_ID } from "./sessionConfig.ts";
-import { parseAcpGoalCommand, runAcpGoalCommand, settleAcpGoalTurn } from "./localGoals.ts";
+import {
+  parseLocalGoalCommand,
+  runLocalGoalCommand,
+  settleLocalGoalTurn,
+} from "@t3tools/provider-core/server/localGoals";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import {
   t3AcpPromptWithInstructions,
@@ -319,6 +324,12 @@ export interface AcpAdapterV2Flavor {
   readonly supportsCompaction?: boolean;
   /** T3 runs `/goal` itself because the agent's goal mode is unreachable over ACP (omp). */
   readonly tracksGoalsLocally?: boolean;
+  /**
+   * The agent runs turns of its own, such as background job and timer wakes
+   * (omp), and refuses a prompt during one with `sessionBusy`. Retry the
+   * prompt until that turn ends, bounded, instead of failing the run.
+   */
+  readonly retryPromptWhileSessionBusy?: boolean;
   readonly runtimeHarness?: string;
   /**
    * Maps the `usage` an agent returns from `session/prompt` to the provider
@@ -449,6 +460,22 @@ export interface AcpAdapterV2Flavor {
    */
   readonly supportsImagePrompts?: boolean;
 }
+
+/** ACP's `sessionBusy` request error: the session is already running a turn. */
+const ACP_SESSION_BUSY_CODE = -32003;
+const SESSION_BUSY_RETRY_DELAY = "2 seconds";
+const SESSION_BUSY_RETRY_ATTEMPTS = 90;
+
+const retryPromptWhileSessionBusy = <A, E extends EffectAcpErrors.AcpError, R>(
+  prompt: Effect.Effect<A, E, R>,
+) =>
+  prompt.pipe(
+    Effect.retry({
+      times: SESSION_BUSY_RETRY_ATTEMPTS,
+      schedule: Schedule.spaced(SESSION_BUSY_RETRY_DELAY),
+      while: (error) => error._tag === "AcpRequestError" && error.code === ACP_SESSION_BUSY_CODE,
+    }),
+  );
 
 /** Whether image attachment blocks may be included in session/prompt. */
 export function acpSupportsImagePrompts(input: {
@@ -6709,7 +6736,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               : {
                   goal:
                     goalUpdate.pursued && goalUpdate.goal !== null
-                      ? settleAcpGoalTurn(goalUpdate.goal, {
+                      ? settleLocalGoalTurn(goalUpdate.goal, {
                           completed: settledStatus === "completed",
                           finalAssistantText: context.finalAssistantText,
                           tokenUsage: turn.turnTokenUsage,
@@ -7035,12 +7062,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               !isContinuationTurn &&
               turnInput.message.attachments.length === 0 &&
               turnInput.restartContinuationOfRunId === undefined
-                ? parseAcpGoalCommand(turnInput.message.text)
+                ? parseLocalGoalCommand(turnInput.message.text)
                 : null;
             const goalOutcome =
               goalCommand === null
                 ? null
-                : runAcpGoalCommand(turnInput.providerThread.goal ?? null, goalCommand);
+                : runLocalGoalCommand(turnInput.providerThread.goal ?? null, goalCommand);
             const promptParts =
               isContinuationTurn || goalOutcome?.type === "reply"
                 ? null
@@ -7253,7 +7280,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               return;
             }
             const promptGeneration = yield* Ref.get(runtimeCallbackGeneration);
-            yield* runtime.prompt({ prompt: promptParts!.prompt }).pipe(
+            const prompt = runtime.prompt({ prompt: promptParts!.prompt });
+            yield* (
+              flavor.retryPromptWhileSessionBusy === true
+                ? retryPromptWhileSessionBusy(prompt)
+                : prompt
+            ).pipe(
               Effect.tap(() =>
                 Ref.update(promptInstructionStates, (current) => {
                   if (promptParts?.instructionState === undefined) return current;

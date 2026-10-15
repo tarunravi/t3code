@@ -51,6 +51,10 @@
       "types": "./src/server/instanceIdentity.ts",
       "import": "./src/server/instanceIdentity.ts"
     },
+    "./server/localGoals": {
+      "types": "./src/server/localGoals.ts",
+      "import": "./src/server/localGoals.ts"
+    },
     "./server/maintenance": {
       "types": "./src/server/maintenance.ts",
       "import": "./src/server/maintenance.ts"
