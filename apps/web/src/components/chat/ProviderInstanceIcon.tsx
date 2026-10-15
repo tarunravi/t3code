@@ -1,4 +1,4 @@
-import { type CSSProperties, memo } from "react";
+import { type CSSProperties, memo, type SVGProps } from "react";
 
 import {
   normalizeProviderAccentColor,
@@ -19,11 +19,28 @@ import {
   resolveOfficialAcpRegistryIconUrl,
 } from "../settings/AcpRegistryIcon";
 
+function OmpIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...props} viewBox="0 0 64 64" aria-hidden>
+      <defs>
+        <linearGradient id="omp-mark" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ed4abf" />
+          <stop offset=".5" stop-color="#9b4dff" />
+          <stop offset="1" stop-color="#5ad8e6" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="12" fill="#0f0a14" />
+      <path fill="url(#omp-mark)" d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("codex")]: OpenAI,
   [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
   [ProviderDriverKind.make("zcode")]: ZCodeIcon,
+  [ProviderDriverKind.make("omp")]: OmpIcon,
 };
 
 const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
