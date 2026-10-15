@@ -1,3 +1,4 @@
+import { GoalRunningIndicator } from "../GoalRunningIndicator";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
@@ -1454,6 +1455,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
                   >
+                    <GoalRunningIndicator status={thread.goal?.status ?? null} />
                     {topStatus ? (
                       isWokeStatus ? (
                         <Tooltip>
