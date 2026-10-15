@@ -216,6 +216,15 @@ export interface PiRpcFlavor {
     cacheDir: string,
   ) => Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError, FileSystem.FileSystem>;
   /**
+   * Maps a stored resume id onto the file `switch_session` opens, given the
+   * agent's current session file. Null means the session no longer exists.
+   * Without it, the stored id is the session file.
+   */
+  readonly resolveSessionFile?: (
+    resumeId: string,
+    currentSessionFile: string | undefined,
+  ) => Effect.Effect<string | null, never, FileSystem.FileSystem>;
+  /**
    * Handles `/goal`: through the agent's `goal` command when its `get_state`
    * reports a `goal` field, otherwise tracked by T3 with ordinary prompts.
    * `fromNative` reads the agent's goal record; null means no goal.
@@ -2346,9 +2355,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         }
         const existing = threadInput.existingProviderThread;
         const resumeId = existing?.nativeThreadRef?.nativeId;
-        const needsNewSession = resumeId == null && registrationAttempted;
+        const sessionPath =
+          resumeId != null && flavor.resolveSessionFile !== undefined
+            ? yield* flavor
+                .resolveSessionFile(
+                  resumeId,
+                  recordString(yield* request({ type: "get_state" }), "sessionFile"),
+                )
+                .pipe(Effect.provideService(FileSystem.FileSystem, fileSystem))
+            : resumeId;
+        if (resumeId != null && sessionPath == null) {
+          yield* Effect.logWarning(
+            "Pi session to resume no longer exists; starting a fresh native session",
+            { resumeId },
+          );
+        }
+        const needsNewSession = sessionPath == null && (resumeId != null || registrationAttempted);
         registrationAttempted = true;
-        if (resumeId != null || needsNewSession) {
+        if (sessionPath != null || needsNewSession) {
           lastNativeThreadId = resumeId ?? lastNativeThreadId;
           // Failed lifecycle operations can still change native sessions; invalidate bindings and defaults.
           threadState = null;
@@ -2359,9 +2383,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           baselineThinking = null;
           contextWindow = null;
           const result = yield* lifecycleRequest(
-            resumeId != null
-              ? { type: "switch_session", sessionPath: resumeId }
-              : { type: "new_session" },
+            sessionPath != null ? { type: "switch_session", sessionPath } : { type: "new_session" },
           );
           if (recordField(result, "cancelled") === true) {
             return yield* protocolError("A Pi extension cancelled the session switch");

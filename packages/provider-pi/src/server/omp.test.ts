@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Fixtures lay out a real omp sessions root on disk.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -28,8 +29,16 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { makePiFamilyAdapter } from "./adapter.ts";
-import { makeOmpRecordNormalizer, OMP_RPC_FLAVOR, ompGoalFromNative } from "./omp.ts";
+import {
+  makeOmpRecordNormalizer,
+  OMP_RPC_FLAVOR,
+  ompGoalFromNative,
+  resolveOmpSessionFile,
+} from "./omp.ts";
 import type { PiRpcRecord } from "./rpc.ts";
 
 const layerTest = Layer.mergeAll(
@@ -71,7 +80,11 @@ interface FakeOmp {
  * once, as omp does, and reports `isSettled` / `goal` in `get_state` the way
  * the selected omp build does.
  */
-const makeFakeOmp = (options: { readonly nativeGoals: boolean }) =>
+const makeFakeOmp = (options: {
+  readonly nativeGoals: boolean;
+  /** The session omp starts in; switch_session and new_session replace it. */
+  readonly sessionFile?: string;
+}) =>
   Effect.gen(function* () {
     const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
     const requestQueue = yield* Queue.unbounded<PiRpcRecord>();
@@ -80,6 +93,8 @@ const makeFakeOmp = (options: { readonly nativeGoals: boolean }) =>
     let goal: Record<string, unknown> | null = null;
     let stdinBuffer = "";
     let spawnArgs: ReadonlyArray<string> = [];
+    let sessionFile = options.sessionFile ?? SESSION_FILE;
+    let freshSessions = 0;
 
     const emit = (record: PiRpcRecord) =>
       Queue.offer(stdout, new TextEncoder().encode(`${encodeJsonLine(record)}\n`)).pipe(
@@ -107,13 +122,17 @@ const makeFakeOmp = (options: { readonly nativeGoals: boolean }) =>
               queuedMessageCount: 0,
               hasPendingAsyncWork: false,
               isSettled: settled,
-              sessionFile: SESSION_FILE,
+              sessionFile,
               sessionId: "omp-session",
               messageCount: 0,
               ...(options.nativeGoals ? { goal: goal === null ? null : { goal } } : {}),
             },
           };
         case "new_session":
+          sessionFile = `${NodePath.dirname(sessionFile)}/fresh-${++freshSessions}.jsonl`;
+          return { ...base, data: { cancelled: false } };
+        case "switch_session":
+          sessionFile = String(record["sessionPath"]);
           return { ...base, data: { cancelled: false } };
         case "goal": {
           if (!options.nativeGoals) {
@@ -198,7 +217,10 @@ const makeFakeOmp = (options: { readonly nativeGoals: boolean }) =>
     } satisfies FakeOmp;
   });
 
-const openOmpRuntime = Effect.fnUntraced(function* (fake: FakeOmp) {
+const openOmpRuntime = Effect.fnUntraced(function* (
+  fake: FakeOmp,
+  existingProviderThread?: OrchestrationV2ProviderThread,
+) {
   const offers = yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
   const adapter = yield* makePiFamilyAdapter(
     {
@@ -239,6 +261,7 @@ const openOmpRuntime = Effect.fnUntraced(function* (fake: FakeOmp) {
     threadId: THREAD_ID,
     modelSelection,
     runtimePolicy,
+    ...(existingProviderThread === undefined ? {} : { existingProviderThread }),
   });
   return { runtime, takeEvent, offers, providerThread };
 });
@@ -523,6 +546,119 @@ describe("PiAdapterV2 with the omp flavor", () => {
       );
       assert.equal(settled.type, "provider_thread.updated");
       assert.isFalse(fake.requests().some((request) => request["type"] === "goal"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+});
+
+describe("omp session resume", () => {
+  const ACP_SESSION_ID = "01a140e5-82e8-762b-b3a1-beb8a5bc0600";
+
+  /** A sessions root holding one session per cwd bucket, plus the project cwd. */
+  const makeSessionsRoot = Effect.acquireRelease(
+    Effect.sync(() => {
+      const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-omp-sessions-"));
+      const root = NodePath.join(home, "sessions");
+      const bucket = NodePath.join(root, "-Documents-project");
+      const otherBucket = NodePath.join(root, "-Documents-other");
+      const cwd = NodePath.join(home, "project");
+      for (const dir of [bucket, otherBucket, cwd]) NodeFS.mkdirSync(dir, { recursive: true });
+      const acpSession = NodePath.join(bucket, `2026-10-01T00-00-00-000Z_${ACP_SESSION_ID}.jsonl`);
+      const otherSession = NodePath.join(otherBucket, "2026-10-02T00-00-00-000Z_other-id.jsonl");
+      NodeFS.writeFileSync(acpSession, "{}\n");
+      NodeFS.writeFileSync(otherSession, "{}\n");
+      // The session omp's RPC process starts in before T3 switches.
+      const startupSession = NodePath.join(bucket, "2026-10-15T00-00-00-000Z_startup.jsonl");
+      return { home, bucket, cwd, acpSession, otherSession, startupSession };
+    }),
+    ({ home }) => Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+  );
+
+  const storedThread = (
+    providerThread: OrchestrationV2ProviderThread,
+    nativeId: string,
+  ): OrchestrationV2ProviderThread => ({
+    ...providerThread,
+    nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId },
+  });
+
+  it.effect("finds a bare session id's file in any cwd bucket", () =>
+    Effect.gen(function* () {
+      const paths = yield* makeSessionsRoot;
+      assert.equal(
+        yield* resolveOmpSessionFile(ACP_SESSION_ID, paths.startupSession),
+        paths.acpSession,
+      );
+      assert.equal(
+        yield* resolveOmpSessionFile("other-id", paths.startupSession),
+        paths.otherSession,
+      );
+      // A resume before this fix stored the empty `<cwd>/<id>` file omp made.
+      assert.equal(
+        yield* resolveOmpSessionFile(
+          NodePath.join(paths.cwd, ACP_SESSION_ID),
+          paths.startupSession,
+        ),
+        paths.acpSession,
+      );
+      assert.equal(
+        yield* resolveOmpSessionFile(paths.otherSession, paths.startupSession),
+        paths.otherSession,
+      );
+      assert.isNull(yield* resolveOmpSessionFile("missing-id", paths.startupSession));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("resumes a thread stored with omp's ACP session id from its session file", () =>
+    Effect.gen(function* () {
+      const paths = yield* makeSessionsRoot;
+      const first = yield* openOmpRuntime(
+        yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.startupSession }),
+      );
+      const fake = yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.startupSession });
+      const { providerThread } = yield* openOmpRuntime(
+        fake,
+        storedThread(first.providerThread, ACP_SESSION_ID),
+      );
+      const switched = fake.requests().find((request) => request["type"] === "switch_session");
+      assert.equal(switched?.["sessionPath"], paths.acpSession);
+      assert.equal(providerThread.nativeThreadRef?.nativeId, paths.acpSession);
+      assert.deepEqual(NodeFS.readdirSync(paths.cwd), []);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("starts a fresh session when the stored session no longer exists", () =>
+    Effect.gen(function* () {
+      const paths = yield* makeSessionsRoot;
+      const first = yield* openOmpRuntime(
+        yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.startupSession }),
+      );
+      const fake = yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.startupSession });
+      const { providerThread } = yield* openOmpRuntime(
+        fake,
+        storedThread(first.providerThread, "missing-id"),
+      );
+      assert.isFalse(fake.requests().some((request) => request["type"] === "switch_session"));
+      assert.isTrue(fake.requests().some((request) => request["type"] === "new_session"));
+      assert.equal(
+        providerThread.nativeThreadRef?.nativeId,
+        NodePath.join(paths.bucket, "fresh-1.jsonl"),
+      );
+      assert.isNull(providerThread.nativeConversationHeadRef);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("resumes an RPC-created thread from its stored session file after a restart", () =>
+    Effect.gen(function* () {
+      const paths = yield* makeSessionsRoot;
+      const first = yield* openOmpRuntime(
+        yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.otherSession }),
+      );
+      assert.equal(first.providerThread.nativeThreadRef?.nativeId, paths.otherSession);
+      const fake = yield* makeFakeOmp({ nativeGoals: false, sessionFile: paths.startupSession });
+      const { providerThread } = yield* openOmpRuntime(fake, first.providerThread);
+      const switched = fake.requests().find((request) => request["type"] === "switch_session");
+      assert.equal(switched?.["sessionPath"], paths.otherSession);
+      assert.equal(providerThread.nativeThreadRef?.nativeId, paths.otherSession);
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 });
