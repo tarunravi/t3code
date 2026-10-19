@@ -280,13 +280,7 @@ export function useUsageSpeed(
 ): readonly EnvironmentUsageSpeedStatus[] {
   const windowKey = JSON.stringify({ sinceTime: input.sinceTime, untilTime: input.untilTime });
   const environments = useAtomValue(usageSpeedByWindowAtom(windowKey));
-  return useMemo(
-    () =>
-      selectedEnvironmentIds === null
-        ? environments
-        : environments.filter((environment) =>
-            selectedEnvironmentIds.has(environment.environmentId),
-          ),
-    [environments, selectedEnvironmentIds],
-  );
+  return selectedEnvironmentIds === null
+    ? environments
+    : environments.filter((environment) => selectedEnvironmentIds.has(environment.environmentId));
 }
