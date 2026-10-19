@@ -55,9 +55,11 @@ async function renderCard(
         mode={mode}
         onUpdate={() => undefined}
         hiddenModels={[]}
+        hiddenSubagentModels={[]}
         favoriteModels={[]}
         modelOrder={[]}
         onHiddenModelsChange={() => undefined}
+        onHiddenSubagentModelsChange={() => undefined}
         onFavoriteModelsChange={() => undefined}
         onToggleFavorite={() => undefined}
         onModelOrderChange={() => undefined}

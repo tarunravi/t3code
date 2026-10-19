@@ -36,6 +36,22 @@ vi.mock(import("~/state/query"), async (original) => ({
   })) as never,
 }));
 
+// The effective server setting comes from the connected environment, which tests do not have.
+const liveThinkingSetting = vi.hoisted(() => ({ enabled: false }));
+vi.mock(import("~/hooks/useSettings"), async (original) => {
+  const hooks = await original();
+  return {
+    ...hooks,
+    useEnvironmentSettings: ((
+      environmentId: Parameters<typeof hooks.useEnvironmentSettings>[0],
+      selector: (settings: unknown) => unknown = (settings) => settings,
+    ) =>
+      hooks.useEnvironmentSettings(environmentId, (settings) =>
+        selector({ ...settings, liveThinking: liveThinkingSetting.enabled }),
+      )) as typeof hooks.useEnvironmentSettings,
+  };
+});
+
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const CREATED_AT = "2026-03-17T19:12:28.000Z";
 
@@ -149,6 +165,7 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  liveThinkingSetting.enabled = false;
 });
 
 afterEach(async () => {
@@ -476,6 +493,40 @@ describe("MessagesTimeline work rows", () => {
       await vi.waitFor(() => expect(container.querySelectorAll("strong")).toHaveLength(0));
     },
   );
+});
+
+describe("MessagesTimeline live thinking", () => {
+  const FIRST_SENTENCE = "Checking the settings schema first.";
+  const STREAMED_TAIL = "Then wiring the toggle into the panel.";
+
+  function renderStreamingThought(liveThinking: boolean) {
+    liveThinkingSetting.enabled = liveThinking;
+    const runId = RunId.make("live-thinking-run");
+    return renderTimeline(
+      [
+        work("streaming-thought", {
+          runId,
+          label: "Thinking",
+          detail: `${FIRST_SENTENCE} ${STREAMED_TAIL}`,
+          tone: "thinking",
+          itemType: "reasoning",
+          toolLifecycleStatus: "inProgress",
+        }),
+      ],
+      { isWorking: true, runningRunId: runId },
+    );
+  }
+
+  it("streams the whole thought into the live row when on", async () => {
+    await renderStreamingThought(true);
+    expect(text()).toContain(STREAMED_TAIL);
+  });
+
+  it("keeps only the first sentence in the live row when off", async () => {
+    await renderStreamingThought(false);
+    expect(text()).toContain(FIRST_SENTENCE);
+    expect(text()).not.toContain(STREAMED_TAIL);
+  });
 });
 
 describe("MessagesTimeline messages", () => {

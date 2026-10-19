@@ -347,6 +347,18 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(state.updateSettings).not.toHaveBeenCalled();
   });
 
+  it("saves the subagent model list on the server, separate from the picker", async () => {
+    await setProviders([provider()]);
+    await render();
+
+    await userEvent.click(page.getByRole("button", { name: "Subagents" }));
+    await userEvent.click(page.getByRole("switch", { name: "Allow Chosen as a subagent" }));
+    expect(state.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      subagentModelPreferences: { [codexId]: { hiddenModels: ["chosen"] } },
+    });
+    expect(state.updateModelPreferences).not.toHaveBeenCalled();
+  });
+
   it("does not substitute another account when the requested instance was removed", async () => {
     await setProviders([provider()]);
     await render({ targetInstanceId: customId });

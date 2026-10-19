@@ -1168,6 +1168,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        usageSourcesTestLayer,
       );
 
       yield* Effect.gen(function* () {
