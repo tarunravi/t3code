@@ -2423,7 +2423,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   // Lets a transcript that finishes after a thread switch reach its original draft.
   const voiceDraftTargetsRef = useRef(new Map<string, typeof composerDraftTarget>());
-  voiceDraftTargetsRef.current.set(composerDraftTargetKey, composerDraftTarget);
+  useEffect(() => {
+    voiceDraftTargetsRef.current.set(composerDraftTargetKey, composerDraftTarget);
+  }, [composerDraftTargetKey, composerDraftTarget]);
   const voiceInput = useCodexVoiceInput({
     ownerKey: composerDraftTargetKey,
     draftText: prompt,
@@ -2448,8 +2450,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const isVoiceRecordingBar =
     voiceInput.state.phase === "recording" || voiceInput.state.phase === "transcribing";
-  const voiceInputPhaseRef = useRef(voiceInput.state.phase);
-  voiceInputPhaseRef.current = voiceInput.state.phase;
   const voiceErrorToastedRef = useRef<string | null>(null);
   const navigate = useNavigate();
   useEffect(() => {
@@ -4153,7 +4153,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // Send while recording: stop, wait for the transcript to commit to the
     // draft, then send the combined text. While a transcription is already
     // in flight the send button is disabled, so only "recording" is here.
-    if (voiceInputPhaseRef.current === "recording") {
+    if (voiceInput.state.phase === "recording") {
       event?.preventDefault();
       void (async () => {
         const committed = await voiceInput.stopAndAwaitTranscript();

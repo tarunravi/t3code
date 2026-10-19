@@ -9,7 +9,6 @@ import {
   SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useMemo } from "react";
 
 import { useCommitOnBlur } from "../../hooks/useCommitOnBlur";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
@@ -66,21 +65,19 @@ export function useSubagentInstances(environmentId: EnvironmentId) {
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
-  return useMemo(() => {
-    const instances = sortProviderInstanceEntries(
-      applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
-    );
-    const pickerInstances = instances.filter(isProviderInstancePickerVisible);
-    const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<ModelEsque>>(
-      pickerInstances.map((instance) => {
-        const hidden = new Set(
-          settings.subagentModelPreferences[instance.instanceId]?.hiddenModels ?? [],
-        );
-        return [instance.instanceId, instance.models.filter((model) => !hidden.has(model.slug))];
-      }),
-    );
-    return { instances, pickerInstances, modelOptionsByInstance };
-  }, [providers, settings]);
+  const instances = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
+  );
+  const pickerInstances = instances.filter(isProviderInstancePickerVisible);
+  const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<ModelEsque>>(
+    pickerInstances.map((instance) => {
+      const hidden = new Set(
+        settings.subagentModelPreferences[instance.instanceId]?.hiddenModels ?? [],
+      );
+      return [instance.instanceId, instance.models.filter((model) => !hidden.has(model.slug))];
+    }),
+  );
+  return { instances, pickerInstances, modelOptionsByInstance };
 }
 
 /**

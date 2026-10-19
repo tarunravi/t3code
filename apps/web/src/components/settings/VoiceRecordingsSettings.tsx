@@ -1,5 +1,7 @@
 import { CheckIcon, CopyIcon, PlayIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { useStableCallback } from "~/hooks/useStableCallback";
 import type {
   DesktopBridge,
   VoiceRecordingAudio,
@@ -89,7 +91,7 @@ function VoiceRecordingRow({
     [audioUrl],
   );
 
-  const loadAudio = useCallback(async () => {
+  const loadAudio = async () => {
     if (audioUrl || audioLoading) return;
     setAudioLoading(true);
     setAudioError(null);
@@ -102,9 +104,9 @@ function VoiceRecordingRow({
     } finally {
       setAudioLoading(false);
     }
-  }, [audioLoading, audioUrl, bridge, recording.id]);
+  };
 
-  const retry = useCallback(async () => {
+  const retry = async () => {
     if (retrying || deleting) return;
     setRetrying(true);
     setActionError(null);
@@ -115,9 +117,9 @@ function VoiceRecordingRow({
     } finally {
       setRetrying(false);
     }
-  }, [bridge, deleting, onChanged, recording.id, retrying]);
+  };
 
-  const remove = useCallback(async () => {
+  const remove = async () => {
     if (retrying || deleting) return;
     setDeleting(true);
     setActionError(null);
@@ -128,7 +130,7 @@ function VoiceRecordingRow({
       setActionError(recordingErrorMessage(error));
       setDeleting(false);
     }
-  }, [bridge, deleting, onDeleted, recording.id, retrying]);
+  };
 
   const failed = recording.status === "error";
   const rowRef = useRef<HTMLDivElement>(null);
@@ -236,7 +238,7 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
   );
   const [refreshing, setRefreshing] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useStableCallback(async () => {
     if (!bridge) {
       setState({ status: "unsupported" });
       return;
@@ -250,13 +252,13 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
     } finally {
       setRefreshing(false);
     }
-  }, [bridge]);
+  });
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const handleChanged = useCallback((updated: VoiceRecordingMetadata) => {
+  const handleChanged = (updated: VoiceRecordingMetadata) => {
     setState((previous) =>
       previous.status !== "ready"
         ? previous
@@ -267,9 +269,9 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
             ),
           },
     );
-  }, []);
+  };
 
-  const handleDeleted = useCallback((id: string) => {
+  const handleDeleted = (id: string) => {
     setState((previous) =>
       previous.status !== "ready"
         ? previous
@@ -278,7 +280,7 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
             recordings: previous.recordings.filter((recording) => recording.id !== id),
           },
     );
-  }, []);
+  };
 
   return (
     <SettingsPageContainer>
