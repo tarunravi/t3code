@@ -40,7 +40,7 @@ describe("RevertConfirmHost", () => {
 
     await act(() => openRevertConfirm("env:a", { turnCount: 2, messageId }));
     const keep = [...(dialog()?.querySelectorAll("button") ?? [])].find(
-      (button) => button.textContent === "Revert and keep changes",
+      (button) => button.textContent === "Edit and keep files",
     );
     await act(() => keep?.click());
     expect(onConfirm).toHaveBeenCalledExactlyOnceWith(2, messageId, false);

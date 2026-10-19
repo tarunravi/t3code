@@ -7,14 +7,34 @@ import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import type { UsagePriceTarget } from "../usage/usagePriceTargets";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 
-const state = vi.hoisted(() => ({
-  targets: [] as UsagePriceTarget[],
-  useUsage: vi.fn(),
-  write: vi.fn(async () => ({ _tag: "Success" as const })),
-}));
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (atom: unknown) => (atom === "config" ? null : state.targets),
-}));
+// The mocked hooks subscribe to `version`, so `publish` re-renders their readers the way an
+// atom update would; the React Compiler skips a re-render whose props did not change.
+const state = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    targets: [] as UsagePriceTarget[],
+    useUsage: vi.fn(),
+    write: vi.fn(async () => ({ _tag: "Success" as const })),
+    version: 0,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    publish() {
+      this.version += 1;
+      for (const listener of listeners) listener();
+    },
+  };
+});
+vi.mock("@effect/atom-react", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useAtomValue: (atom: unknown) => {
+      useSyncExternalStore(state.subscribe, () => state.version);
+      return atom === "config" ? null : state.targets;
+    },
+  };
+});
 vi.mock("../../env", () => ({ isElectron: false }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: { configValueAtom: () => "config" },
@@ -25,7 +45,15 @@ vi.mock("../../state/session", () => ({
   readEnvironmentScope: () => true,
 }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.write }));
-vi.mock("../../state/usage", () => ({ useUsage: state.useUsage }));
+vi.mock("../../state/usage", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useUsage: (...args: unknown[]) => {
+      useSyncExternalStore(state.subscribe, () => state.version);
+      return state.useUsage(...args);
+    },
+  };
+});
 vi.mock("../../hooks/useSettings", () => ({ useUpdateEnvironmentSettings: () => vi.fn() }));
 vi.mock("./AddUsageLimitSourceDialog", () => ({ AddUsageLimitSourceDialog: () => null }));
 vi.mock("./settingsLayout", () => ({
@@ -196,7 +224,7 @@ it("allows opening before usage arrives and lists real models when it arrives", 
   await act(() => button("Edit model prices").click());
   expect(document.body.textContent).toContain("No custom prices");
   state.useUsage.mockReturnValue({ environments: usage });
-  await render();
+  await act(() => state.publish());
   expect(document.body.textContent).toContain(model);
   expect(state.write).not.toHaveBeenCalled();
 });
@@ -264,7 +292,7 @@ it("can undo or save a reset, leaving the observed model unpriced with no overri
   });
   state.targets = state.targets.map((target) => ({ ...target, prices: {} }));
   state.useUsage.mockReturnValue({ environments: [...usage] });
-  await render();
+  await act(() => state.publish());
   for (const field of ["Input", "Output", "Cache read", "Cache write"])
     expect(priceInput(field).value).toBe("");
   expect(priceInput("Input").placeholder).toBe("Unpriced");
