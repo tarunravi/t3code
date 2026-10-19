@@ -5,9 +5,10 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { CheckCircle2Icon, CircleAlertIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { connectSshEnvironment as connectSshEnvironmentAtom } from "~/connection/onboarding";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { setDevboxPanelState } from "~/lib/devboxPanel";
 import { useEnvironments } from "~/state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -97,10 +98,12 @@ export function DevboxSettings() {
     setDevboxPanelState(next);
   };
 
-  const load = useCallback(async (options: { refresh?: boolean; checkHealth?: boolean } = {}) => {
-    if (!bridge?.getDevboxState) return;
-    apply(await bridge.getDevboxState(options));
-  }, []);
+  const load = useStableCallback(
+    async (options: { refresh?: boolean; checkHealth?: boolean } = {}) => {
+      if (!bridge?.getDevboxState) return;
+      apply(await bridge.getDevboxState(options));
+    },
+  );
 
   useEffect(() => {
     void load({ refresh: true });
@@ -113,7 +116,7 @@ export function DevboxSettings() {
     return () => window.clearInterval(timer);
   }, [anyBusy, load]);
 
-  const connectT3 = useCallback(async (devbox: string) => {
+  const connectT3 = async (devbox: string) => {
     if (!bridge) return;
     setConnecting((current) => new Set(current).add(devbox));
     try {
@@ -138,7 +141,7 @@ export function DevboxSettings() {
         return next;
       });
     }
-  }, []);
+  };
 
   // Launch and setup end by pairing T3 through the normal SSH connection flow.
   useEffect(() => {

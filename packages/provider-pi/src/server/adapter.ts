@@ -359,7 +359,6 @@ function piToolOutput(result: unknown, toolName: string): unknown {
   };
 }
 
-
 interface PiStreamItemState {
   readonly nativeItemId: string;
   readonly kind: "assistant_message" | "reasoning";
@@ -1772,7 +1771,6 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           }),
         );
       });
-
 
       const scheduleSettleProbe = (
         turn: ActivePiTurn,

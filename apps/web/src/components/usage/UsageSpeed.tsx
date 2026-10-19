@@ -1,5 +1,5 @@
 import type { EnvironmentId, UsageSpeedRow, UsageSpeedSourceStatus } from "@t3tools/contracts";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { useUsageSpeed } from "../../state/usage";
 import { Skeleton } from "../ui/skeleton";
@@ -211,13 +211,10 @@ export function UsageSpeedSection({
 }) {
   // Anchor the window when the range changes, not on every render.
   const [anchor] = useState(() => Date.now());
-  const input = useMemo(
-    () => ({
-      sinceTime: new Date(anchor - windowDays * 86_400_000).toISOString(),
-      untilTime: new Date(anchor).toISOString(),
-    }),
-    [anchor, windowDays],
-  );
+  const input = {
+    sinceTime: new Date(anchor - windowDays * 86_400_000).toISOString(),
+    untilTime: new Date(anchor).toISOString(),
+  };
   const environments = useUsageSpeed(input, selectedEnvironmentIds);
   const isPending = environments.some((environment) => environment.isPending);
   const rows = environments.flatMap((environment) =>

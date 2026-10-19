@@ -6,7 +6,9 @@
  * transcription endpoint through Electron's Chromium network stack using the
  * local Codex login (~/.codex/auth.json).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 import type { VoiceInputDevice } from "@t3tools/contracts";
 import {
@@ -350,7 +352,9 @@ export function getCodexVoiceTranscriber(
   };
 }
 
-export function useCodexVoiceInput(input: {
+const NO_WAVEFORM_LEVELS: number[] = [];
+
+interface VoiceInputHookInput {
   readonly ownerKey: string | null;
   readonly draftText: string;
   readonly cursor: number;
@@ -358,69 +362,79 @@ export function useCodexVoiceInput(input: {
   readonly onCommit: (text: string, cursor: number) => void;
   /** Applies a transcript that finished after its draft stopped being shown. */
   readonly updateOwnerDraft: (ownerKey: string, update: (text: string) => string) => boolean;
-}) {
+}
+
+interface VoiceInputRuntimeCallbacks {
+  readonly readDraft: () => VoiceDraftSnapshot | null;
+  readonly commitDraft: (text: string, cursor: number) => void;
+  readonly updateOwnerDraft: (ownerKey: string, update: (text: string) => string) => boolean;
+  readonly onRecordingSaved: () => void;
+  readonly onStateChange: (state: VoiceInputState) => void;
+  readonly onLevel: (level: number) => void;
+}
+
+function createVoiceInputRuntime(callbacks: VoiceInputRuntimeCallbacks) {
+  const recorder = new WebVoiceRecorder();
+  const controller = new VoiceInputController({
+    recorder,
+    getTranscriber: () => getCodexVoiceTranscriber(recorder, callbacks.onRecordingSaved),
+    requestPermission: () => recorder.requestPermission(),
+    configureRecording: async () => {},
+    releaseRecording: async () => {
+      recorder.disposeStream();
+    },
+    deleteRecording: (uri) => recorder.deleteBlob(uri),
+    readDraft: callbacks.readDraft,
+    commitDraft: (text, selection) => callbacks.commitDraft(text, selection.start),
+    updateOwnerDraft: callbacks.updateOwnerDraft,
+    onStateChange: callbacks.onStateChange,
+  });
+  recorder.onStatus = (status) => {
+    controller.handleRecorderStatus(status);
+  };
+  recorder.onLevel = callbacks.onLevel;
+  return { recorder, controller };
+}
+
+export function useCodexVoiceInput(input: VoiceInputHookInput) {
   const [state, setState] = useState<VoiceInputState>(IDLE_STATE);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [waveformLevels, setWaveformLevels] = useState<number[]>([]);
-  const recorderRef = useRef<WebVoiceRecorder | null>(null);
-  const controllerRef = useRef<VoiceInputController | null>(null);
-  const previousDraftRef = useRef({ ownerKey: input.ownerKey, text: input.draftText });
-  const revisionRef = useRef(0);
-  if (
-    previousDraftRef.current.ownerKey !== input.ownerKey ||
-    previousDraftRef.current.text !== input.draftText
-  ) {
-    previousDraftRef.current = { ownerKey: input.ownerKey, text: input.draftText };
-    revisionRef.current += 1;
-  }
-  const latestInputRef = useRef(input);
-  latestInputRef.current = input;
   // Set once audio reaches the desktop, which saves it whether or not transcription succeeds.
   const recordingSavedRef = useRef(false);
-
-  if (!recorderRef.current) {
-    recorderRef.current = new WebVoiceRecorder();
+  // Each draft edit gets a new revision, so a transcript that lands after the
+  // user typed again is merged instead of overwriting their edit.
+  const draftKey = `${input.ownerKey ?? ""}\0${input.draftText}`;
+  const [draftRevision, setDraftRevision] = useState({ key: draftKey, revision: 0 });
+  if (draftRevision.key !== draftKey) {
+    setDraftRevision({ key: draftKey, revision: draftRevision.revision + 1 });
   }
-  const recorder = recorderRef.current;
-
-  if (!controllerRef.current) {
-    recorder.onStatus = (status) => {
-      controllerRef.current?.handleRecorderStatus(status);
-    };
-    recorder.onLevel = (level) => {
-      setWaveformLevels((previous) => [...previous.slice(-71), level]);
-    };
-    controllerRef.current = new VoiceInputController({
-      recorder,
-      getTranscriber: () =>
-        getCodexVoiceTranscriber(recorder, () => {
-          recordingSavedRef.current = true;
-        }),
-      requestPermission: () => recorder.requestPermission(),
-      configureRecording: async () => {},
-      releaseRecording: async () => {
-        recorder.disposeStream();
-      },
-      deleteRecording: (uri) => recorder.deleteBlob(uri),
-      readDraft: (): VoiceDraftSnapshot | null => {
-        const current = latestInputRef.current;
-        if (!current.ownerKey) return null;
-        return {
-          ownerKey: current.ownerKey,
-          text: current.draftText,
-          selection: { start: current.cursor, end: current.cursor },
-          revision: revisionRef.current,
-        };
-      },
-      commitDraft: (text, selection) => {
-        latestInputRef.current.onCommit(text, selection.start);
-      },
-      updateOwnerDraft: (ownerKey, update) =>
-        latestInputRef.current.updateOwnerDraft(ownerKey, update),
+  // The controller calls these after commit, so they see the latest draft.
+  const readDraft = useStableCallback((): VoiceDraftSnapshot | null =>
+    input.ownerKey
+      ? {
+          ownerKey: input.ownerKey,
+          text: input.draftText,
+          selection: { start: input.cursor, end: input.cursor },
+          revision: draftRevision.revision,
+        }
+      : null,
+  );
+  const commitDraft = useStableCallback(input.onCommit);
+  const updateOwnerDraft = useStableCallback(input.updateOwnerDraft);
+  const onRecordingSaved = useStableCallback(() => {
+    recordingSavedRef.current = true;
+  });
+  const [{ recorder, controller }] = useState(() =>
+    createVoiceInputRuntime({
+      readDraft,
+      commitDraft,
+      updateOwnerDraft,
+      onRecordingSaved,
       onStateChange: setState,
-    });
-  }
-  const controller = controllerRef.current;
+      onLevel: (level) => setWaveformLevels((previous) => [...previous.slice(-71), level]),
+    }),
+  );
 
   const previousOwnerRef = useRef(input.ownerKey);
   useEffect(() => {
@@ -432,10 +446,7 @@ export function useCodexVoiceInput(input: {
   useEffect(() => () => controller.dispose(), [controller]);
 
   useEffect(() => {
-    if (state.phase !== "recording") {
-      setElapsedSeconds(0);
-      return;
-    }
+    if (state.phase !== "recording") return;
     const startedAt = Date.now();
     const interval = setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
@@ -443,41 +454,35 @@ export function useCodexVoiceInput(input: {
     return () => clearInterval(interval);
   }, [state.phase]);
 
-  useEffect(() => {
-    if (state.phase === "idle" || state.phase === "preparing" || state.phase === "error") {
-      setWaveformLevels([]);
-    }
-  }, [state.phase]);
-
-  const start = useCallback(() => {
-    if (latestInputRef.current.disabled) return;
+  const start = () => {
+    if (input.disabled) return;
     recordingSavedRef.current = false;
+    setElapsedSeconds(0);
+    setWaveformLevels([]);
     void controller.start();
-  }, [controller]);
+  };
   /** The saved recording behind the latest failure, or null if none was saved. */
-  const failedRecordingId = useCallback(
-    (): Promise<string | null> =>
-      recordingSavedRef.current
-        ? latestVoiceRecordingId(window.desktopBridge)
-        : Promise.resolve(null),
-    [],
-  );
-  const stop = useCallback(() => controller.stop(), [controller]);
-  const cancel = useCallback(() => controller.cancel(), [controller]);
+  const failedRecordingId = (): Promise<string | null> =>
+    recordingSavedRef.current
+      ? latestVoiceRecordingId(window.desktopBridge)
+      : Promise.resolve(null);
+  const stop = () => controller.stop();
+  const cancel = () => controller.cancel();
   /**
    * Stops recording and waits for the transcript commit. Resolves true when
    * the draft was updated, false when transcription failed or was empty.
    */
-  const stopAndAwaitTranscript = useCallback(async (): Promise<boolean> => {
+  const stopAndAwaitTranscript = async (): Promise<boolean> => {
     await controller.stop();
     return controller.currentState.phase === "idle";
-  }, [controller]);
+  };
+  const showsWaveform = state.phase === "recording" || state.phase === "transcribing";
 
   return {
     isAvailable: getCodexVoiceTranscriber(recorder) !== null,
     state,
-    elapsedSeconds,
-    waveformLevels,
+    elapsedSeconds: state.phase === "recording" ? elapsedSeconds : 0,
+    waveformLevels: showsWaveform ? waveformLevels : NO_WAVEFORM_LEVELS,
     blocksSubmission: voiceInputBlocksSubmission(state),
     start,
     stop,

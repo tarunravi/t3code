@@ -192,8 +192,7 @@ export function ProviderModelsSection({
   const builtInModels = models.filter((model) => !model.isCustom);
   const bulkTargets = editingSubagents ? models : builtInModels;
   const allBulkTargetsHidden =
-    bulkTargets.length > 0 &&
-    bulkTargets.every((model) => activeHiddenModels.includes(model.slug));
+    bulkTargets.length > 0 && bulkTargets.every((model) => activeHiddenModels.includes(model.slug));
 
   const handleAdd = () => {
     if (!canManageCustomModels || driverKind === "antigravity") return;

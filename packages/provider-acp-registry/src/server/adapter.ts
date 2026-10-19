@@ -95,7 +95,6 @@ export type AcpRegistryFlavorOverrides = Partial<
   >
 >;
 
-
 // Mistral Vibe: its application error code for rate limits (not an ACP code).
 const MISTRAL_VIBE_RATE_LIMITED = -31001;
 
