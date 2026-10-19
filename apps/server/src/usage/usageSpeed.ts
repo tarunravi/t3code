@@ -51,10 +51,6 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-/* -------------------------------------------------------------------------- */
-/* OpenCodex request history                                                  */
-/* -------------------------------------------------------------------------- */
-
 /** One `/api/request-history` entry, or null when it carries no timing. */
 export function speedSampleFromOpenCodex(entry: unknown): SpeedSample | null {
   const row = record(entry);
@@ -102,10 +98,6 @@ export function speedSampleFromOpenCodex(entry: unknown): SpeedSample | null {
         : null,
   };
 }
-
-/* -------------------------------------------------------------------------- */
-/* Claude Code transcripts                                                    */
-/* -------------------------------------------------------------------------- */
 
 interface PendingClaudeMessage {
   startMs: number;
@@ -191,10 +183,6 @@ export class ClaudeSpeedReader {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Cursor turns run through T3 Code                                           */
-/* -------------------------------------------------------------------------- */
-
 /** Agent turns run tools between model calls, so they legitimately outlast one request. */
 const MAX_TURN_MS = 2 * 60 * 60_000;
 
@@ -261,10 +249,6 @@ export function speedSampleFromCursorTurn(row: CursorTurnRow): SpeedSample | nul
     ttftMs: Number.isFinite(ttftMs) && ttftMs >= 0 && ttftMs <= durationMs ? ttftMs : null,
   };
 }
-
-/* -------------------------------------------------------------------------- */
-/* Aggregation                                                                */
-/* -------------------------------------------------------------------------- */
 
 function percentile(sorted: readonly number[], fraction: number): number {
   if (sorted.length === 0) return 0;

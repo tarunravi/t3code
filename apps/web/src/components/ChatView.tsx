@@ -404,8 +404,8 @@ import {
 } from "../state/entities";
 import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import { SideChatPanel, useSideChatActions } from "./chat/SideChatPanel";
-import { BackgroundTaskPanel, BackgroundTasksBannerPopover } from "./chat/BackgroundTasks";
+import { useSideChatActions } from "./chat/SideChatPanel";
+import { BackgroundTasksBannerPopover } from "./chat/BackgroundTasks";
 import { backgroundTaskEntries, selectThreadBackgroundTasks } from "./chat/backgroundTasks.logic";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
@@ -763,104 +763,6 @@ async function startFanoutThread(input: {
   }
 }
 
-/**
- * Reverts the thread to before `message` and puts that message's text and
- * attachments back in the composer draft. Returns the restored prompt, or the
- * error to show; on error the draft is untouched.
- */
-async function rewindToMessage(input: {
-  readonly message: ChatMessage;
-  readonly environmentId: EnvironmentId;
-  readonly routeThreadRef: ScopedThreadRef;
-  readonly threadId: ThreadId;
-  readonly turnCount: number;
-  readonly restoreFiles: boolean;
-  readonly draftTarget: ScopedThreadRef | DraftId;
-  readonly composerHasPendingAttachments: boolean;
-  readonly createAssetUrl: Parameters<
-    typeof prepareRevertedMessageAttachments
-  >[0]["createAssetUrl"];
-  readonly revertThreadCheckpoint: (value: {
-    environmentId: EnvironmentId;
-    input: { commandId: CommandId; threadId: ThreadId; turnCount: number; restoreFiles: boolean };
-  }) => Promise<AtomCommandResult<unknown, unknown>>;
-}): Promise<
-  | { readonly error: string; readonly prompt?: never }
-  | { readonly error: null; readonly prompt: string }
-> {
-  const { message, environmentId, draftTarget } = input;
-  try {
-    if (input.composerHasPendingAttachments) {
-      throw new Error("Wait for attachments to finish preparing before rewinding.");
-    }
-    const connection = readPreparedConnection(environmentId);
-    if (!connection) throw new Error("The environment is not connected.");
-    const files = await prepareRevertedMessageAttachments({
-      message,
-      environmentId,
-      httpBaseUrl: connection.httpBaseUrl,
-      createAssetUrl: input.createAssetUrl,
-    });
-    const store = useComposerDraftStore.getState();
-    const draft = store.getComposerDraft(draftTarget);
-    if (
-      (draft?.images.length ?? 0) + (draft?.files.length ?? 0) + files.length >
-      PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-    ) {
-      throw new Error("Make room for this message's attachments in the composer before rewinding.");
-    }
-    const commandId = CommandId.make(randomUUID());
-    await waitForRevertedMessage(
-      input.routeThreadRef,
-      message.id,
-      input.turnCount,
-      commandId,
-      async () => {
-        const result = await input.revertThreadCheckpoint({
-          environmentId,
-          input: {
-            commandId,
-            threadId: input.threadId,
-            turnCount: input.turnCount,
-            restoreFiles: input.restoreFiles,
-          },
-        });
-        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      },
-    );
-    const currentPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
-    const restoredPrompt = recallableComposerPrompt(message.text);
-    const nextPrompt =
-      restoredPrompt.length === 0
-        ? currentPrompt
-        : currentPrompt.length > 0
-          ? `${currentPrompt}\n\n${restoredPrompt}`
-          : restoredPrompt;
-    store.setPrompt(draftTarget, nextPrompt);
-    const images: ComposerImageAttachment[] = [];
-    const restoredFiles: ComposerFileAttachment[] = [];
-    files.forEach((file, index) => {
-      const attachment = {
-        id: randomUUID(),
-        name: file.name,
-        mimeType: file.type,
-        sizeBytes: file.size,
-        file,
-      };
-      if (message.attachments?.[index]?.type === "image") {
-        images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
-      } else {
-        restoredFiles.push({ ...attachment, type: "file" });
-      }
-    });
-    store.addImages(draftTarget, images, { allowDuplicates: true });
-    store.addFiles(draftTarget, restoredFiles, { allowDuplicates: true });
-    return { error: null, prompt: nextPrompt };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : "Failed to revert thread state." };
-  }
-}
-
 function formatOutgoingPrompt(params: {
   provider: ProviderDriverKind;
   model: string | null;
@@ -1165,9 +1067,10 @@ export default function ChatView(props: ChatViewProps) {
   } | null>(null);
   const rewritingMessage = rewriteState?.routeThreadKey === routeThreadKey ? rewriteState : null;
   const rewriteDraftTarget = messageRewriteDraftTarget(routeThreadRef);
-  useEffect(() => {
-    setRewritingMessage((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
-  }, [routeThreadKey]);
+  // Navigating to another thread ends the rewrite; its draft stays for later.
+  if (rewriteState !== null && rewriteState.routeThreadKey !== routeThreadKey) {
+    setRewritingMessage(null);
+  }
   const composerDraftTarget =
     rewritingMessage !== null ? rewriteDraftTarget : queuedRunEdit.draftTarget;
   const reportedModelSelection = serverProjection
@@ -5833,7 +5736,9 @@ export default function ChatView(props: ChatViewProps) {
         createAssetUrl: createAttachmentAssetUrl,
       });
       if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        throw new Error("Make room for this message's attachments in the composer before rewinding.");
+        throw new Error(
+          "Make room for this message's attachments in the composer before rewinding.",
+        );
       }
       if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
       const nextPrompt = recallableComposerPrompt(message.text);
@@ -6061,6 +5966,7 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   // Built after onResume, which the banner action calls.
+  const onProviderFailureResume = useStableCallback(onResume);
   const composerBannerItemsWithResume =
     providerFailureResumeRunId === null
       ? composerBannerItems
@@ -6068,7 +5974,7 @@ export default function ChatView(props: ChatViewProps) {
           providerFailureResumeBannerItem({
             runId: providerFailureResumeRunId,
             disabled: isSendBusy || isResuming || isConnecting,
-            onResume: () => void onResume(),
+            onResume: () => void onProviderFailureResume(),
           }),
           ...composerBannerItems,
         ];

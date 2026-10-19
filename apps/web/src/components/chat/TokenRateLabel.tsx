@@ -1,5 +1,4 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useMemo } from "react";
 import { useTokenRateSources, type TokenRateProjectionSource } from "../../hooks/useTokenRate";
 import {
   LIVE_TOKEN_RATE_EXPLANATION,
@@ -23,11 +22,7 @@ export function TokenRateLabel(props: {
   readonly sources?: readonly TokenRateProjectionSource[] | undefined;
   readonly className?: string | undefined;
 }) {
-  const singleSource = useMemo(
-    () => [{ key: "thread", projection: props.projection }],
-    [props.projection],
-  );
-  const sources = props.sources ?? singleSource;
+  const sources = props.sources ?? [{ key: "thread", projection: props.projection }];
   const { live, text } = useTokenRateSources(sources);
   const rootProjection = sources[0]?.projection;
   const explanation = live
