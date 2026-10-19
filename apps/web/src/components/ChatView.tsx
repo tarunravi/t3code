@@ -515,9 +515,10 @@ export default function ChatView(props: ChatViewProps) {
   } | null>(null);
   const rewritingMessage = rewriteState?.routeThreadKey === routeThreadKey ? rewriteState : null;
   const rewriteDraftTarget = messageRewriteDraftTarget(routeThreadRef);
-  useEffect(() => {
-    setRewritingMessage((current) => (current?.routeThreadKey === routeThreadKey ? current : null));
-  }, [routeThreadKey]);
+  // Navigating to another thread ends the rewrite; its draft stays for later.
+  if (rewriteState !== null && rewriteState.routeThreadKey !== routeThreadKey) {
+    setRewritingMessage(null);
+  }
   const composerDraftTarget =
     rewritingMessage !== null ? rewriteDraftTarget : queuedRunEdit.draftTarget;
   const reportedModelSelection = serverProjection
