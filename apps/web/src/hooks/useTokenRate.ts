@@ -1,5 +1,5 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   appendTokenRateSample,
   completedTurnTokenRate,
@@ -32,8 +32,7 @@ export function useTokenRate(projection: Projection | null | undefined): {
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const sources = useMemo(() => [{ key: "thread", projection }], [projection]);
-  return useTokenRateSources(sources);
+  return useTokenRateSources([{ key: "thread", projection }]);
 }
 
 export function useTokenRateSources(sources: readonly TokenRateProjectionSource[]): {
@@ -41,17 +40,15 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const liveSources = useMemo(() => {
-    const seen = new Set<string>();
-    return sources.flatMap(({ key, projection }) => {
-      if (seen.has(key)) return [];
-      seen.add(key);
-      const source = liveTokenRateSource(projection);
-      return source === null
-        ? []
-        : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
-    });
-  }, [sources]);
+  const seen = new Set<string>();
+  const liveSources = sources.flatMap(({ key, projection }) => {
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const source = liveTokenRateSource(projection);
+    return source === null
+      ? []
+      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+  });
   const [history, setHistory] = useState<ReadonlyMap<string, readonly TokenRateSample[]>>(
     () => new Map(),
   );
@@ -60,6 +57,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   useEffect(() => {
     if (liveSources.length === 0) return;
     const atMs = Date.now();
+    // oxlint-disable-next-line react/set-state-in-effect -- Each token update is a timestamped sample, and render must not read the clock.
     setNowMs(atMs);
     setHistory((previous) => {
       const next = new Map<string, readonly TokenRateSample[]>();

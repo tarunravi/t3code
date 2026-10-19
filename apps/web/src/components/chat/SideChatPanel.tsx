@@ -17,7 +17,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
@@ -75,58 +75,50 @@ export function useSideChatActions(environmentId: EnvironmentId) {
   const startTurn = useAtomCommand(threadEnvironment.startTurn);
   const settings = useEnvironmentSettings(environmentId);
 
-  const ask = useCallback(
-    (input: {
-      readonly sideThreadId: ThreadId;
-      readonly parent: SideChatParent;
-      readonly modelSelection: ModelSelection;
-      readonly text: string;
-    }) =>
-      startTurn({
-        environmentId,
-        input: {
-          threadId: input.sideThreadId,
-          message: { messageId: newMessageId(), role: "user", text: input.text, attachments: [] },
-          modelSelection: input.modelSelection,
-          runtimeMode: input.parent.runtimeMode,
-          interactionMode: input.parent.interactionMode,
-          dispatchMode: "auto",
-        },
-      }),
-    [environmentId, startTurn],
-  );
+  const ask = (input: {
+    readonly sideThreadId: ThreadId;
+    readonly parent: SideChatParent;
+    readonly modelSelection: ModelSelection;
+    readonly text: string;
+  }) =>
+    startTurn({
+      environmentId,
+      input: {
+        threadId: input.sideThreadId,
+        message: { messageId: newMessageId(), role: "user", text: input.text, attachments: [] },
+        modelSelection: input.modelSelection,
+        runtimeMode: input.parent.runtimeMode,
+        interactionMode: input.parent.interactionMode,
+        dispatchMode: "auto",
+      },
+    });
 
-  const discard = useCallback(
-    (sideThreadId: ThreadId) => deleteThread({ environmentId, input: { threadId: sideThreadId } }),
-    [deleteThread, environmentId],
-  );
+  const discard = (sideThreadId: ThreadId) =>
+    deleteThread({ environmentId, input: { threadId: sideThreadId } });
 
-  const open = useCallback(
-    async (parent: SideChatParent, question: string) => {
-      const parentRef = scopeThreadRef(environmentId, parent.id);
-      const previous = selectThreadRightPanelState(
-        useRightPanelStore.getState().byThreadKey,
-        parentRef,
-      ).surfaces.find((surface) => surface.kind === "side-chat");
-      if (previous?.kind === "side-chat") void discard(previous.threadId);
-      const sideThreadId = newThreadId();
-      const opened = await openSideChatCommand({
-        environmentId,
-        input: { parentThreadId: parent.id, sideThreadId },
-      });
-      if (opened._tag === "Failure") return;
-      useRightPanelStore.getState().openSideChat(parentRef, sideThreadId);
-      if (question.length === 0) return;
-      if (!(await waitForThreadShell(scopeThreadRef(environmentId, sideThreadId)))) return;
-      await ask({
-        sideThreadId,
-        parent,
-        modelSelection: settings.sideChatModelSelection ?? parent.modelSelection,
-        text: question,
-      });
-    },
-    [ask, discard, environmentId, openSideChatCommand, settings.sideChatModelSelection],
-  );
+  const open = async (parent: SideChatParent, question: string) => {
+    const parentRef = scopeThreadRef(environmentId, parent.id);
+    const previous = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      parentRef,
+    ).surfaces.find((surface) => surface.kind === "side-chat");
+    if (previous?.kind === "side-chat") void discard(previous.threadId);
+    const sideThreadId = newThreadId();
+    const opened = await openSideChatCommand({
+      environmentId,
+      input: { parentThreadId: parent.id, sideThreadId },
+    });
+    if (opened._tag === "Failure") return;
+    useRightPanelStore.getState().openSideChat(parentRef, sideThreadId);
+    if (question.length === 0) return;
+    if (!(await waitForThreadShell(scopeThreadRef(environmentId, sideThreadId)))) return;
+    await ask({
+      sideThreadId,
+      parent,
+      modelSelection: settings.sideChatModelSelection ?? parent.modelSelection,
+      text: question,
+    });
+  };
 
   return { open, ask, discard };
 }
@@ -143,14 +135,8 @@ export function SideChatPanel(props: {
 }) {
   const { environmentId, parent, sideThreadId } = props;
   const canOperateThread = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
-  const parentRef = useMemo(
-    () => scopeThreadRef(environmentId, parent.id),
-    [environmentId, parent.id],
-  );
-  const sideRef = useMemo(
-    () => scopeThreadRef(environmentId, sideThreadId),
-    [environmentId, sideThreadId],
-  );
+  const parentRef = scopeThreadRef(environmentId, parent.id);
+  const sideRef = scopeThreadRef(environmentId, sideThreadId);
   const sideKey = scopedThreadKey(sideRef);
   const parentShell = useThreadShell(parentRef);
   const sideShell = useThreadShell(sideRef);
@@ -166,35 +152,28 @@ export function SideChatPanel(props: {
   const sendToParentCommand = useAtomCommand(threadEnvironment.startTurn);
 
   const listRef = useRef<LegendListRef | null>(null);
-  const sideShellSeen = useRef(false);
-  if (sideShell !== null) sideShellSeen.current = true;
+  const [sideShellSeen, setSideShellSeen] = useState(false);
+  if (sideShell !== null && !sideShellSeen) setSideShellSeen(true);
   // Side chats are short, so the timeline derives without carrying memo state across renders.
-  const timelineEntries = useMemo(
-    () =>
-      deriveTimelineEntriesFromVisibleTurnItemsWithState({
-        visibleTurnItems,
-        optimisticMessages: [],
-        ...(sideProjection === undefined
-          ? {}
-          : {
-              attempts: sideProjection.attempts,
-              nodes: sideProjection.nodes,
-              plans: sideProjection.plans,
-            }),
-      }).entries,
-    [sideProjection, visibleTurnItems],
-  );
+  const timelineEntries = deriveTimelineEntriesFromVisibleTurnItemsWithState({
+    visibleTurnItems,
+    optimisticMessages: [],
+    ...(sideProjection === undefined
+      ? {}
+      : {
+          attempts: sideProjection.attempts,
+          nodes: sideProjection.nodes,
+          plans: sideProjection.plans,
+        }),
+  }).entries;
   const runtime = sideProjection === undefined ? null : deriveThreadRuntime(sideProjection);
   const activityRun = sideProjection === undefined ? null : deriveThreadActivityRun(sideProjection);
   const phase = derivePhase(runtime);
   const isWorking = phase === "running" || phase === "connecting";
-  const pendingRequests = useMemo(
-    () =>
-      sideProjection === undefined
-        ? { approvals: [], userInputs: [] }
-        : derivePendingThreadRequests(sideProjection),
-    [sideProjection],
-  );
+  const pendingRequests =
+    sideProjection === undefined
+      ? { approvals: [], userInputs: [] }
+      : derivePendingThreadRequests(sideProjection);
   const pendingApproval = derivePendingApprovals(pendingRequests.approvals)[0] ?? null;
   const pendingUserInput = pendingRequests.userInputs[0] ?? null;
   const [respondingRequestId, setRespondingRequestId] = useState<RuntimeRequestId | null>(null);
@@ -206,72 +185,61 @@ export function SideChatPanel(props: {
     settingsDefault: settings.sideChatModelSelection,
     parentModelSelection: parent.modelSelection,
   });
-  const instanceEntries = useMemo(
-    () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(
-          deriveProviderInstanceEntries(providerStatuses),
-          settings,
-          sideShell?.projectId ?? null,
-        ),
-      ),
-    [providerStatuses, settings, sideShell?.projectId],
+  const instanceEntries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(providerStatuses),
+      settings,
+      sideShell?.projectId ?? null,
+    ),
   );
-  const modelOptionsByInstance = useMemo(
-    () =>
-      new Map(
-        instanceEntries.map((entry) => [
-          entry.instanceId,
-          getAppModelOptionsForInstance(
-            settings,
-            entry,
-            entry.instanceId === modelSelection.instanceId ? modelSelection.model : null,
-          ),
-        ]),
+  const modelOptionsByInstance = new Map(
+    instanceEntries.map((entry) => [
+      entry.instanceId,
+      getAppModelOptionsForInstance(
+        settings,
+        entry,
+        entry.instanceId === modelSelection.instanceId ? modelSelection.model : null,
       ),
-    [instanceEntries, modelSelection.instanceId, modelSelection.model, settings],
+    ]),
   );
 
   const [prompt, setPrompt] = useState("");
-  const send = useCallback(() => {
+  const send = () => {
     const text = prompt.trim();
     if (!canOperateThread || text.length === 0 || sideShell === null) return;
     setPrompt("");
     void ask({ sideThreadId, parent, modelSelection, text });
-  }, [ask, canOperateThread, modelSelection, parent, prompt, sideShell, sideThreadId]);
-  const sendToParent = useCallback(
-    (text: string) => {
-      if (!canOperateThread) return;
-      void sendToParentCommand({
-        environmentId,
-        input: {
-          threadId: parent.id,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: sideChatParentMessage(text),
-            attachments: [],
-          },
-          runtimeMode: parent.runtimeMode,
-          interactionMode: parent.interactionMode,
-          dispatchMode: "auto",
+  };
+  const sendToParent = (text: string) => {
+    if (!canOperateThread) return;
+    void sendToParentCommand({
+      environmentId,
+      input: {
+        threadId: parent.id,
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: sideChatParentMessage(text),
+          attachments: [],
         },
-      });
-    },
-    [canOperateThread, environmentId, parent, sendToParentCommand],
-  );
-  const onRespondToApproval = useCallback(
-    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
-      if (!canOperateThread) return;
-      setRespondingRequestId(requestId);
-      await respondToApproval({
-        environmentId,
-        input: { threadId: sideThreadId, requestId, decision },
-      });
-      setRespondingRequestId(null);
-    },
-    [canOperateThread, environmentId, respondToApproval, sideThreadId],
-  );
+        runtimeMode: parent.runtimeMode,
+        interactionMode: parent.interactionMode,
+        dispatchMode: "auto",
+      },
+    });
+  };
+  const onRespondToApproval = async (
+    requestId: RuntimeRequestId,
+    decision: ProviderApprovalDecision,
+  ) => {
+    if (!canOperateThread) return;
+    setRespondingRequestId(requestId);
+    await respondToApproval({
+      environmentId,
+      input: { threadId: sideThreadId, requestId, decision },
+    });
+    setRespondingRequestId(null);
+  };
 
   const parentStatus =
     parentShell === null
@@ -294,7 +262,7 @@ export function SideChatPanel(props: {
       <ChatCanvas composerOverlayElement={null}>
         {sideShell === null ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            {sideShellSeen.current ? "This side chat has ended." : "Opening side chat…"}
+            {sideShellSeen ? "This side chat has ended." : "Opening side chat…"}
           </div>
         ) : (
           <MessagesTimeline

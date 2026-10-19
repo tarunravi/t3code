@@ -8,6 +8,8 @@ import type {
 import { CheckCircle2Icon, CircleAlertIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { useStableCallback } from "~/hooks/useStableCallback";
+
 import { formatExpiresIn, formatExpiryTime } from "~/lib/awsLogin";
 import { cn } from "~/lib/utils";
 import { setDevboxPanelState } from "~/lib/devboxPanel";
@@ -133,22 +135,24 @@ export function MachinesSettings() {
     }
   };
 
-  const load = async (options: { refresh?: boolean; checkHealth?: boolean } = {}) => {
-    if (!bridge?.getDevboxState) return;
-    apply(await bridge.getDevboxState(options));
-  };
+  const load = useStableCallback(
+    async (options: { refresh?: boolean; checkHealth?: boolean } = {}) => {
+      if (!bridge?.getDevboxState) return;
+      apply(await bridge.getDevboxState(options));
+    },
+  );
 
   useEffect(() => {
     void load({ checkHealth: true });
     void bridge?.listAwsProfiles?.().then(setProfiles);
-  }, []);
+  }, [load]);
 
   // Sign-ins and checks run in the desktop process; follow them only while active.
   useEffect(() => {
     if (!busy) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [busy]);
+  }, [busy, load]);
 
   const signIn = async (provider: DesktopDevboxLoginProvider) => {
     if (!bridge?.startDevboxLogin) return;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   updateClientSettings,
@@ -25,30 +25,40 @@ export function VoiceMicrophoneSetting() {
   const [access, setAccess] = useState<AccessState>("idle");
   const mediaDevices = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
 
-  const refreshDevices = useCallback(async () => {
-    if (!mediaDevices) return;
-    setDevices(await mediaDevices.enumerateDevices().catch(() => []));
-  }, [mediaDevices]);
+  const listDevices = async () =>
+    mediaDevices ? await mediaDevices.enumerateDevices().catch(() => []) : [];
 
   useEffect(() => {
     if (!mediaDevices) return;
-    void refreshDevices();
-    mediaDevices.addEventListener("devicechange", refreshDevices);
-    return () => mediaDevices.removeEventListener("devicechange", refreshDevices);
-  }, [mediaDevices, refreshDevices]);
+    let active = true;
+    const refresh = () => {
+      void mediaDevices
+        .enumerateDevices()
+        .catch(() => [])
+        .then((next) => {
+          if (active) setDevices(next);
+        });
+    };
+    refresh();
+    mediaDevices.addEventListener("devicechange", refresh);
+    return () => {
+      active = false;
+      mediaDevices.removeEventListener("devicechange", refresh);
+    };
+  }, [mediaDevices]);
 
-  const requestAccess = useCallback(async () => {
+  const requestAccess = async () => {
     if (!mediaDevices) return;
     setAccess("requesting");
     try {
       const stream = await mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((track) => track.stop());
       setAccess("idle");
-      await refreshDevices();
+      setDevices(await listDevices());
     } catch {
       setAccess("denied");
     }
-  }, [mediaDevices, refreshDevices]);
+  };
 
   const { options, value } = microphoneOptions(devices, preference);
   const labelsHidden = microphoneLabelsHidden(devices);
