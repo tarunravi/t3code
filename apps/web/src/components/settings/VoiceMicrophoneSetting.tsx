@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  updateClientSettings,
   useClientSettings,
   useClientSettingsHydrated,
-  useUpdateClientSettings,
 } from "~/hooks/useSettings";
 import {
   microphoneLabelsHidden,
@@ -21,7 +21,6 @@ type AccessState = "idle" | "requesting" | "denied";
 export function VoiceMicrophoneSetting() {
   const preference = useClientSettings((settings) => settings.voiceInputDevice);
   const settingsHydrated = useClientSettingsHydrated();
-  const updateSettings = useUpdateClientSettings();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [access, setAccess] = useState<AccessState>("idle");
   const mediaDevices = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
@@ -68,7 +67,7 @@ export function VoiceMicrophoneSetting() {
         preference ? (
           <SettingResetButton
             label="microphone"
-            onClick={() => updateSettings({ voiceInputDevice: null })}
+            onClick={() => void updateClientSettings({ voiceInputDevice: null })}
           />
         ) : null
       }
@@ -90,14 +89,14 @@ export function VoiceMicrophoneSetting() {
             disabled={!settingsHydrated || !mediaDevices}
             onValueChange={(next) => {
               if (next === SYSTEM_DEFAULT_MICROPHONE) {
-                updateSettings({ voiceInputDevice: null });
+                void updateClientSettings({ voiceInputDevice: null });
                 return;
               }
               const device = selectableMicrophones(devices).find(
                 (candidate) => candidate.deviceId === next,
               );
               if (device) {
-                updateSettings({
+                void updateClientSettings({
                   voiceInputDevice: { deviceId: device.deviceId, label: device.label },
                 });
               }

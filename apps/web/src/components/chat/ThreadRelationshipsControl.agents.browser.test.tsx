@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   command: vi.fn().mockResolvedValue({ _tag: "Success" }),
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
   toast: vi.fn(),
+  agentElapsedProps: null as unknown,
 }));
 
 vi.mock(import("@tanstack/react-router"), async (original) => ({
@@ -33,6 +34,10 @@ vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useThreadProjection: (() => ({ projection: state.projection })) as never,
   useThreadRelationshipShells: ((ref: { readonly environmentId: string }) =>
+    (state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>)
+      .filter((shell) => shell.environmentId === ref.environmentId)
+      .map((shell) => shell.source)) as never,
+  useThreadRelationshipTreeShells: ((ref: { readonly environmentId: string }) =>
     (state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>)
       .filter((shell) => shell.environmentId === ref.environmentId)
       .map((shell) => shell.source)) as never,
@@ -86,8 +91,19 @@ vi.mock(import("../ui/tooltip"), async () => {
   };
 });
 
+// Records the agent each elapsed timer renders, so tests can check the derived run state.
+vi.mock(import("./AgentElapsed"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    AgentElapsed: ((props: Parameters<typeof actual.AgentElapsed>[0]) => {
+      state.agentElapsedProps = props;
+      return actual.AgentElapsed(props);
+    }) as never,
+  };
+});
+
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
-import { AgentElapsed } from "./AgentElapsed";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -730,7 +746,6 @@ it("shows the matching child agent details and refreshes them when the agent set
 });
 
 it("keeps a settled agent in current work while a follow-up run is active on its thread", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const childShell = {
     id: "child-1",
     title: "Checker",
@@ -769,12 +784,7 @@ it("keeps a settled agent in current work while a follow-up run is active on its
       threadId={ThreadId.make("parent")}
     />
   );
-  const text = () =>
-    renderer.root
-      .findAll((node) => typeof node.type === "string")
-      .flatMap((node) => node.children.filter((child) => typeof child === "string"))
-      .join(" ")
-      .replace(/\s+/g, " ");
+  const text = () => textNodes(" ").replace(/\s+/g, " ");
   let mounted = false;
   const withChildRun = async (activityRunStatus: string | null) => {
     state.shells = [
@@ -788,10 +798,8 @@ it("keeps a settled agent in current work while a follow-up run is active on its
         },
       },
     ];
-    await act(async () => {
-      if (mounted) renderer.update(cloneElement(panel));
-      else renderer = create(panel);
-    });
+    if (mounted) await update();
+    else await render(panel);
     mounted = true;
   };
 
@@ -803,19 +811,18 @@ it("keeps a settled agent in current work while a follow-up run is active on its
   expect(text()).toContain("Lineage · 1 running");
   expect(text()).not.toContain("Previous agents");
   expect(text()).toContain("Checker");
-  expect(renderer.root.findByType(AgentElapsed).props.agent).toMatchObject({
+  expect((state.agentElapsedProps as { agent: unknown }).agent).toMatchObject({
     status: "running",
     startedAt: "2026-09-16T12:05:00.000Z",
     completedAt: null,
   });
 
   await withChildRun(null);
-  expect(renderer.root.findByType("h3").children).toEqual(["Lineage"]);
+  expect(heading()).toBe("Lineage");
   expect(text()).toContain("Previous agents (1)");
 });
 
 it("keeps Stop in the child header while expanding and navigating a four-level subagent tree", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const environmentId = EnvironmentId.make("test");
   const threadShell = (
     id: string,
@@ -894,38 +901,23 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
   const panel = (
     <ThreadRelationshipsPanel environmentId={environmentId} threadId={ThreadId.make("root")} />
   );
-  const text = () =>
-    renderer.root
-      .findAll((node) => typeof node.type === "string")
-      .flatMap((node) => node.children.filter((child) => typeof child === "string"))
-      .join(" ")
-      .replace(/\s+/g, " ");
-  const expand = async (label: string) => {
-    const button = renderer.root.findByProps({ type: "button", "aria-label": label });
-    await act(async () => button.props.onClick());
-  };
+  const text = () => textNodes(" ").replace(/\s+/g, " ");
+  const expand = (label: string) => click(byLabel(label));
   const expectStopInChildHeader = () => {
-    const stop = renderer.root.find(
-      (node) => node.type === "button" && node.props["aria-label"] === "Stop subagent Child agent",
-    );
-    let header = stop.parent;
-    while (
-      header &&
-      !(typeof header.type === "string" && header.props.className?.split(" ").includes("relative"))
-    ) {
-      header = header.parent;
-    }
-    expect(header?.type).toBe("div");
-    expect(header?.props.className.split(" ")).toContain("h-8");
-    expect(header?.findAllByType("ul")).toHaveLength(0);
+    const header = byLabel("Stop subagent Child agent").closest<HTMLElement>("div.relative");
+    expect(header).not.toBeNull();
+    expect(header!.classList).toContain("h-8");
+    expect(header!.querySelectorAll("ul")).toHaveLength(0);
     expect(
-      header?.findAllByType("span").some((span) => span.children.includes("Child agent")),
+      [...header!.querySelectorAll("span")].some((span) =>
+        [...span.childNodes].some(
+          (node) => node.nodeType === Node.TEXT_NODE && node.textContent === "Child agent",
+        ),
+      ),
     ).toBe(true);
   };
 
-  await act(async () => {
-    renderer = create(panel);
-  });
+  await render(panel);
   expect(text()).toContain("Child agent");
   expect(text()).not.toContain("Grandchild agent");
   await expand("Show 1 subagent for Child agent");
@@ -941,20 +933,14 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
   expect(text()).toContain("Running");
   expectStopInChildHeader();
   const navigationCount = state.navigate.mock.calls.length;
-  await act(async () =>
-    renderer.root.findByProps({ "aria-label": "Stop subagent Child agent" }).props.onClick(),
-  );
+  await click(byLabel("Stop subagent Child agent"));
   expect(state.command).toHaveBeenCalledExactlyOnceWith({
     environmentId: "test",
     input: { threadId: "child" },
   });
   expect(state.navigate).toHaveBeenCalledTimes(navigationCount);
 
-  const greatGrandchild = renderer.root.findByProps({
-    type: "button",
-    "aria-label": "Open Great-grandchild agent in this chat",
-  });
-  await act(async () => greatGrandchild.props.onClick());
+  await click(byLabel("Open Great-grandchild agent in this chat"));
   expect(state.navigate).toHaveBeenCalledWith(
     expect.objectContaining({ to: "/$environmentId/$threadId" }),
   );
