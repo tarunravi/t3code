@@ -1,8 +1,8 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { ProviderInstanceId } from "@t3tools/contracts";
-import type { ReactElement, ReactNode } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, type ReactElement, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
@@ -141,90 +141,89 @@ const PRESET = {
 import type { DraftId } from "../../composerDraftStore";
 const DRAFT = "draft:subagents-panel" as DraftId;
 const PANEL = () => <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} />;
-// react-test-renderer's act requires this to update state outside React events.
-declare global {
-  var IS_REACT_ACT_ENVIRONMENT: boolean;
+
+interface Rendered {
+  readonly container: HTMLElement;
+  readonly update: (element: ReactElement) => Promise<void>;
 }
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 function settingsWith(overrides: Record<string, unknown>) {
   return { threadSubagentRosters: {}, subagentHotlist: [], subagentPresets: [], ...overrides };
 }
 
-function button(root: ReactTestRenderer, predicate: (props: Record<string, unknown>) => boolean) {
-  const found = root.root.findAll(
-    (node) => node.type === "button" && predicate(node.props as Record<string, unknown>),
-  );
+function button(root: Rendered, predicate: (element: HTMLButtonElement) => boolean) {
+  const found = [...root.container.querySelectorAll("button")].filter(predicate);
   expect(found).toHaveLength(1);
   return found[0]!;
 }
 
-function hasText(root: ReactTestRenderer, text: string) {
-  return texts(root).some((node) => node.includes(text));
+const byValue = (value: string) => (element: HTMLButtonElement) =>
+  element.getAttribute("value") === value;
+const isSwitch = (element: HTMLButtonElement) => element.getAttribute("role") === "switch";
+
+function hasText(root: Rendered, text: string) {
+  return (root.container.textContent ?? "").includes(text);
 }
 
-function texts(root: ReactTestRenderer): string[] {
-  const collected: string[] = [];
-  root.root.findAll((node) => {
-    if (typeof node.type === "string" && typeof node.children[0] === "string") {
-      collected.push(node.children[0]);
-    }
-    return false;
-  });
-  return collected;
+function testIds(root: Rendered, id: string) {
+  return root.container.querySelectorAll(`[data-testid="${id}"]`);
 }
 
-function applyPreset(root: ReactTestRenderer, presetId: string) {
-  const item = button(root, (props) => props.value === presetId);
-  act(() => item.props.onClick?.());
+async function applyPreset(root: Rendered, presetId: string) {
+  const item = button(root, byValue(presetId));
+  await act(async () => item.click());
+}
+
+const roots: Root[] = [];
+
+async function render(element: ReactElement): Promise<Rendered> {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () => root.render(element));
+  return { container, update: (next) => act(async () => root.render(next)) };
 }
 
 describe("ThreadSubagentsPanel compact preset mode", () => {
-  let renderer: ReactTestRenderer | undefined;
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
 
-  afterEach(() => {
-    renderer?.unmount();
+  afterEach(async () => {
+    for (const root of roots.splice(0)) await act(async () => root.unmount());
+    document.body.replaceChildren();
+    vi.unstubAllGlobals();
     testState.updateSettings.mockReset();
     testState.navigate.mockReset();
     testState.setDraftThreadContext.mockReset();
     testState.draftEntries = undefined;
   });
 
-  function renderPanel() {
-    act(() => {
-      renderer = create(PANEL());
-    });
-    return renderer!;
-  }
+  const renderPanel = () => render(PANEL());
 
-  it("lets a draft choose and disable a preset locally, before it has a server thread", () => {
+  it("lets a draft choose and disable a preset locally, before it has a server thread", async () => {
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
-    act(() => {
-      renderer = create(
-        <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />,
-      );
-    });
-    applyPreset(renderer!, "hard");
+    const draftPanel = () => (
+      <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />
+    );
+    const root = await render(draftPanel());
+    await applyPreset(root, "hard");
     expect(testState.setDraftThreadContext).toHaveBeenCalledWith(DRAFT, {
       subagentRoster: PRESET.entries,
     });
     expect(testState.updateSettings).not.toHaveBeenCalled();
 
     testState.draftEntries = PRESET.entries;
-    act(() =>
-      renderer!.update(
-        <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />,
-      ),
-    );
-    expect(hasText(renderer!, "Hard work")).toBe(true);
-    expect(hasText(renderer!, "Tricky bugs.")).toBe(true);
-    act(() => button(renderer!, (props) => props.role === "switch").props.onClick());
+    await root.update(draftPanel());
+    expect(hasText(root, "Hard work")).toBe(true);
+    expect(hasText(root, "Tricky bugs.")).toBe(true);
+    await act(async () => button(root, isSwitch).click());
     expect(testState.setDraftThreadContext).toHaveBeenLastCalledWith(DRAFT, {
       subagentRoster: null,
     });
   });
 
-  it("starts a new draft on the default preset, and still lets it switch or opt out", () => {
+  it("starts a new draft on the default preset, and still lets it switch or opt out", async () => {
     const other = { id: "bulk", name: "Bulk work", entries: [{ selection: GLM_SELECTION }] };
     testState.settings = settingsWith({
       subagentPresets: [PRESET, other],
@@ -233,34 +232,32 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     const draftPanel = () => (
       <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} draftId={DRAFT} />
     );
-    act(() => {
-      renderer = create(draftPanel());
-    });
-    expect(hasText(renderer!, "Hard work")).toBe(true);
-    expect(button(renderer!, (props) => props.value === "hard").props["aria-checked"]).toBe(true);
-    expect(button(renderer!, (props) => props.role === "switch").props["aria-checked"]).toBe(true);
+    const root = await render(draftPanel());
+    expect(hasText(root, "Hard work")).toBe(true);
+    expect(button(root, byValue("hard")).getAttribute("aria-checked")).toBe("true");
+    expect(button(root, isSwitch).getAttribute("aria-checked")).toBe("true");
 
-    applyPreset(renderer!, "bulk");
+    await applyPreset(root, "bulk");
     expect(testState.setDraftThreadContext).toHaveBeenLastCalledWith(DRAFT, {
       subagentRoster: other.entries,
     });
 
     // Turning the roster off is an explicit choice the default must not override.
     testState.draftEntries = null;
-    act(() => renderer!.update(draftPanel()));
-    expect(button(renderer!, (props) => props.role === "switch").props["aria-checked"]).toBe(false);
+    await root.update(draftPanel());
+    expect(button(root, isSwitch).getAttribute("aria-checked")).toBe("false");
   });
 
-  it("keeps an existing server thread's environment subagents despite a default preset", () => {
+  it("keeps an existing server thread's environment subagents despite a default preset", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       defaultSubagentPresetId: "hard",
     });
-    const root = renderPanel();
-    expect(button(root, (props) => props.role === "switch").props["aria-checked"]).toBe(false);
+    const root = await renderPanel();
+    expect(button(root, isSwitch).getAttribute("aria-checked")).toBe("false");
   });
 
-  it("previews the saved thread entries, not an edited preset or its old notes", () => {
+  it("previews the saved thread entries, not an edited preset or its old notes", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       threadSubagentRosters: {
@@ -269,9 +266,9 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
         },
       },
     });
-    const root = renderPanel();
-    const preview = root.root.findByProps({ "aria-label": "Current subagent roster" });
-    expect(preview.findAllByType("li")).toHaveLength(1);
+    const root = await renderPanel();
+    const preview = root.container.querySelector('[aria-label="Current subagent roster"]');
+    expect(preview?.querySelectorAll("li")).toHaveLength(1);
     expect(hasText(root, "default")).toBe(true);
     expect(hasText(root, "zcode")).toBe(true);
     expect(hasText(root, "Actual override notes.")).toBe(true);
@@ -279,47 +276,47 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     expect(hasText(root, "claude-opus-5-5")).toBe(false);
   });
 
-  it("renders today's editor when the environment has no presets", () => {
+  it("renders today's editor when the environment has no presets", async () => {
     testState.settings = settingsWith({
       threadSubagentRosters: { [THREAD]: { entries: [{ selection: OPUS_SELECTION }] } },
     });
-    const root = renderPanel();
-    expect(root.root.findByProps({ "data-testid": "roster-list" })).toBeDefined();
+    const root = await renderPanel();
+    expect(testIds(root, "roster-list")).toHaveLength(1);
   });
 
-  it("keeps the editor for rosters no preset matches", () => {
+  it("keeps the editor for rosters no preset matches", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: [{ selection: GLM_SELECTION }] } },
     });
-    const root = renderPanel();
-    expect(root.root.findByProps({ "data-testid": "roster-list" })).toBeDefined();
+    const root = await renderPanel();
+    expect(testIds(root, "roster-list")).toHaveLength(1);
   });
 
-  it("keeps the environment row visible when the roster is off, even with presets", () => {
+  it("keeps the environment row visible when the roster is off, even with presets", async () => {
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
-    const root = renderPanel();
+    const root = await renderPanel();
     // Only the environment row renders the allowed-model count.
     expect(hasText(root, "0 allowed models")).toBe(true);
-    expect(root.root.findAllByProps({ "data-testid": "roster-list" })).toHaveLength(0);
+    expect(testIds(root, "roster-list")).toHaveLength(0);
   });
 
-  it("collapses a matching roster to the preset name and entry count", () => {
+  it("collapses a matching roster to the preset name and entry count", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
-    const root = renderPanel();
+    const root = await renderPanel();
     expect(hasText(root, "Hard work")).toBe(true);
     expect(hasText(root, "2 entries")).toBe(true);
     expect(hasText(root, "0 allowed models")).toBe(false);
-    expect(root.root.findAllByProps({ "data-testid": "roster-list" })).toHaveLength(0);
+    expect(testIds(root, "roster-list")).toHaveLength(0);
   });
 
-  it("copies a chosen preset's entries into the thread roster", () => {
+  it("copies a chosen preset's entries into the thread roster", async () => {
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
-    const root = renderPanel();
-    applyPreset(root, "hard");
+    const root = await renderPanel();
+    await applyPreset(root, "hard");
 
     expect(testState.updateSettings).toHaveBeenCalledWith({
       threadSubagentRosters: {
@@ -336,40 +333,39 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
-    act(() => root.update(PANEL()));
-    expect(root.root.findAllByProps({ "data-testid": "roster-list" })).toHaveLength(0);
+    await root.update(PANEL());
+    expect(testIds(root, "roster-list")).toHaveLength(0);
   });
 
-  it("expands the editor again when Manual is chosen", () => {
+  it("expands the editor again when Manual is chosen", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
-    const root = renderPanel();
-    expect(button(root, (props) => props.value === "hard").props["aria-checked"]).toBe(true);
-    applyPreset(root, "manual");
-    expect(button(root, (props) => props.value === "manual").props["aria-checked"]).toBe(true);
-    expect(button(root, (props) => props.value === "hard").props["aria-checked"]).toBe(false);
+    const root = await renderPanel();
+    expect(button(root, byValue("hard")).getAttribute("aria-checked")).toBe("true");
+    await applyPreset(root, "manual");
+    expect(button(root, byValue("manual")).getAttribute("aria-checked")).toBe("true");
+    expect(button(root, byValue("hard")).getAttribute("aria-checked")).toBe("false");
 
     expect(testState.updateSettings).not.toHaveBeenCalled();
-    expect(root.root.findByProps({ "data-testid": "roster-list" })).toBeDefined();
+    expect(testIds(root, "roster-list")).toHaveLength(1);
   });
 
-  it("reveals the environment row when the switch turns a collapsed roster off", () => {
+  it("reveals the environment row when the switch turns a collapsed roster off", async () => {
     testState.settings = settingsWith({
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
-    const root = renderPanel();
-    const toggle = button(root, (props) => props.role === "switch");
-    act(() => toggle.props.onClick?.());
+    const root = await renderPanel();
+    await act(async () => button(root, isSwitch).click());
 
     expect(testState.updateSettings).toHaveBeenCalledWith({
       threadSubagentRosters: { [THREAD]: null },
     });
 
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
-    act(() => root.update(PANEL()));
+    await root.update(PANEL());
     expect(hasText(root, "0 allowed models")).toBe(true);
   });
 });

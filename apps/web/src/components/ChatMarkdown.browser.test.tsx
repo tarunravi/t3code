@@ -400,6 +400,31 @@ describe("ChatMarkdown skill chips", () => {
   });
 });
 
+describe("ChatMarkdown math and Mermaid", () => {
+  it("renders inline LaTeX instead of exposing the source delimiters", async () => {
+    const container = await renderText(String.raw`The volume is $154.5\text{ cm}^3$.`);
+
+    expect(container.querySelector(".katex")).not.toBeNull();
+    expect(container.textContent).not.toContain(String.raw`$154.5\text{ cm}^3$`);
+  });
+
+  it("renders Mermaid fences with a diagram/code toggle", async () => {
+    const container = await renderText("```mermaid\ngraph TD\n  A[Start] --> B[Done]\n```");
+
+    expect(container.querySelector('[data-language="mermaid"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Show code"]')).not.toBeNull();
+  });
+
+  it("renders a closed Mermaid fence while the rest of the message streams", async () => {
+    const closed = await renderText("```mermaid\ngraph TD\n  A --> B\n```\n\nStill writing", {
+      isStreaming: true,
+    });
+    expect(closed.querySelector('[data-language="mermaid"]')).not.toBeNull();
+    const open = await renderText("```mermaid\ngraph TD\n  A --> B", { isStreaming: true });
+    expect(open.querySelector('[data-language="mermaid"]')).not.toBeNull();
+  });
+});
+
 describe("ChatMarkdown file citations", () => {
   it.each([true, false])(
     "renders Codex file citations as file chips with parseRawHtml=%s",

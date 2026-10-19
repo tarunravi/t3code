@@ -14427,7 +14427,11 @@ describe("AcpAdapterV2 locally tracked /goal (omp)", () => {
     );
     const prompts = (yield* Queue.clear(protocolEvents)).flatMap((event) =>
       event.direction === "outgoing" && rawProtocolMethod(event) === "session/prompt"
-        ? [rawProtocolPromptText(event)]
+        ? [
+            rawProtocolPromptTextBlocks(event)
+              .map((block) => block.text)
+              .join("\n"),
+          ]
         : [],
     );
     const terminal = events.find((event) => event.type === "turn.terminal");

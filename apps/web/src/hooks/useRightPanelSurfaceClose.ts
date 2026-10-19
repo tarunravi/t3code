@@ -30,8 +30,10 @@ import { useStableCallback } from "./useStableCallback";
 export function useRightPanelSurfaceClose(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly terminalLabelsById: ReadonlyMap<string, string>;
+  /** Releases resources the hook does not own, such as a side chat's thread. */
+  readonly onReleaseSurface?: (surface: RightPanelSurface) => void;
 }) {
-  const { threadRef, terminalLabelsById } = input;
+  const { threadRef, terminalLabelsById, onReleaseSurface } = input;
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
   const canOperatePreview = useEnvironmentScope(
     threadRef?.environmentId ?? null,
@@ -56,6 +58,7 @@ export function useRightPanelSurfaceClose(input: {
         threadRef: ref,
       });
     }
+    onReleaseSurface?.(surface);
     if (
       surface.kind === "terminal" &&
       readEnvironmentScope(ref.environmentId, AuthTerminalOperateScope)
