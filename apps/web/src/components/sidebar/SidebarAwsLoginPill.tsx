@@ -47,26 +47,28 @@ export function SidebarAwsLoginPill() {
 
   const logIn = async () => {
     setLoggingIn(true);
-    try {
-      const next = await runAwsLogin(profile);
-      if (next?.ok) {
-        void navigate({ to: "/settings/devbox" });
-      } else {
-        toastManager.add({
-          type: "error",
-          title: `AWS login for ${profile} did not complete`,
-          description: next?.detail ?? "The desktop app is unavailable.",
-        });
-      }
-    } catch (cause) {
-      toastManager.add({
-        type: "error",
-        title: `Could not start the AWS login for ${profile}`,
-        description: cause instanceof Error ? cause.message : String(cause),
-      });
-    } finally {
-      setLoggingIn(false);
-    }
+    await runAwsLogin(profile)
+      .then(
+        (next) => {
+          if (next?.ok) {
+            void navigate({ to: "/settings/devbox" });
+            return;
+          }
+          toastManager.add({
+            type: "error",
+            title: `AWS login for ${profile} did not complete`,
+            description: next?.detail ?? "The desktop app is unavailable.",
+          });
+        },
+        (cause: unknown) => {
+          toastManager.add({
+            type: "error",
+            title: `Could not start the AWS login for ${profile}`,
+            description: cause instanceof Error ? cause.message : String(cause),
+          });
+        },
+      )
+      .finally(() => setLoggingIn(false));
   };
 
   const Icon = level === "missing" ? TriangleAlertIcon : CircleAlertIcon;

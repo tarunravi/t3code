@@ -69,6 +69,73 @@ interface TimelineRewindInput {
 }
 
 /**
+ * Puts `message`'s text and attachments in the thread's rewrite draft. The
+ * conversation rewinds only when that draft is sent. Returns the loaded prompt,
+ * null when the user left the thread meanwhile, or the error to show.
+ */
+async function loadMessageForRewrite(input: {
+  readonly message: ChatMessage;
+  readonly environmentId: EnvironmentId;
+  readonly routeThreadRef: ScopedThreadRef;
+  readonly composerHasPendingAttachments: boolean;
+  readonly createAssetUrl: Parameters<
+    typeof prepareRevertedMessageAttachments
+  >[0]["createAssetUrl"];
+  readonly isCurrent: () => boolean;
+}): Promise<
+  | { readonly error: string; readonly prompt?: never }
+  | { readonly error: null; readonly prompt: string | null }
+> {
+  const { message, environmentId } = input;
+  try {
+    if (input.composerHasPendingAttachments) {
+      throw new Error("Wait for attachments to finish preparing before rewinding.");
+    }
+    const connection = readPreparedConnection(environmentId);
+    if (!connection) throw new Error("The environment is not connected.");
+    const files = await prepareRevertedMessageAttachments({
+      message,
+      environmentId,
+      httpBaseUrl: connection.httpBaseUrl,
+      createAssetUrl: input.createAssetUrl,
+    });
+    if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      throw new Error("Make room for this message's attachments in the composer before rewinding.");
+    }
+    if (!input.isCurrent()) return { error: null, prompt: null };
+    const prompt = recallableComposerPrompt(message.text);
+    const images: ComposerImageAttachment[] = [];
+    const restoredFiles: ComposerFileAttachment[] = [];
+    files.forEach((file, index) => {
+      const attachment = {
+        id: randomUUID(),
+        name: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        file,
+      };
+      if (message.attachments?.[index]?.type === "image") {
+        images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
+      } else {
+        restoredFiles.push({ ...attachment, type: "file" });
+      }
+    });
+    loadMessageRewriteDraft({
+      threadRef: input.routeThreadRef,
+      prompt,
+      images,
+      files: restoredFiles,
+    });
+    return { error: null, prompt };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "Failed to revert thread state.",
+    };
+  }
+}
+
+
+/**
  * Going back in a thread's timeline: reverting to an earlier turn (restoring that message into
  * the composer), rolling back a provider checkpoint, and forking a new thread from a run.
  */
@@ -147,68 +214,133 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
     }));
     setThreadError(activeThread.id, null);
-    try {
-      // Rewriting loads the message into its own draft; the rewind runs when it is sent.
-      if (composerRef.current?.hasPendingAttachments()) {
-        throw new Error("Wait for attachments to finish preparing before rewinding.");
-      }
-      const connection = readPreparedConnection(environmentId);
-      if (!connection) throw new Error("The environment is not connected.");
-      const files = await prepareRevertedMessageAttachments({
-        message,
-        environmentId,
-        httpBaseUrl: connection.httpBaseUrl,
-        createAssetUrl: createAttachmentAssetUrl,
+    const loaded = await loadMessageForRewrite({
+      message,
+      environmentId,
+      routeThreadRef,
+      composerHasPendingAttachments: composerRef.current?.hasPendingAttachments() === true,
+      createAssetUrl: createAttachmentAssetUrl,
+      isCurrent: () => currentRouteThreadKeyRef.current === routeThreadKey,
+    });
+    useComposerDraftStore.setState((store) => {
+      const remaining = new Set(store.rewindingThreadKeys);
+      remaining.delete(routeThreadKey);
+      return { rewindingThreadKeys: remaining };
+    });
+    if (loaded.error !== null) {
+      setThreadError(activeThread.id, loaded.error);
+      return;
+    }
+    if (loaded.prompt === null) return;
+    const nextPrompt = loaded.prompt;
+    cancelQueuedEdit();
+    setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
+    if (currentRouteThreadKeyRef.current === routeThreadKey) {
+      promptRef.current = nextPrompt;
+      composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
+      requestAnimationFrame(() => {
+        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
       });
-      if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        throw new Error("Make room for this message's attachments in the composer before rewinding.");
-      }
-      if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
-      const nextPrompt = recallableComposerPrompt(message.text);
-      const images: ComposerImageAttachment[] = [];
-      const restoredFiles: ComposerFileAttachment[] = [];
-      files.forEach((file, index) => {
-        const attachment = {
-          id: randomUUID(),
-          name: file.name,
-          mimeType: file.type,
-          sizeBytes: file.size,
-          file,
-        };
-        if (message.attachments?.[index]?.type === "image") {
-          images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
-        } else {
-          restoredFiles.push({ ...attachment, type: "file" });
-        }
-      });
-      loadMessageRewriteDraft({
-        threadRef: routeThreadRef,
-        prompt: nextPrompt,
-        images,
-        files: restoredFiles,
-      });
-      cancelQueuedEdit();
-      setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
-      if (currentRouteThreadKeyRef.current === routeThreadKey) {
-        promptRef.current = nextPrompt;
-        composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
-        requestAnimationFrame(() => {
-          if (currentRouteThreadKeyRef.current === routeThreadKey)
-            composerRef.current?.focusAtEnd();
-        });
-      }
-    } catch (error) {
+    }
+  };
+  const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
+  const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
+    void onRevertToTurnCount(turnCount, messageId, restoreFiles);
+  };
+  const onConfirmRevertStable = useStableCallback(onConfirmRevert);
+
+  const onRollbackCheckpoint = async (input: {
+    readonly checkpointId: string;
+    readonly scopeId: string;
+  }) => {
+    if (!activeThread || isRevertingCheckpoint) return;
+    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
+      setThreadError(
+        activeThread.id,
+        `Reconnect ${activeEnvironmentUnavailableLabel} before reverting checkpoints.`,
+      );
+      return;
+    }
+    if (phase === "running" || isSendBusy || isConnecting) {
+      setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
+      return;
+    }
+    const localApi = readLocalApi();
+    const confirmed =
+      localApi == null
+        ? window.confirm("Roll back this thread to the selected checkpoint?")
+        : await localApi.dialogs.confirm(
+            "Roll back this thread to the selected checkpoint?\nThis action cannot be undone.",
+          );
+    if (!confirmed) return;
+
+    useComposerDraftStore.setState((store) => ({
+      rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+    }));
+    setThreadError(activeThread.id, null);
+    const result = await revertThreadCheckpoint({
+      environmentId,
+      input: {
+        threadId: activeThread.id,
+        checkpointId: input.checkpointId,
+        scopeId: input.scopeId,
+      },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThread.id,
         error instanceof Error ? error.message : "Failed to revert thread state.",
       );
-    } finally {
-      useComposerDraftStore.setState((store) => {
-        const remaining = new Set(store.rewindingThreadKeys);
-        remaining.delete(routeThreadKey);
-        return { rewindingThreadKeys: remaining };
-      });
     }
+    useComposerDraftStore.setState((store) => {
+      const remaining = new Set(store.rewindingThreadKeys);
+      remaining.delete(routeThreadKey);
+      return { rewindingThreadKeys: remaining };
+    });
+  };
+
+  const onForkFromRun = async (input: {
+    readonly sourceThreadId: ThreadId;
+    readonly runId: RunId;
+  }) => {
+    if (!activeThread || activeEnvironmentUnavailable) return;
+    const targetThreadId = newThreadId();
+    const targetThreadRef = scopeThreadRef(environmentId, targetThreadId);
+    const result = await forkThreadFromRun({
+      environmentId,
+      input: {
+        sourceThreadId: input.sourceThreadId,
+        targetThreadId,
+        runId: input.runId,
+        title: `${activeThread.title} fork`,
+      },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to fork this response.",
+        );
+      }
+      return;
+    }
+    const targetThreadReady = await waitForThreadShell(targetThreadRef);
+    if (!targetThreadReady) {
+      setThreadError(
+        activeThread.id,
+        "The fork was created, but its thread data did not reach this client. Reconnect and try opening it from the sidebar.",
+      );
+      return;
+    }
+    await navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(targetThreadRef),
+    });
+  };
+  const onForkFromRunStable = useStableCallback(onForkFromRun);
+
   };
   const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
   const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
