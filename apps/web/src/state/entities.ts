@@ -391,3 +391,44 @@ export function useThreadRelationshipShells(
 ): ReadonlyArray<OrchestrationV2ThreadShell> {
   return useAtomValue(relationshipShellsAtomFamily(threadKey(ref)));
 }
+
+/** Relationship shells plus every descendant, for the nested subagent tree. Exported for tests. */
+export function selectThreadRelationshipTreeShells(
+  threadId: ThreadId,
+  projection: Parameters<typeof selectThreadRelationshipShells>[1],
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+): ReadonlyArray<OrchestrationV2ThreadShell> {
+  const included = new Set(
+    selectThreadRelationshipShells(threadId, projection, threads).map((thread) => thread.id),
+  );
+  const frontier: ThreadId[] = [threadId];
+  for (let id = frontier.pop(); id !== undefined; id = frontier.pop()) {
+    for (const thread of threads) {
+      if (included.has(thread.id) || shellParentThreadId(thread) !== id) continue;
+      included.add(thread.id);
+      frontier.push(thread.id);
+    }
+  }
+  return threads.filter((thread) => included.has(thread.id));
+}
+
+const relationshipTreeShellsAtomFamily = Atom.family((key: string) => {
+  const ref = parseThreadKey(key);
+  let previous: ReadonlyArray<OrchestrationV2ThreadShell> = [];
+  return Atom.make((get) => {
+    const next = selectThreadRelationshipTreeShells(
+      ref.threadId,
+      get(environmentThreadDetails.threadAtom(ref))?.projection ?? null,
+      get(environmentThreadShells.environmentThreadsAtom(ref.environmentId)),
+    );
+    if (arrayElementsEqual(previous, next)) return previous;
+    previous = next;
+    return next;
+  }).pipe(Atom.withLabel(`web-thread-relationship-tree-shells:${key}`));
+});
+
+export function useThreadRelationshipTreeShells(
+  ref: ScopedThreadRef,
+): ReadonlyArray<OrchestrationV2ThreadShell> {
+  return useAtomValue(relationshipTreeShellsAtomFamily(threadKey(ref)));
+}

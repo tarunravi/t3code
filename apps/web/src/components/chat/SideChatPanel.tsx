@@ -35,12 +35,12 @@ import {
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
 } from "../../session-logic";
 import {
-  useServerConfigs,
   useThreadProjection,
   useThreadShell,
   useThreadVisibleTurnItems,
   waitForThreadShell,
 } from "../../state/entities";
+import { useEnvironmentProviders } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
@@ -61,7 +61,7 @@ import {
   sideChatParentMessage,
 } from "./sideChat.logic";
 
-interface SideChatParent {
+export interface SideChatParent {
   readonly id: ThreadId;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
@@ -158,8 +158,7 @@ export function SideChatPanel(props: {
   const visibleTurnItems = useThreadVisibleTurnItems(sideShell === null ? null : sideRef);
   const settings = useEnvironmentSettings(environmentId);
   const { resolvedTheme } = useTheme();
-  const providerStatuses =
-    useServerConfigs().get(environmentId)?.providers ?? EMPTY_SERVER_PROVIDERS;
+  const providerStatuses = useEnvironmentProviders().get(environmentId) ?? EMPTY_SERVER_PROVIDERS;
   const { ask } = useSideChatActions(environmentId);
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn);
   const respondToApproval = useAtomCommand(threadEnvironment.respondToApproval);
@@ -319,7 +318,6 @@ export function SideChatPanel(props: {
             resolvedTheme={resolvedTheme}
             timestampFormat={settings.timestampFormat}
             workspaceRoot={props.workspaceRoot}
-            providerStatuses={providerStatuses}
             runs={sideProjection?.runs ?? []}
             anchorMessageId={null}
             onAnchorReady={noop}

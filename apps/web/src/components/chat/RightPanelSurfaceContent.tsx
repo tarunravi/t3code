@@ -1,4 +1,3 @@
-import { SideChatPanel } from "./SideChatPanel";
 import { useThreadShell } from "../../state/entities";
 import type {
   EditorId,
@@ -24,6 +23,8 @@ import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import { BackgroundTaskPanel } from "./BackgroundTasks";
+import { SideChatPanel, type SideChatParent } from "./SideChatPanel";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -49,7 +50,13 @@ interface RightPanelPullRequestProps {
   readonly onBack: (() => void) | undefined;
 }
 
-interface RightPanelFileProps {
+export interface RightPanelSideChatProps {
+  readonly parent: SideChatParent;
+  readonly markdownCwd: string | undefined;
+  readonly workspaceRoot: string | undefined;
+}
+
+export interface RightPanelFileProps {
   readonly projectName: string | null;
   readonly workspaceRoot: string | undefined;
   readonly availableEditors: ReadonlyArray<EditorId>;
@@ -77,12 +84,22 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
+  readonly sideChat: RightPanelSideChatProps;
 }) {
   const { surface, threadRef, visible } = props;
   const parent = useThreadShell(threadRef);
   if (surface === null) return null;
   switch (surface.kind) {
-    case "side-chat": return parent ? <SideChatPanel environmentId={props.environmentId} parent={parent} sideThreadId={surface.threadId} markdownCwd={props.files.workspaceRoot} workspaceRoot={props.files.workspaceRoot} /> : null;
+    case "side-chat":
+      return parent ? (
+        <SideChatPanel
+          environmentId={props.environmentId}
+          parent={parent}
+          sideThreadId={surface.threadId}
+          markdownCwd={props.files.workspaceRoot}
+          workspaceRoot={props.files.workspaceRoot}
+        />
+      ) : null;
     case "preview":
       return (
         <Suspense fallback={null}>
@@ -169,6 +186,26 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "side-chat":
+      return (
+        <SideChatPanel
+          key={surface.threadId}
+          environmentId={props.environmentId}
+          parent={props.sideChat.parent}
+          sideThreadId={surface.threadId}
+          markdownCwd={props.sideChat.markdownCwd}
+          workspaceRoot={props.sideChat.workspaceRoot}
+        />
+      );
+    case "background-task":
+      return (
+        <BackgroundTaskPanel
+          key={surface.taskId}
+          environmentId={props.environmentId}
+          threadId={threadRef.threadId}
+          taskId={surface.taskId}
+        />
+      );
     case "device":
       return (
         <Suspense fallback={null}>
