@@ -957,6 +957,72 @@ function makeModelDisabledReason(
   };
 }
 
+/**
+ * Puts `message`'s text and attachments in the thread's rewrite draft. The
+ * conversation rewinds only when that draft is sent. Returns the loaded prompt,
+ * null when the user left the thread meanwhile, or the error to show.
+ */
+async function loadMessageForRewrite(input: {
+  readonly message: ChatMessage;
+  readonly environmentId: EnvironmentId;
+  readonly routeThreadRef: ScopedThreadRef;
+  readonly composerHasPendingAttachments: boolean;
+  readonly createAssetUrl: Parameters<
+    typeof prepareRevertedMessageAttachments
+  >[0]["createAssetUrl"];
+  readonly isCurrent: () => boolean;
+}): Promise<
+  | { readonly error: string; readonly prompt?: never }
+  | { readonly error: null; readonly prompt: string | null }
+> {
+  const { message, environmentId } = input;
+  try {
+    if (input.composerHasPendingAttachments) {
+      throw new Error("Wait for attachments to finish preparing before rewinding.");
+    }
+    const connection = readPreparedConnection(environmentId);
+    if (!connection) throw new Error("The environment is not connected.");
+    const files = await prepareRevertedMessageAttachments({
+      message,
+      environmentId,
+      httpBaseUrl: connection.httpBaseUrl,
+      createAssetUrl: input.createAssetUrl,
+    });
+    if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      throw new Error("Make room for this message's attachments in the composer before rewinding.");
+    }
+    if (!input.isCurrent()) return { error: null, prompt: null };
+    const prompt = recallableComposerPrompt(message.text);
+    const images: ComposerImageAttachment[] = [];
+    const restoredFiles: ComposerFileAttachment[] = [];
+    files.forEach((file, index) => {
+      const attachment = {
+        id: randomUUID(),
+        name: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        file,
+      };
+      if (message.attachments?.[index]?.type === "image") {
+        images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
+      } else {
+        restoredFiles.push({ ...attachment, type: "file" });
+      }
+    });
+    loadMessageRewriteDraft({
+      threadRef: input.routeThreadRef,
+      prompt,
+      images,
+      files: restoredFiles,
+    });
+    return { error: null, prompt };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "Failed to revert thread state.",
+    };
+  }
+}
+
 export default function ChatView(props: ChatViewProps) {
   const {
     environmentId,
@@ -5730,68 +5796,32 @@ export default function ChatView(props: ChatViewProps) {
       rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
     }));
     setThreadError(activeThread.id, null);
-    try {
-      // Rewriting loads the message into its own draft; the rewind runs when it is sent.
-      if (composerRef.current?.hasPendingAttachments()) {
-        throw new Error("Wait for attachments to finish preparing before rewinding.");
-      }
-      const connection = readPreparedConnection(environmentId);
-      if (!connection) throw new Error("The environment is not connected.");
-      const files = await prepareRevertedMessageAttachments({
-        message,
-        environmentId,
-        httpBaseUrl: connection.httpBaseUrl,
-        createAssetUrl: createAttachmentAssetUrl,
-      });
-      if (files.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        throw new Error(
-          "Make room for this message's attachments in the composer before rewinding.",
-        );
-      }
-      if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
-      const nextPrompt = recallableComposerPrompt(message.text);
-      const images: ComposerImageAttachment[] = [];
-      const restoredFiles: ComposerFileAttachment[] = [];
-      files.forEach((file, index) => {
-        const attachment = {
-          id: randomUUID(),
-          name: file.name,
-          mimeType: file.type,
-          sizeBytes: file.size,
-          file,
-        };
-        if (message.attachments?.[index]?.type === "image") {
-          images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
-        } else {
-          restoredFiles.push({ ...attachment, type: "file" });
-        }
-      });
-      loadMessageRewriteDraft({
-        threadRef: routeThreadRef,
-        prompt: nextPrompt,
-        images,
-        files: restoredFiles,
-      });
-      queuedRunEdit.cancelEdit();
-      setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
-      if (currentRouteThreadKeyRef.current === routeThreadKey) {
-        promptRef.current = nextPrompt;
-        composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
-        requestAnimationFrame(() => {
-          if (currentRouteThreadKeyRef.current === routeThreadKey)
-            composerRef.current?.focusAtEnd();
-        });
-      }
-    } catch (error) {
-      setThreadError(
-        activeThread.id,
-        error instanceof Error ? error.message : "Failed to revert thread state.",
-      );
-    } finally {
-      useComposerDraftStore.setState((store) => {
-        const remaining = new Set(store.rewindingThreadKeys);
-        remaining.delete(routeThreadKey);
-        return { rewindingThreadKeys: remaining };
+    const loaded = await loadMessageForRewrite({
+      message,
+      environmentId,
+      routeThreadRef,
+      composerHasPendingAttachments: composerRef.current?.hasPendingAttachments() === true,
+      createAssetUrl: createAttachmentAssetUrl,
+      isCurrent: () => currentRouteThreadKeyRef.current === routeThreadKey,
+    });
+    useComposerDraftStore.setState((store) => {
+      const remaining = new Set(store.rewindingThreadKeys);
+      remaining.delete(routeThreadKey);
+      return { rewindingThreadKeys: remaining };
+    });
+    if (loaded.error !== null) {
+      setThreadError(activeThread.id, loaded.error);
+      return;
+    }
+    if (loaded.prompt === null) return;
+    const nextPrompt = loaded.prompt;
+    queuedRunEdit.cancelEdit();
+    setRewritingMessage({ messageId, turnCount, restoreFiles, routeThreadKey, rewound: false });
+    if (currentRouteThreadKeyRef.current === routeThreadKey) {
+      promptRef.current = nextPrompt;
+      composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
+      requestAnimationFrame(() => {
+        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
       });
     }
   };
@@ -6552,9 +6582,9 @@ export default function ChatView(props: ChatViewProps) {
       useComposerDraftStore.setState((store) => ({
         rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
       }));
-      try {
-        const commandId = CommandId.make(randomUUID());
-        await waitForRevertedMessage(
+      const commandId = CommandId.make(randomUUID());
+      const rewound = await settlePromise(() =>
+        waitForRevertedMessage(
           routeThreadRef,
           rewritingMessage.messageId,
           rewritingMessage.turnCount,
@@ -6571,24 +6601,25 @@ export default function ChatView(props: ChatViewProps) {
             });
             if (result._tag === "Failure") throw squashAtomCommandFailure(result);
           },
-        );
-        setRewritingMessage((current) =>
-          current === rewritingMessage ? { ...current, rewound: true } : current,
-        );
-      } catch (error) {
+        ),
+      );
+      useComposerDraftStore.setState((store) => {
+        const remaining = new Set(store.rewindingThreadKeys);
+        remaining.delete(routeThreadKey);
+        return { rewindingThreadKeys: remaining };
+      });
+      if (rewound._tag === "Failure") {
         sendInFlightRef.current = false;
+        const error = squashAtomCommandFailure(rewound);
         setThreadError(
           threadIdForSend,
           error instanceof Error ? error.message : "Could not rewrite this message.",
         );
         return;
-      } finally {
-        useComposerDraftStore.setState((store) => {
-          const remaining = new Set(store.rewindingThreadKeys);
-          remaining.delete(routeThreadKey);
-          return { rewindingThreadKeys: remaining };
-        });
       }
+      setRewritingMessage((current) =>
+        current === rewritingMessage ? { ...current, rewound: true } : current,
+      );
     }
 
     if (

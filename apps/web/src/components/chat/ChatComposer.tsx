@@ -3259,13 +3259,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   /** Thread records for this draft; foreign threads carry history fetched from their server. */
   const resolveThreadRecords = async (
     refs: ReadonlyArray<ScopedThreadRef>,
-    readTitle: (ref: ScopedThreadRef) => string | null = (ref) =>
-      readThreadShell(ref)?.title ?? null,
+    readTitle?: (ref: ScopedThreadRef) => string | null,
   ): Promise<ReadonlyArray<ThreadContextRecord> | null> => {
     const result = await resolveThreadContextRecords({
       refs,
       destinationEnvironmentId: environmentId,
-      readTitle,
+      readTitle: readTitle ?? ((ref) => readThreadShell(ref)?.title ?? null),
       readEnvironmentLabel,
       fetchMessages: fetchThreadSnapshotMessages,
     });
@@ -3282,16 +3281,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // arrives, so a send cannot carry a reference the agent cannot resolve.
     const importTargetKey = attachmentTargetKey;
     pendingDraftWork.begin(importTargetKey);
-    try {
-      const resolved = await resolveThreadRecords([record], () => record.title);
-      const snapshot = resolved?.[0]?.snapshot;
-      if (!snapshot || attachmentTargetKeyRef.current !== importTargetKey) return;
-      addComposerDraftThreadContexts(attachmentDraftTarget, [{ ...record, snapshot }], {
-        appendReference: false,
-      });
-    } finally {
-      pendingDraftWork.end(importTargetKey);
-    }
+    const resolved = await resolveThreadRecords([record], () => record.title).finally(() =>
+      pendingDraftWork.end(importTargetKey),
+    );
+    const snapshot = resolved?.[0]?.snapshot;
+    if (!snapshot || attachmentTargetKeyRef.current !== importTargetKey) return;
+    addComposerDraftThreadContexts(attachmentDraftTarget, [{ ...record, snapshot }], {
+      appendReference: false,
+    });
   };
   const importContextRecords = (
     records: ReadonlyArray<ComposerContextRecord>,

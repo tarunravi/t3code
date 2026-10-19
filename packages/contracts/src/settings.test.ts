@@ -28,7 +28,7 @@ describe("ServerSettings response streaming", () => {
     expect(decodeServerSettings({}).responseStreamingMode).toBe("paragraph");
   });
 
-  it.each(["turn", "paragraph"])(
+  it.each(["turn", "paragraph", "token"])(
     "round-trips %s as an environment setting and project override",
     (responseStreamingMode) => {
       const input = {
@@ -40,7 +40,7 @@ describe("ServerSettings response streaming", () => {
     },
   );
 
-  it.each(["token", "unsupported"])("rejects %s in settings snapshots and writes", (mode) => {
+  it.each(["unsupported"])("rejects %s in settings snapshots and writes", (mode) => {
     for (const input of [
       { responseStreamingMode: mode },
       { projectSettingsOverrides: { project: { responseStreamingMode: mode } } },

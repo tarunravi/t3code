@@ -119,28 +119,28 @@ export function DevboxSettings() {
   const connectT3 = async (devbox: string) => {
     if (!bridge) return;
     setConnecting((current) => new Set(current).add(devbox));
-    try {
-      const target = await bridge.resolveSshHost(devbox);
-      const result = await connectSshEnvironment({ target, label: devbox });
-      if (result._tag === "Failure") {
-        if (!isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add({
-            type: "error",
-            title: `Could not connect T3 to ${devbox}`,
-            description: error instanceof Error ? error.message : String(error),
-          });
-        }
-        return;
+    const result = await bridge
+      .resolveSshHost(devbox)
+      .then((target) => connectSshEnvironment({ target, label: devbox }))
+      .finally(() =>
+        setConnecting((current) => {
+          const next = new Set(current);
+          next.delete(devbox);
+          return next;
+        }),
+      );
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: `Could not connect T3 to ${devbox}`,
+          description: error instanceof Error ? error.message : String(error),
+        });
       }
-      toastManager.add({ type: "success", title: "Devbox connected", description: devbox });
-    } finally {
-      setConnecting((current) => {
-        const next = new Set(current);
-        next.delete(devbox);
-        return next;
-      });
+      return;
     }
+    toastManager.add({ type: "success", title: "Devbox connected", description: devbox });
   };
 
   // Launch and setup end by pairing T3 through the normal SSH connection flow.

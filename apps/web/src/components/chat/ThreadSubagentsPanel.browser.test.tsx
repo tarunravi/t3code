@@ -1,5 +1,6 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import type { DraftId } from "../../composerDraftStore";
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -8,89 +9,93 @@ const testState = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   updateSettings: vi.fn(),
   navigate: vi.fn(),
-  draftEntries: undefined as unknown,
   setDraftThreadContext: vi.fn(),
 }));
 
-vi.mock("../../composerDraftStore", () => ({
-  useComposerDraftStore: (select: (store: unknown) => unknown) =>
-    select({
-      getDraftThread: () => ({ subagentRoster: testState.draftEntries }),
-      setDraftThreadContext: testState.setDraftThreadContext,
-    }),
-}));
-
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => ({ environment: { capabilities: { threadSubagentRosters: true } } }),
-}));
-vi.mock("../../state/server", () => ({
-  serverEnvironment: { configValueAtom: () => "config" },
-}));
-vi.mock("../../hooks/useSettings", () => ({
-  useEnvironmentSettings: () => testState.settings,
-  useUpdateEnvironmentSettings: () => testState.updateSettings,
-}));
-vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => testState.navigate,
-}));
-vi.mock("./SubagentRosterList", () => ({
-  SubagentRosterList: () => <div data-testid="roster-list" />,
-  SubagentRosterAddControls: () => <div data-testid="roster-add" />,
-  useSubagentInstances: () => ({
-    instances: [],
-    pickerInstances: [],
-    modelOptionsByInstance: new Map(),
-  }),
-}));
-vi.mock("../ui/switch", () => ({
-  Switch: (props: {
-    checked: boolean;
-    onCheckedChange: (checked: boolean) => void;
-    "aria-label"?: string;
-  }) => (
-    <button
-      role="switch"
-      aria-checked={props.checked}
-      aria-label={props["aria-label"]}
-      onClick={() => props.onCheckedChange(!props.checked)}
-    />
-  ),
-}));
-vi.mock("../ui/tooltip", () => ({
-  Tooltip: ({ children }: { children?: ReactNode }) => children,
-  TooltipTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) => (
-    <>
-      {render}
-      {children}
-    </>
-  ),
-  TooltipPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-}));
-vi.mock("../ui/preview-card", () => ({
-  PreviewCard: ({ children }: { children?: ReactNode }) => children,
-  PreviewCardTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) => (
-    <>
-      {render}
-      {children}
-    </>
-  ),
-  PreviewCardPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-}));
-// Radio items route clicks through the group's onValueChange, like Base UI does.
-vi.mock("../ui/menu", async () => {
-  const { createContext, useContext } = await import("react");
-  const RadioGroupContext = createContext<{
-    value: string;
-    onValueChange?: (value: string) => void;
-  } | null>(null);
+// A real atom, read through the default registry, stands in for the server config.
+vi.mock(import("../../state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  const config = Atom.make({ environment: { capabilities: { threadSubagentRosters: true } } });
   return {
-    Menu: ({ children }: { children?: ReactNode }) => children,
-    MenuTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) => (
-      <>
-        {render}
-        {children}
-      </>
-    ),
+    ...actual,
+    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => config) as never },
+  };
+});
+vi.mock(import("../../hooks/useSettings"), async (original) => ({
+  ...(await original()),
+  useEnvironmentSettings: (() => testState.settings) as never,
+  useUpdateEnvironmentSettings: (() => testState.updateSettings) as never,
+}));
+vi.mock(import("@tanstack/react-router"), async (original) => ({
+  ...(await original()),
+  useNavigate: (() => testState.navigate) as never,
+}));
+// Factories cannot use JSX: it would reference the hoisted JSX runtime.
+vi.mock(import("./SubagentRosterList"), async (original) => {
+  const { createElement } = await import("react");
+  return {
+    ...(await original()),
+    SubagentRosterList: (() => createElement("div", { "data-testid": "roster-list" })) as never,
+    SubagentRosterAddControls: (() =>
+      createElement("div", { "data-testid": "roster-add" })) as never,
+    useSubagentInstances: () => ({
+      instances: [],
+      pickerInstances: [],
+      modelOptionsByInstance: new Map(),
+    }),
+  };
+});
+vi.mock(import("../ui/switch"), async (original) => {
+  const { createElement } = await import("react");
+  return {
+    ...(await original()),
+    Switch: ((props: {
+      checked: boolean;
+      onCheckedChange: (checked: boolean) => void;
+      "aria-label"?: string;
+    }) =>
+      createElement("button", {
+        role: "switch",
+        "aria-checked": props.checked,
+        "aria-label": props["aria-label"],
+        onClick: () => props.onCheckedChange(!props.checked),
+      })) as never,
+  };
+});
+vi.mock(import("../ui/tooltip"), async () => {
+  const { cloneElement, createElement } = await import("react");
+  return {
+    TooltipProvider: (({ children }: { children?: ReactNode }) => children) as never,
+    TooltipScrollDismissArea: (({ children }: { children?: ReactNode }) => children) as never,
+    Tooltip: (({ children }: { children?: ReactNode }) => children) as never,
+    TooltipTrigger: (({ render, children }: { render?: ReactElement; children?: ReactNode }) =>
+      render ? cloneElement(render, {}, children) : children) as never,
+    TooltipPopup: (({ children }: { children?: ReactNode }) =>
+      createElement("div", null, children)) as never,
+  };
+});
+vi.mock(import("../ui/preview-card"), async () => {
+  const { cloneElement, createElement } = await import("react");
+  return {
+    PreviewCard: (({ children }: { children?: ReactNode }) => children) as never,
+    PreviewCardTrigger: (({ render, children }: { render?: ReactElement; children?: ReactNode }) =>
+      render ? cloneElement(render, {}, children) : children) as never,
+    PreviewCardPopup: (({ children }: { children?: ReactNode }) =>
+      createElement("div", null, children)) as never,
+  };
+});
+// Radio items route clicks through the group's onValueChange, like Base UI does. The
+// group is recorded as it renders, before its items: a hook here would come from a
+// second React copy.
+vi.mock("../ui/menu", async () => {
+  const { cloneElement, createElement } = await import("react");
+  const passthrough = ({ children }: { children?: ReactNode }) => children;
+  let currentGroup: { value: string; onValueChange?: (value: string) => void } | null = null;
+  return {
+    Menu: passthrough,
+    MenuTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) =>
+      render ? cloneElement(render, {}, children) : children,
     MenuPopup: ({ children }: { children?: ReactNode }) => children,
     MenuRadioGroup: ({
       value,
@@ -100,28 +105,43 @@ vi.mock("../ui/menu", async () => {
       value: string;
       onValueChange: (value: string) => void;
       children?: ReactNode;
-    }) => (
-      <RadioGroupContext.Provider value={{ value, onValueChange }}>
-        {children}
-      </RadioGroupContext.Provider>
-    ),
-    MenuRadioItem: ({ value, children }: { value: string; children?: ReactNode }) => {
-      const group = useContext(RadioGroupContext);
-      return (
-        <button
-          role="menuitemradio"
-          aria-checked={group?.value === value}
-          value={value}
-          onClick={() => group?.onValueChange?.(value)}
-        />
-      );
+    }) => {
+      currentGroup = { value, onValueChange };
+      return children;
+    },
+    MenuRadioItem: ({ value }: { value: string }) => {
+      const group = currentGroup;
+      return createElement("button", {
+        role: "menuitemradio",
+        "aria-checked": group?.value === value,
+        value,
+        onClick: () => group?.onValueChange?.(value),
+      });
     },
     MenuRadioItemIndicator: () => null,
     MenuSeparator: () => null,
+    MenuGroup: passthrough,
+    MenuGroupLabel: passthrough,
+    MenuItem: passthrough,
+    MenuItemLabel: passthrough,
+    MenuCheckboxItem: passthrough,
+    MenuShortcut: passthrough,
+    MenuSub: passthrough,
+    MenuSubTrigger: passthrough,
+    MenuSubPopup: passthrough,
   };
 });
 
+import { useComposerDraftStore } from "../../composerDraftStore";
 import { ThreadSubagentsPanel } from "./ThreadSubagentsPanel";
+
+// The real store, with the two members the panel uses replaced.
+function setDraftEntries(entries: unknown) {
+  useComposerDraftStore.setState({
+    getDraftThread: (() => ({ subagentRoster: entries })) as never,
+    setDraftThreadContext: testState.setDraftThreadContext as never,
+  });
+}
 
 const ENVIRONMENT = "environment:subagents-panel" as EnvironmentId;
 const THREAD = "thread:subagents-panel" as ThreadId;
@@ -138,9 +158,8 @@ const PRESET = {
     { selection: GLM_SELECTION },
   ],
 };
-import type { DraftId } from "../../composerDraftStore";
 const DRAFT = "draft:subagents-panel" as DraftId;
-const PANEL = () => <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} />;
+const serverPanel = () => <ThreadSubagentsPanel environmentId={ENVIRONMENT} threadId={THREAD} />;
 
 interface Rendered {
   readonly container: HTMLElement;
@@ -187,6 +206,7 @@ async function render(element: ReactElement): Promise<Rendered> {
 describe("ThreadSubagentsPanel compact preset mode", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    setDraftEntries(undefined);
   });
 
   afterEach(async () => {
@@ -196,10 +216,9 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     testState.updateSettings.mockReset();
     testState.navigate.mockReset();
     testState.setDraftThreadContext.mockReset();
-    testState.draftEntries = undefined;
   });
 
-  const renderPanel = () => render(PANEL());
+  const renderPanel = () => render(serverPanel());
 
   it("lets a draft choose and disable a preset locally, before it has a server thread", async () => {
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
@@ -213,7 +232,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     });
     expect(testState.updateSettings).not.toHaveBeenCalled();
 
-    testState.draftEntries = PRESET.entries;
+    await act(async () => setDraftEntries(PRESET.entries));
     await root.update(draftPanel());
     expect(hasText(root, "Hard work")).toBe(true);
     expect(hasText(root, "Tricky bugs.")).toBe(true);
@@ -243,7 +262,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     });
 
     // Turning the roster off is an explicit choice the default must not override.
-    testState.draftEntries = null;
+    await act(async () => setDraftEntries(null));
     await root.update(draftPanel());
     expect(button(root, isSwitch).getAttribute("aria-checked")).toBe("false");
   });
@@ -333,7 +352,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
       subagentPresets: [PRESET],
       threadSubagentRosters: { [THREAD]: { entries: PRESET.entries } },
     });
-    await root.update(PANEL());
+    await root.update(serverPanel());
     expect(testIds(root, "roster-list")).toHaveLength(0);
   });
 
@@ -365,7 +384,7 @@ describe("ThreadSubagentsPanel compact preset mode", () => {
     });
 
     testState.settings = settingsWith({ subagentPresets: [PRESET] });
-    await root.update(PANEL());
+    await root.update(serverPanel());
     expect(hasText(root, "0 allowed models")).toBe(true);
   });
 });
