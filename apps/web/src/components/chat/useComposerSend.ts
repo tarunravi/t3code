@@ -969,9 +969,9 @@ export function useComposerSend(input: ComposerSendInput) {
       useComposerDraftStore.setState((store) => ({
         rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
       }));
-      try {
-        const commandId = CommandId.make(randomUUID());
-        await waitForRevertedMessage(
+      const commandId = CommandId.make(randomUUID());
+      const rewound = await settlePromise(() =>
+        waitForRevertedMessage(
           routeThreadRef,
           rewritingMessage.messageId,
           rewritingMessage.turnCount,
@@ -988,24 +988,25 @@ export function useComposerSend(input: ComposerSendInput) {
             });
             if (result._tag === "Failure") throw squashAtomCommandFailure(result);
           },
-        );
-        setRewritingMessage((current) =>
-          current === rewritingMessage ? { ...current, rewound: true } : current,
-        );
-      } catch (error) {
+        ),
+      );
+      useComposerDraftStore.setState((store) => {
+        const remaining = new Set(store.rewindingThreadKeys);
+        remaining.delete(routeThreadKey);
+        return { rewindingThreadKeys: remaining };
+      });
+      if (rewound._tag === "Failure") {
         sendInFlightRef.current = false;
+        const error = squashAtomCommandFailure(rewound);
         setThreadError(
           threadIdForSend,
           error instanceof Error ? error.message : "Could not rewrite this message.",
         );
         return;
-      } finally {
-        useComposerDraftStore.setState((store) => {
-          const remaining = new Set(store.rewindingThreadKeys);
-          remaining.delete(routeThreadKey);
-          return { rewindingThreadKeys: remaining };
-        });
       }
+      setRewritingMessage((current) =>
+        current === rewritingMessage ? { ...current, rewound: true } : current,
+      );
     }
 
     if (
