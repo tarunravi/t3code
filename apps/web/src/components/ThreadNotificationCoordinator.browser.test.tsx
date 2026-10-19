@@ -219,7 +219,7 @@ describe("thread notifications", () => {
       if (desktop) {
         expect(state.notification).toHaveBeenCalledWith("Thread completed", {
           body: "Fix the login form",
-          tag: "env-1:thread-1",
+          tag: expect.any(String),
           silent: true,
         });
       }

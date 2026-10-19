@@ -95,28 +95,26 @@ function VoiceRecordingRow({
     if (audioUrl || audioLoading) return;
     setAudioLoading(true);
     setAudioError(null);
-    try {
-      const audio = await bridge.read(recording.id);
-      const bytes = Uint8Array.from(atob(audio.audioBase64), (char) => char.charCodeAt(0));
-      setAudioUrl(URL.createObjectURL(new Blob([bytes], { type: audio.mimeType })));
-    } catch (error) {
-      setAudioError(recordingErrorMessage(error));
-    } finally {
-      setAudioLoading(false);
-    }
+    await bridge
+      .read(recording.id)
+      .then(
+        (audio) => {
+          const bytes = Uint8Array.from(atob(audio.audioBase64), (char) => char.charCodeAt(0));
+          setAudioUrl(URL.createObjectURL(new Blob([bytes], { type: audio.mimeType })));
+        },
+        (error: unknown) => setAudioError(recordingErrorMessage(error)),
+      )
+      .finally(() => setAudioLoading(false));
   };
 
   const retry = async () => {
     if (retrying || deleting) return;
     setRetrying(true);
     setActionError(null);
-    try {
-      onChanged(await bridge.retry(recording.id));
-    } catch (error) {
-      setActionError(recordingErrorMessage(error));
-    } finally {
-      setRetrying(false);
-    }
+    await bridge
+      .retry(recording.id)
+      .then(onChanged, (error: unknown) => setActionError(recordingErrorMessage(error)))
+      .finally(() => setRetrying(false));
   };
 
   const remove = async () => {
@@ -244,14 +242,13 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
       return;
     }
     setRefreshing(true);
-    try {
-      const recordings = await bridge.list();
-      setState({ status: "ready", recordings: [...recordings] });
-    } catch (error) {
-      setState({ status: "error", message: recordingErrorMessage(error) });
-    } finally {
-      setRefreshing(false);
-    }
+    await bridge
+      .list()
+      .then(
+        (recordings) => setState({ status: "ready", recordings: [...recordings] }),
+        (error: unknown) => setState({ status: "error", message: recordingErrorMessage(error) }),
+      )
+      .finally(() => setRefreshing(false));
   });
 
   useEffect(() => {

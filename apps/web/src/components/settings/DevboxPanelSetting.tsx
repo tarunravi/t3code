@@ -59,15 +59,16 @@ export function DevboxProfileForm({
     if (!chosen || !bridge?.setDevboxEnabled) return;
     setSaving(true);
     setError(null);
-    try {
-      const state = await bridge.setDevboxEnabled({ awsProfile: chosen });
-      setDevboxPanelState(state);
-      onEnabled(state);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setSaving(false);
-    }
+    await bridge
+      .setDevboxEnabled({ awsProfile: chosen })
+      .then(
+        (state) => {
+          setDevboxPanelState(state);
+          onEnabled(state);
+        },
+        (cause: unknown) => setError(errorMessage(cause)),
+      )
+      .finally(() => setSaving(false));
   };
 
   const signInToAws = async () => {
