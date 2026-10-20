@@ -508,27 +508,26 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     const thread = { threadId: "thread-null-arguments" };
     yield* callTool("t3_thread_read", thread);
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
-    yield* callTool("delegate_task", { task: "Inspect", target: {} });
-    yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
     // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
+    // delegate_task advertises raw JSON Schema and its service decodes the arguments.
+    const delegateArgs = { task: "Inspect", title: null, target: { model: null } };
+    yield* callTool("delegate_task", delegateArgs);
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(4);
     expect(calls[1]).toEqual(calls[0]);
-    expect(calls[3]).toEqual(calls[2]);
-    expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
+    expect(calls[2]).toStrictEqual({ projectId: "project-1", projectIcon: null });
+    expect(calls[3]).toStrictEqual(delegateArgs);
   }).pipe(Effect.provide(layerRecordingTools(calls)));
 });
 
 it.effect("accepts finite wait budgets and refuses non-finite ones", () => {
   const calls: Array<unknown> = [];
   return Effect.gen(function* () {
-    yield* callTool("delegate_task", { task: "Inspect", timeoutMs: 1500.5 });
     yield* callTool("t3_thread_wait", { threadId: "thread-wait", timeoutMs: 5000 });
-    expect(calls).toMatchObject([{ timeoutMs: 1500.5 }, { timeoutMs: 5000 }]);
+    expect(calls).toMatchObject([{ timeoutMs: 5000 }]);
 
     for (const [name, args] of [
-      ["delegate_task", { task: "Inspect", timeoutMs: "Infinity" }],
       ["t3_thread_wait", { threadId: "thread-wait", timeoutMs: "NaN" }],
       ["t3_thread_wait", { threadId: "thread-wait", timeoutMs: "-Infinity" }],
       ["t3_thread_read", { threadId: "thread-wait", afterPosition: "2" }],
@@ -536,7 +535,7 @@ it.effect("accepts finite wait budgets and refuses non-finite ones", () => {
       const refused = yield* callTool(name, args).pipe(Effect.flip);
       expect(refused._tag, `${name} ${JSON.stringify(args)}`).toBe("InvalidParams");
     }
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   }).pipe(Effect.provide(layerRecordingTools(calls)));
 });
 

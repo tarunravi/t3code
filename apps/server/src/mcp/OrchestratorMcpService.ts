@@ -337,7 +337,11 @@ const CORRECTABLE_DELEGATE_TASK_CODES: ReadonlySet<OrchestratorMcpFailure["code"
   "interaction_mode_escalation_denied",
 ]);
 
-const decodeDelegateTaskArguments = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
+// delegate_task advertises this schema's JSON codec, which offers `null` for
+// every optional field, so arguments decode through that codec too.
+const decodeDelegateTaskArguments = Schema.decodeUnknownEffect(
+  Schema.toCodecJson(OrchestratorMcpDelegateTaskInput),
+);
 const decodeDelegateTaskInput = (input: unknown) =>
   decodeDelegateTaskArguments(input).pipe(
     Effect.mapError((error) =>

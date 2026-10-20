@@ -404,7 +404,9 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
  * Tool input schemas are advertised through each schema's JSON codec, which
  * offers `null` for every `Schema.optional` field, but Toolkit decodes with the
  * schema itself and rejects that `null`. Decoding through the same codec makes
- * a tool accept what it advertises.
+ * a tool accept what it advertises. A dynamic tool with raw JSON Schema
+ * parameters decodes its own input and stays as is: `setParameters` drops that
+ * schema, and the server then refuses to register the tool and exits.
  */
 const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
   toolkit: Toolkit.Toolkit<Tools>,
@@ -412,7 +414,9 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
   // The clones keep each tool's id, name and decoded parameter type, so handlers still match.
   Toolkit.make(
     ...Object.values(toolkit.tools).map((tool) =>
-      tool.setParameters(Schema.toCodecJson(tool.parametersSchema)),
+      Tool.isDynamic(tool) && tool.jsonSchema !== undefined
+        ? tool
+        : tool.setParameters(Schema.toCodecJson(tool.parametersSchema)),
     ),
   ) as unknown as Toolkit.Toolkit<Tools>;
 
