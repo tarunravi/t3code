@@ -401,12 +401,16 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
     yield* callTool("delegate_task", { task: "Inspect", target: {} });
     yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
+    // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
+    // delegate_task advertises raw JSON Schema and its service decodes the arguments.
+    const delegateArgs = { task: "Inspect", title: null, target: { model: null } };
+    yield* callTool("delegate_task", delegateArgs);
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(4);
     expect(calls[1]).toEqual(calls[0]);
-    expect(calls[3]).toEqual(calls[2]);
-    expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
+    expect(calls[2]).toStrictEqual({ projectId: "project-1", projectIcon: null });
+    expect(calls[3]).toStrictEqual(delegateArgs);
   }).pipe(Effect.provide(layerRecordingTools(calls)));
 });
 

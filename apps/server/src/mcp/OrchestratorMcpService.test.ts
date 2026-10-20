@@ -1597,6 +1597,29 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect("accepts the null its advertised schema offers for optional arguments", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          title: null,
+          target: { model: null },
+          timeoutMs: null,
+          clientRequestId: "delegate-null-optionals",
+        });
+        assert.equal(result.status, "running");
+
+        const error = yield* service
+          .delegateTask(scope, { task: "Summarize the diff.", timeoutMs: "Infinity" })
+          .pipe(Effect.flip);
+        assert.equal(error.code, "invalid_request");
+        assert.lengthOf(yield* Ref.get(dispatched), 1);
+      }).pipe(Effect.provide(delegationLayer(dispatched)));
+    }),
+  );
+
   it.effect("turns malformed arguments into a corrective invalid_request", () =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
