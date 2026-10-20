@@ -1,5 +1,5 @@
+import { buildAntigravityModels } from "./antigravityModels.ts";
 import {
-  ANTIGRAVITY_DEFAULT_MODEL,
   ProviderDriverKind,
   type AntigravitySettings,
   type ProviderSetupError,
@@ -35,6 +35,8 @@ import {
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveUsageLimitsAfterProbe } from "@t3tools/provider-core/server/usageLimits";
+
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 
 import { antigravityThinkingConfig } from "./acp/AntigravityAcpSupport.ts";
 
@@ -88,6 +90,8 @@ export function buildAntigravityModelsFromSession(
           })) ?? [])
         : [];
   const currentThinking = antigravityThinkingConfig(setup.configOptions);
+  if (currentThinking == null && thinkingLevels.size === 0)
+    return buildAntigravityModels(entries, currentValue);
   const seen = new Set<string>();
   // The agent can list two IDs under one name; label the later ones so the picker tells them apart.
   const names = new Set<string>();

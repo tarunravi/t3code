@@ -22,6 +22,10 @@ import {
   makeAntigravityStderrHandler,
   makeAntigravityStdoutTransform,
 } from "../antigravityAuthSupport.ts";
+import {
+  isSupplementalAntigravityModelId,
+  resolveAntigravityModelId,
+} from "../antigravityModels.ts";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
 
@@ -208,12 +212,19 @@ function legacyAntigravityFamily(
 function resolveAntigravityModel(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
   readonly model: string | null | undefined;
+  readonly effort: string | undefined;
   readonly defaultModel?: string | undefined;
 }): string | undefined {
   const modelConfig = input.configOptions.find((option) => option.id === "model");
   const current = modelConfig?.type === "select" ? modelConfig.currentValue : undefined;
-  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) return input.model;
   const options = antigravityModelOptions(input.configOptions);
+  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) {
+    return resolveAntigravityModelId(
+      input.model,
+      input.effort,
+      options.map((option) => option.value),
+    );
+  }
   return input.defaultModel &&
     (options.some((option) => option.value === input.defaultModel) ||
       legacyAntigravityFamily(input.configOptions, input.defaultModel) !== undefined)
@@ -229,6 +240,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
       "getConfigOptions" | "setModel" | "setConfigOption"
     >;
     readonly model: string | null | undefined;
+    readonly effort?: string | undefined;
     readonly defaultModel?: string | undefined;
     readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
   }): Effect.fn.Return<string | undefined, E> {
@@ -238,6 +250,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     const resolved = resolveAntigravityModel({
       configOptions,
       model: input.model,
+      effort: input.effort,
       defaultModel: input.defaultModel,
     });
     const explicit = Boolean(input.model) && input.model !== ANTIGRAVITY_DEFAULT_MODEL;
@@ -252,7 +265,10 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
         .pipe(Effect.mapError(input.mapError));
       return legacyFamily;
     }
-    if (!options.some((option) => option.value === resolved)) {
+    if (
+      !options.some((option) => option.value === resolved) &&
+      !isSupplementalAntigravityModelId(resolved)
+    ) {
       return yield* Effect.fail(
         input.mapError(
           EffectAcpErrors.AcpRequestError.invalidParams(
