@@ -1169,6 +1169,32 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("loads settings.json written with retired subagent roster keys", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          responseStreamingMode: "turn",
+          subagentHotlist: [{ selection: { instanceId: "codex", model: "gpt-5.4" } }],
+          threadSubagentRosters: {
+            "thread-1": { entries: [{ selection: { instanceId: "codex", model: "gpt-5.4" } }] },
+          },
+          subagentPresets: [{ id: "work", name: "Work", entries: [] }],
+          defaultSubagentPresetId: "work",
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.responseStreamingMode, "turn");
+      assert.notProperty(settings, "threadSubagentRosters");
+      assert.notProperty(settings, "subagentPresets");
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("migrates legacy providers from an invalid file without rewriting it", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

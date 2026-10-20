@@ -1133,6 +1133,41 @@ describe("branch naming settings", () => {
   );
 });
 
+describe("legacy subagent roster settings", () => {
+  // Written by fork builds that let threads pick their own subagents.
+  const legacy = {
+    subagentHotlist: [{ selection: { instanceId: "claudeAgent", model: "claude-opus-5-5" } }],
+    threadSubagentRosters: {
+      "thread-1": {
+        entries: [{ selection: { instanceId: "zcode", model: "default" }, role: "overnight" }],
+      },
+    },
+    subagentPresets: [{ id: "work", name: "Work", entries: [] }],
+    defaultSubagentPresetId: "work",
+    subagentModelPreferences: { claudeAgent: { hiddenModels: ["claude-haiku-5-5"] } },
+  };
+
+  it("loads and drops the retired keys while keeping the subagent model list", () => {
+    const decoded = decodeServerSettings(legacy);
+    for (const key of [
+      "subagentHotlist",
+      "threadSubagentRosters",
+      "subagentPresets",
+      "defaultSubagentPresetId",
+    ]) {
+      expect(decoded).not.toHaveProperty(key);
+      expect(encodeServerSettings(decoded)).not.toHaveProperty(key);
+    }
+    expect(decoded.subagentModelPreferences).toEqual(legacy.subagentModelPreferences);
+  });
+
+  it("accepts a patch that still carries the retired keys", () => {
+    expect(decodeServerSettingsPatch(legacy)).toEqual({
+      subagentModelPreferences: legacy.subagentModelPreferences,
+    });
+  });
+});
+
 describe("ServerSettings.removeAgentCreditsOnMerge", () => {
   it("keeps agent credits by default and accepts opt-in patches", () => {
     expect(decodeServerSettings({}).removeAgentCreditsOnMerge).toBe(false);
