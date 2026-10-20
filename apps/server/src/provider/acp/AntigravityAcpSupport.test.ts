@@ -136,6 +136,57 @@ describe("applyAntigravityAcpModelSelection", () => {
       }),
   );
 
+  it.effect("maps a grouped model and reasoning level to the native per-level ID", () =>
+    Effect.gen(function* () {
+      const leveled = {
+        ...modelConfig,
+        currentValue: "gemini-4-argon-medium",
+        options: [
+          { value: "gemini-4-argon-medium", name: "Gemini 4 Argon (Medium)" },
+          { value: "gemini-4-argon-high", name: "Gemini 4 Argon (High)" },
+          { value: "gemini-4-argon-low", name: "Gemini 4 Argon (Low)" },
+        ],
+      } satisfies EffectAcpSchema.SessionConfigOption;
+      const select = (model: string, effort?: string) => {
+        const { runtime, selections } = makeModelRuntime([leveled]);
+        return applyAntigravityAcpModelSelection({
+          runtime,
+          model,
+          effort,
+          mapError: (cause) => cause,
+        }).pipe(Effect.map((applied) => [applied, selections]));
+      };
+
+      expect(yield* select("gemini-4-argon", "high")).toEqual([
+        "gemini-4-argon-high",
+        ["gemini-4-argon-high"],
+      ]);
+      expect(yield* select("gemini-4-argon", "max")).toEqual([
+        "gemini-4-argon-medium",
+        ["gemini-4-argon-medium"],
+      ]);
+      expect(yield* select("gemini-4-argon-low", "high")).toEqual([
+        "gemini-4-argon-low",
+        ["gemini-4-argon-low"],
+      ]);
+    }),
+  );
+
+  it.effect("requests Claude Opus 5.5 even when the account does not advertise it", () =>
+    Effect.gen(function* () {
+      const { runtime, selections } = makeModelRuntime();
+      const model = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "claude-opus-5-5",
+        effort: "max",
+        mapError: (cause) => cause,
+      });
+
+      expect(model).toBe("claude-opus-5-5-max");
+      expect(selections).toEqual(["claude-opus-5-5-max"]);
+    }),
+  );
+
   it.effect("accepts exact model IDs from grouped native options", () =>
     Effect.gen(function* () {
       const { runtime, selections } = makeModelRuntime([

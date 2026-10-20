@@ -1,5 +1,4 @@
 import {
-  ANTIGRAVITY_DEFAULT_MODEL,
   ProviderDriverKind,
   type AntigravitySettings,
   type ProviderSetupError,
@@ -8,7 +7,6 @@ import {
   type ServerProviderSlashCommand,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -32,7 +30,8 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveUsageLimitsAfterProbe } from "@t3tools/provider-core/server/usageLimits";
 
-const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
+import { buildAntigravityModels } from "./antigravityModels.ts";
+
 const MAX_WORKSPACE_SNAPSHOTS = 32;
 const HEALTH_CHECK_TIMEOUT = "90 seconds";
 const SIGN_IN_MESSAGE = "Sign in with Google to use Antigravity.";
@@ -61,22 +60,14 @@ export function buildAntigravityModelsFromSession(
             name: model.name,
           })) ?? [])
         : [];
-  const seen = new Set<string>();
-  return entries.flatMap((entry): ServerProviderModel[] => {
-    if (!entry.value.trim() || seen.has(entry.value)) return [];
-    seen.add(entry.value);
-    return [
-      {
-        slug: entry.value,
-        name: entry.name.trim() ? entry.name : entry.value,
-        isCustom: false,
-        ...(entry.value === currentValue
-          ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
-          : {}),
-        capabilities: EMPTY_MODEL_CAPABILITIES,
-      },
-    ];
-  });
+  return buildAntigravityModels(
+    entries.flatMap((entry) =>
+      entry.value.trim()
+        ? [{ value: entry.value, name: entry.name.trim() ? entry.name : entry.value }]
+        : [],
+    ),
+    currentValue,
+  );
 }
 
 function nativeCommands(
