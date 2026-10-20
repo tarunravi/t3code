@@ -835,6 +835,28 @@ describe("composerDraftStore project draft thread mapping", () => {
     resetComposerDraftStore();
   });
 
+  it("hydrates drafts persisted with a legacy subagent roster", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "first message");
+    const persisted = JSON.parse(
+      JSON.stringify(partializeComposerDraftStoreState(useComposerDraftStore.getState())),
+    );
+    for (const draftThread of Object.values(persisted.draftThreadsByThreadKey)) {
+      (draftThread as Record<string, unknown>).subagentRoster = [
+        { selection: { instanceId: CLAUDE_AGENT_INSTANCE, model: "claude-opus-5-5" } },
+      ];
+    }
+    const merged = useComposerDraftStore.persist.getOptions().merge!(
+      persisted,
+      useComposerDraftStore.getState(),
+    );
+    useComposerDraftStore.setState(merged);
+    const draftThread = store.getDraftThread(draftId);
+    expect(draftThread?.threadId).toBe(threadId);
+    expect(draftThread).not.toHaveProperty("subagentRoster");
+  });
+
   it("clears composer data for one environment without touching another", () => {
     const store = useComposerDraftStore.getState();
     const localThreadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
