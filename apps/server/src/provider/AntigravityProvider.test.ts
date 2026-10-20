@@ -178,6 +178,65 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
 });
 
 describe("Antigravity model catalog", () => {
+  it("groups per-level IDs from the captured personal catalog into one model per family", () => {
+    const models = buildAntigravityModelsFromSession(sessionSetupResult);
+    expect(models.map((model) => [model.slug, model.name])).toEqual([
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash"],
+      ["gemini-3.6-flash", "Gemini 3.6 Flash"],
+      ["gemini-pro-agent", "Gemini 3.1 Pro (High)"],
+      ["gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"],
+      ["claude-opus-5-5", "Claude Opus 5.5"],
+    ]);
+    expect(models.filter((model) => model.isDefault).map((model) => model.slug)).toEqual([
+      "gemini-3.7-flash",
+    ]);
+    expect(
+      models
+        .filter((model) => model.aliases?.includes(ANTIGRAVITY_DEFAULT_MODEL))
+        .map((model) => model.slug),
+    ).toEqual(["gemini-3.7-flash"]);
+    const effort = (slug: string) => {
+      const descriptor = models.find((model) => model.slug === slug)?.capabilities
+        ?.optionDescriptors?.[0];
+      return descriptor?.type === "select"
+        ? [descriptor.id, descriptor.options.map((option) => option.id), descriptor.currentValue]
+        : undefined;
+    };
+    expect(effort("gemini-3.7-flash")).toEqual(["effort", ["low", "medium", "high"], "high"]);
+    expect(effort("gemini-3.8-flash")).toEqual(["effort", ["low", "medium", "high"], "medium"]);
+    expect(effort("claude-opus-5-5")).toEqual([
+      "effort",
+      ["low", "medium", "high", "max"],
+      "medium",
+    ]);
+    expect(effort("gemini-pro-agent")).toBeUndefined();
+    expect(effort("gemini-3.1-pro-low")).toBeUndefined();
+    expect(models.every((model) => !model.isCustom)).toBe(true);
+  });
+
+  it("lists Claude Opus 5.5 once when the account already advertises it", () => {
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [
+        {
+          ...modelConfig,
+          currentValue: "claude-opus-5-5-high",
+          options: [
+            { value: "claude-opus-5-5-high", name: "Claude Opus 5.5 (High)" },
+            { value: "claude-opus-5-5-low", name: "Claude Opus 5.5 (Low)" },
+          ],
+        },
+      ],
+    });
+    expect(models.map((model) => model.slug)).toEqual(["claude-opus-5-5"]);
+    expect(models[0]?.isDefault).toBe(true);
+    const descriptor = models[0]?.capabilities?.optionDescriptors?.[0];
+    expect(descriptor?.type === "select" && descriptor.options.map((option) => option.id)).toEqual([
+      "low",
+      "high",
+    ]);
+  });
+
   it("uses legacy session models only when model config is absent", () => {
     const fromLegacy = buildAntigravityModelsFromSession({
       models: sessionSetupResult.models,
@@ -205,9 +264,9 @@ describe("Antigravity model catalog", () => {
       ],
     });
     expect(models.map((model) => model.slug)).toEqual([
-      "gemini-3.7-flash-high",
-      "gemini-3.7-flash-medium",
+      "gemini-3.7-flash",
       "gemini-pro-agent",
+      "claude-opus-5-5",
     ]);
     expect(models.find((model) => model.isDefault)?.slug).toBe("gemini-pro-agent");
     expect(models.find((model) => model.aliases?.includes(ANTIGRAVITY_DEFAULT_MODEL))?.slug).toBe(
@@ -342,7 +401,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
         ];
         const nextSnapshot = yield* Stream.toPull(
           harness.provider.snapshot.streamChanges.pipe(
-            Stream.filter((snapshot) => snapshot.models.length === 3),
+            Stream.filter((snapshot) => snapshot.models.length === 2),
           ),
         );
         yield* harness.provider.onConfigOptionsUpdated(configOptions);
@@ -414,7 +473,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
         });
         expect(
           (yield* harness.provider.snapshot.getSnapshot).models.map((model) => model.slug),
-        ).toEqual(["gemini-pro-agent"]);
+        ).toEqual(["gemini-pro-agent", "claude-opus-5-5"]);
       }),
     ),
   );
@@ -476,7 +535,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
             status: "error",
             auth: { status: "authenticated" },
           });
-          expect(snapshot.models).toHaveLength(installed ? 11 : 0);
+          expect(snapshot.models).toHaveLength(installed ? 6 : 0);
           expect(snapshot.slashCommands).toHaveLength(installed ? 2 : 0);
           expect(snapshot.workspaceSnapshots).toHaveLength(installed ? 1 : 0);
           expect(snapshot.supportsTextGeneration).toBe(installed);

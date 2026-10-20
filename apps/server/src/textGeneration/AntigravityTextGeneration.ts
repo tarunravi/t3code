@@ -1,4 +1,5 @@
 import { type ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,6 +13,7 @@ import * as Stream from "effect/Stream";
 import { type AcpError, AcpRequestError } from "effect-acp/errors";
 
 import { applyAntigravityAcpModelSelection } from "../provider/acp/AntigravityAcpSupport.ts";
+import { ANTIGRAVITY_EFFORT_OPTION_ID } from "../provider/antigravityModels.ts";
 import { removeAntigravitySessionFiles } from "../provider/acp/AntigravitySessionFiles.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
@@ -212,6 +214,10 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
             yield* applyAntigravityAcpModelSelection({
               runtime,
               model: input.modelSelection.model,
+              effort: getModelSelectionStringOptionValue(
+                input.modelSelection,
+                ANTIGRAVITY_EFFORT_OPTION_ID,
+              ),
               defaultModel: yield* options.defaultModel ?? Effect.undefined,
               mapError: (cause) =>
                 new TextGenerationError({

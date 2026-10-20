@@ -5,6 +5,7 @@ import {
   type OrchestrationV2ProviderCapabilities,
   type ProviderSetupError,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -16,6 +17,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type { AntigravityAuth } from "../../provider/AntigravityAuth.ts";
+import { ANTIGRAVITY_EFFORT_OPTION_ID } from "../../provider/antigravityModels.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   antigravityPermissionMode,
@@ -177,6 +179,7 @@ export function makeAntigravityAcpAdapterFlavor(
         runtime,
         model:
           modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : modelSelection.model,
+        effort: getModelSelectionStringOptionValue(modelSelection, ANTIGRAVITY_EFFORT_OPTION_ID),
         defaultModel,
         mapError: (cause) => cause,
       });
