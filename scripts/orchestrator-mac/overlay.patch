@@ -1,8 +1,7 @@
 diff --git a/apps/desktop/package.json b/apps/desktop/package.json
-index d78ac0fd28..94d9c331f4 100644
 --- a/apps/desktop/package.json
 +++ b/apps/desktop/package.json
-@@ -42,5 +42,5 @@
+@@ -41,5 +41,5 @@
      "tailwindcss": "^4.0.0",
      "vite-plus": "catalog:"
    },
@@ -10,10 +9,9 @@ index d78ac0fd28..94d9c331f4 100644
 +  "productName": "T3Code"
  }
 diff --git a/apps/desktop/src/app/DesktopAppIdentity.test.ts b/apps/desktop/src/app/DesktopAppIdentity.test.ts
-index 1cd8485a1e..ce8147d8d1 100644
 --- a/apps/desktop/src/app/DesktopAppIdentity.test.ts
 +++ b/apps/desktop/src/app/DesktopAppIdentity.test.ts
-@@ -154,7 +154,7 @@ describe("DesktopAppIdentity", () => {
+@@ -153,7 +153,7 @@
          const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
          const userDataPath = yield* identity.resolveUserDataPath;
  
@@ -22,16 +20,7 @@ index 1cd8485a1e..ce8147d8d1 100644
        }),
        { legacyPathExists: true },
      ),
-@@ -219,7 +219,7 @@ describe("DesktopAppIdentity", () => {
-         yield* identity.configure;
- 
-         assert.deepEqual(calls.setName, ["T3 Code Beta"]);
--        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Beta)");
-+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3Code");
-         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
-         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
-         assert.deepEqual(calls.setDockIcon, []);
-@@ -262,7 +262,10 @@ describe("DesktopAppIdentity", () => {
+@@ -201,7 +201,10 @@
          assert.isDefined(runtimeName);
          assert.equal(runtimeName, `T3 Code ${stage}`);
          assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
@@ -43,24 +32,10 @@ index 1cd8485a1e..ce8147d8d1 100644
        }),
        { calls, environment },
      );
-diff --git a/apps/desktop/src/app/DesktopClerk.test.ts b/apps/desktop/src/app/DesktopClerk.test.ts
-index 58fff82978..1ec3a3a37d 100644
---- a/apps/desktop/src/app/DesktopClerk.test.ts
-+++ b/apps/desktop/src/app/DesktopClerk.test.ts
-@@ -163,7 +163,7 @@ describe("DesktopClerk", () => {
-       name: "packaged Windows",
-       isDevelopment: false,
-       platform: "win32" as const,
--      userData: "/tmp/app-data/t3code-v2",
-+      userData: "/tmp/app-data/t3code-pr-2829",
-     },
-     {
-       name: "development",
 diff --git a/apps/desktop/src/app/DesktopEnvironment.ts b/apps/desktop/src/app/DesktopEnvironment.ts
-index ecf08255fe..5aa2b8c472 100644
 --- a/apps/desktop/src/app/DesktopEnvironment.ts
 +++ b/apps/desktop/src/app/DesktopEnvironment.ts
-@@ -106,7 +106,7 @@ export function resolveDesktopAppBranding(input: {
+@@ -106,7 +106,7 @@
    return {
      baseName: APP_BASE_NAME,
      stageLabel,
@@ -69,53 +44,31 @@ index ecf08255fe..5aa2b8c472 100644
    };
  }
  
-diff --git a/apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts b/apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
-index 542f6b9875..e4d556108c 100644
---- a/apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
-+++ b/apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
-@@ -22,12 +22,12 @@ it.layer(NodeServices.layer)("DesktopPreReadyFileSystem", (it) => {
-       const fileSystem = yield* FileSystem.FileSystem;
-       const path = yield* Path.Path;
-       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pre-ready-fs-" });
--      yield* fileSystem.makeDirectory(path.join(root, "T3 Code (Alpha)"));
--      yield* fileSystem.writeFileString(path.join(root, "T3 Code (Alpha)", "Local State"), "keys");
-+      yield* fileSystem.makeDirectory(path.join(root, "T3 Code (Orchestrator)"));
-+      yield* fileSystem.writeFileString(path.join(root, "T3 Code (Orchestrator)", "Local State"), "keys");
- 
-       const userData = yield* resolveWindowsUserData(root);
- 
--      assert.equal(userData, path.join(root, "t3code-v2"));
-+      assert.equal(userData, path.join(root, "t3code-pr-2829"));
-       assert.equal(yield* fileSystem.readFileString(path.join(userData, "Local State")), "keys");
-     }),
-   );
 diff --git a/apps/desktop/src/app/DesktopPreReadyPlatform.test.ts b/apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
-index dd15f879fd..f41f2cc64c 100644
 --- a/apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
 +++ b/apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
-@@ -175,7 +175,7 @@ describe("DesktopPreReadyPlatform", () => {
+@@ -155,7 +155,7 @@
          const identity = yield* Effect.promise(() => portalIdentity);
          assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
-         assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
+         assert.include(identity.desktopEntry ?? "", "Exec=/Applications/current.AppImage %U");
 -        assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Beta)");
 +        assert.include(identity.desktopEntry ?? "", "Name=T3Code");
          assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
          assert.include(
            identity.desktopEntry ?? "",
 diff --git a/apps/desktop/src/app/DesktopUserData.test.ts b/apps/desktop/src/app/DesktopUserData.test.ts
-index 41e497463a..f6caac19a0 100644
 --- a/apps/desktop/src/app/DesktopUserData.test.ts
 +++ b/apps/desktop/src/app/DesktopUserData.test.ts
-@@ -37,7 +37,7 @@ it.effect("identifies a failed source read and preserves its cause", () => {
-   );
- });
+@@ -6,7 +6,7 @@
+ 
+ import { resolveUserDataPath } from "./DesktopUserData.ts";
  
 -it.effect.each(["t3code", "T3 Code (Alpha)"])(
 +it.effect.each(["t3code", "T3 Code (Orchestrator)"])(
    "preserves Windows credential keys from %s without copying browser databases",
    (sourceName) =>
      Effect.gen(function* () {
-@@ -45,9 +45,9 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
+@@ -14,9 +14,9 @@
        const path = yield* Path.Path;
        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-profile-" });
        const source = path.join(directory, sourceName);
@@ -128,10 +81,9 @@ index 41e497463a..f6caac19a0 100644
        yield* fs.writeFileString(path.join(source, "Local State"), state);
        yield* fs.writeFileString(path.join(source, "IndexedDB", "LOCK"), "V1 owns this database");
 diff --git a/apps/desktop/src/app/DesktopUserData.ts b/apps/desktop/src/app/DesktopUserData.ts
-index 99a082b438..18e5294129 100644
 --- a/apps/desktop/src/app/DesktopUserData.ts
 +++ b/apps/desktop/src/app/DesktopUserData.ts
-@@ -41,7 +41,7 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
+@@ -41,7 +41,7 @@
      const path = yield* Path.Path;
      const names = input.isDevelopment
        ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
@@ -141,28 +93,9 @@ index 99a082b438..18e5294129 100644
      const legacyPath = path.join(input.appDataDirectory, names.legacy);
      const inspect = (resourcePath: string) =>
 diff --git a/scripts/build-desktop-artifact.test.ts b/scripts/build-desktop-artifact.test.ts
-index 8a0dbc4faa..19f82bf224 100644
 --- a/scripts/build-desktop-artifact.test.ts
 +++ b/scripts/build-desktop-artifact.test.ts
-@@ -268,7 +268,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
-   });
- 
-   it("switches desktop packaging product names to nightly for nightly builds", () => {
--    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
-+    assert.equal(resolveDesktopProductName("0.1.0"), "T3Code");
-     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
-   });
- 
-@@ -698,7 +698,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
-         "**/*.map",
-       ]);
-       assert.deepStrictEqual(mac.dmg, {
--        title: "T3 Code (Beta) 1.2.3 Installer",
-+        title: "T3Code 1.2.3 Installer",
-         background: "dmg/dmg-background-latest.png",
-         window: { width: 640, height: 432 },
-         contents: [
-@@ -1930,7 +1930,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+@@ -1315,7 +1315,7 @@
      });
  
      assert.deepStrictEqual(configuration, {
@@ -171,7 +104,7 @@ index 8a0dbc4faa..19f82bf224 100644
        teamId: "ABC1234567",
        rpDomains: ["example.clerk.accounts.dev"],
        provisioningProfilePath: "/tmp/t3code.provisionprofile",
-@@ -1953,7 +1953,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+@@ -1338,7 +1338,7 @@
        "clerk.example.com",
        "example.clerk.accounts.dev",
      ]);
@@ -180,20 +113,10 @@ index 8a0dbc4faa..19f82bf224 100644
      assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
      assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
      assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
-@@ -2117,7 +2117,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
-       });
- 
-       const mac = config.mac as Record<string, unknown>;
--      assert.equal(config.appId, "com.t3tools.t3code");
-+      assert.equal(config.appId, "com.t3tools.t3code.orchestrator");
-       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
-       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
-       assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
 diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
-index e58e15aeb3..1e3aba96e3 100644
 --- a/scripts/build-desktop-artifact.ts
 +++ b/scripts/build-desktop-artifact.ts
-@@ -56,7 +56,7 @@ import { Command, Flag } from "effect/cli";
+@@ -62,7 +62,7 @@
  import { ChildProcess, ChildProcessSpawner } from "effect/process";
  
  const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
@@ -202,7 +125,7 @@ index e58e15aeb3..1e3aba96e3 100644
  const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
  
  const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
-@@ -2754,6 +2754,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+@@ -2891,6 +2891,10 @@
            "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
          NSScreenCaptureUsageDescription:
            "T3 Code captures the active window when you use the window capture shortcut.",
@@ -210,6 +133,6 @@ index e58e15aeb3..1e3aba96e3 100644
 +          T3CODE_HOME: "__T3CODE_HOME__",
 +          T3CODE_DISABLE_AUTO_UPDATE: "true",
 +        },
-         // macOS lists an app under Default web browser only when it opens web
-         // pages as documents as well as http and https links (see protocols).
-         CFBundleDocumentTypes: [
+         NSCameraUsageDescription:
+           "T3 Code lets commands run by terminals and coding agents use the camera.",
+         NSMicrophoneUsageDescription:
