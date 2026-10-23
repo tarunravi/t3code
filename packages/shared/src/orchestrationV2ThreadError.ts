@@ -49,7 +49,7 @@ export function isResumableProviderFailure(failure: OrchestrationV2ProviderFailu
 /** Runs in the latest uninterrupted streak of retryable provider-loop failures. */
 export function latestProviderFailureStreak(
   runs: ReadonlyArray<OrchestrationV2Run>,
-  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  turnItems: ReadonlyArray<FailureScanTurnItem>,
 ): ReadonlyArray<OrchestrationV2Run> {
   const executed = runs
     .filter(
@@ -73,7 +73,7 @@ export function latestProviderFailureStreak(
 
 export function consecutiveProviderFailureCount(
   runs: ReadonlyArray<OrchestrationV2Run>,
-  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  turnItems: ReadonlyArray<FailureScanTurnItem>,
 ): number {
   return latestProviderFailureStreak(runs, turnItems).length;
 }
@@ -86,7 +86,7 @@ export function consecutiveProviderFailureCount(
  */
 export function providerFallbackSourceRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
-  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  turnItems: ReadonlyArray<FailureScanTurnItem>,
 ): OrchestrationV2Run | null {
   const streak = latestProviderFailureStreak(runs, turnItems);
   const latest = streak[0];

@@ -1807,7 +1807,7 @@ it.effect("ProviderSessionManagerV2 fails browser access closed for a missing pr
   }),
 );
 
-it.effect("ProviderSessionManagerV2 revokes MCP credentials when release persistence fails", () =>
+it.effect("ProviderSessionManagerV2 keeps MCP credentials when release persistence fails", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const mcpConfigs = yield* Ref.make<

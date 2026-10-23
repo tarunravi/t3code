@@ -1,3 +1,4 @@
+import { providersWithUsage } from "./usageProviders";
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildPeriodColumns } from "./UsageProviderChart";

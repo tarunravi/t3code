@@ -1012,7 +1012,6 @@ export function canRestoreFilesForRun(
   );
 }
 
-
 export interface ConversationRewriteRun {
   readonly id: RunId;
   readonly ordinal: number;
@@ -1037,6 +1036,10 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       readyTurnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
     }
   }
+  const runsById = new Map(input.runs?.map((run) => [run.id, run]));
+  const checkpointByRunId = new Map(
+    input.checkpoints.map((checkpoint) => [checkpoint.runId, checkpoint]),
+  );
   const targetByRunId = new Map<RunId, number | undefined>();
   const byUserMessageId = new Map<ChatMessage["id"], number>();
   let previousRunId: RunId | null = null;
@@ -1054,14 +1057,42 @@ export function deriveRevertTurnCountByUserMessageId(input: {
           : null;
     if (runId == null) continue;
     if (!targetByRunId.has(runId)) {
-      targetByRunId.set(
-        runId,
+      let target =
         previousRunId === null
           ? input.threadStartCheckpointReady
             ? 0
             : undefined
-          : readyTurnCountByRunId.get(previousRunId),
-      );
+          : readyTurnCountByRunId.get(previousRunId);
+      // A paged timeline can omit the predecessor. Only a settled run and an
+      // actual earlier checkpoint establish a boundary; never guess ordinal - 1.
+      const run = runsById.get(runId);
+      if (
+        target === undefined &&
+        previousRunId === null &&
+        run !== undefined &&
+        (run.status === "completed" ||
+          run.status === "interrupted" ||
+          run.status === "failed" ||
+          run.status === "cancelled")
+      ) {
+        for (const checkpoint of input.checkpoints) {
+          if (
+            isConversationRewriteCheckpoint(checkpoint) &&
+            checkpoint.checkpointTurnCount < run.ordinal &&
+            (target === undefined || checkpoint.checkpointTurnCount > target)
+          ) {
+            target = checkpoint.checkpointTurnCount;
+          }
+        }
+      }
+      if (
+        target === undefined &&
+        previousRunId === null &&
+        checkpointByRunId.get(runId)?.status === "missing"
+      ) {
+        target = 0;
+      }
+      targetByRunId.set(runId, target);
       previousRunId = runId;
     }
     if (entry.kind !== "message") continue;

@@ -1,8 +1,9 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
+import { PencilIcon } from "lucide-react";
 import { useSideChatActions } from "./chat/SideChatPanel";
 import { messageRewriteDraftTarget } from "./ChatView.logic";
-import { InlineButton } from "./ui/button";
+import { Button, InlineButton } from "./ui/button";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -2680,7 +2681,7 @@ export default function ChatView(props: ChatViewProps) {
     isConnecting,
     isSendBusy,
     isRevertingCheckpoint,
-    supportsConversationRollback,
+    supportsConversationRollback: canOperateThread,
     activeEnvironmentUnavailable,
     activeEnvironmentUnavailableLabel,
     promptRef,
@@ -2745,9 +2746,17 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
-  const composerBannerItemsWithResume = providerFailureResumeRunId === null ? composerBannerItems : [
-    providerFailureResumeBannerItem({runId: providerFailureResumeRunId, disabled:isSendBusy || isResuming || isConnecting, onResume:()=>void onResume()}), ...composerBannerItems,
-  ];
+  const onProviderFailureResume = useStableCallback(() => void onResume());
+  const composerBannerItemsWithResume = providerFailureResumeRunId === null
+    ? composerBannerItems
+    : [
+        providerFailureResumeBannerItem({
+          runId: providerFailureResumeRunId,
+          disabled: isSendBusy || isResuming || isConnecting,
+          onResume: onProviderFailureResume,
+        }),
+        ...composerBannerItems,
+      ];
   const onImplementPlanInNewThread = useImplementPlanInNewThread({
     environmentId,
     routeThreadKey,
@@ -3215,7 +3224,6 @@ export default function ChatView(props: ChatViewProps) {
             onOpenThread={onOpenRelatedThreadStable}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProjectStable}
-            threadProjection={serverProjection}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
               : {})}
@@ -3519,7 +3527,9 @@ export default function ChatView(props: ChatViewProps) {
                                             variant="ghost"
                                             disabled={isSendBusy || isRevertingCheckpoint}
                                             onClick={() => {
-                                              clearComposerDraftContent(rewriteDraftTarget);
+                                              useComposerDraftStore
+                                                .getState()
+                                                .clearComposerContent(rewriteDraftTarget);
                                               setRewritingMessage(null);
                                               scheduleComposerFocus();
                                             }}

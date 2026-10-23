@@ -1,4 +1,6 @@
+import { BackgroundTasksBannerSummary } from "./BackgroundTasks";
 import type {
+  EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
   ThreadId,
@@ -97,6 +99,7 @@ export function goalNowItem(input: {
 
 /** Background commands and subagents, for the end of the timeline. */
 export function backgroundWorkNowItem(input: {
+  readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
   readonly stopDisabled: boolean;
@@ -118,7 +121,13 @@ export function backgroundWorkNowItem(input: {
         aria-hidden="true"
       />
     ),
-    title: presentation.title,
+    title: (
+      <BackgroundTasksBannerSummary
+        environmentId={input.environmentId}
+        threadId={input.threadId}
+        tasks={input.tasks}
+      />
+    ),
     description:
       presentation.items.length === 1 && presentation.items[0]?.childThreadId === undefined
         ? undefined

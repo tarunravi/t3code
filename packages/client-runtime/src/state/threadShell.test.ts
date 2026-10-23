@@ -108,6 +108,38 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("keeps side chats out of navigation while retaining their live panel shells", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const root = v2ThreadShell;
+    const child = {
+      ...root,
+      id: ThreadId.make("child"),
+      lineage: {
+        ...root.lineage,
+        parentThreadId: root.id,
+        relationshipToParent: "side" as const,
+      },
+    };
+    const fork = {
+      ...child,
+      id: ThreadId.make("fork"),
+      lineage: { ...child.lineage, relationshipToParent: "fork" as const },
+    };
+    const snapshot = { ...v2ShellSnapshot, threads: [root, child, fork] };
+    registry.set(snapshotAtom(environmentId), snapshot);
+    const dispose = registry.mount(threads.navigationThreadShellsAtom);
+    const before = registry.get(threads.navigationThreadShellsAtom);
+    expect(before.map((thread) => thread.id)).toEqual([root.id, fork.id]);
+    registry.set(snapshotAtom(environmentId), {
+      ...snapshot,
+      threads: [root, { ...child, title: "Child streaming" }, fork],
+    });
+    expect(registry.get(threads.navigationThreadShellsAtom)).toBe(before);
+    expect(registry.get(threads.threadShellsAtom)).toHaveLength(3);
+    dispose();
+    registry.dispose();
+  });
+
   it("counts a subagent question on its parent only while the subagent runs", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const root = v2ThreadShell;

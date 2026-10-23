@@ -170,9 +170,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     const tokenHash = yield* hashToken(input.rawToken);
     const timestamp = yield* currentTimeMillis;
     return yield* SynchronizedRef.modify(state, ({ records }) => {
-      const current = pruneDead(records, timestamp);
-      const record = current.get(tokenHash);
-      if (!record) return [undefined, { records: current }] as const;
+      const record = records.get(tokenHash);
+      if (!record || timestamp - record.lastAliveAt > livenessWindowMs) {
+        return [undefined, { records }] as const;
+      }
       const scope: McpInvocationContext.McpThreadInvocationScope = {
         ...record.scope,
         thread: {
@@ -180,7 +181,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: ProviderInstanceId.make(input.providerInstanceId),
         },
       };
-      const next = new Map(current);
+      const next = new Map(records);
       next.set(tokenHash, { ...record, scope, lastAliveAt: timestamp });
       return [scope, { records: next }] as const;
     });

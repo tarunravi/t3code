@@ -548,15 +548,13 @@ export function LiveWorkEntryTimelineRow({
                 </span>
               </span>
             ) : row.entry.itemType === "reasoning" ? (
-              <ReactMarkdown
-                remarkPlugins={[
-                  remarkGfm,
-                  remarkKeepWindowsPaths,
-                  [remarkThoughtPreview, row.active ? "Thinking" : "Thought"],
-                ]}
-              >
-                {row.entry.detail ?? label}
-              </ReactMarkdown>
+              <ChatMarkdown
+                inline
+                text={row.entry.detail ?? label}
+                cwd={ctx.markdownCwd}
+                parseRawHtml={false}
+                extraRemarkPlugins={[[remarkThoughtPreview, row.active ? "Thinking" : "Thought"]]}
+              />
             ) : threadLabel ? (
               <ThreadReadLabel
                 label={threadLabel}

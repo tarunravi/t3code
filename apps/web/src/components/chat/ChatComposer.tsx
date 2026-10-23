@@ -1,5 +1,7 @@
+import { Button } from "../ui/button";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { Spinner } from "../ui/spinner";
-import { MicIcon } from "lucide-react";
+import { MicIcon, XIcon } from "lucide-react";
 import { useCodexVoiceInput } from "./voiceInput";
 import { VoiceRecordingWaveform } from "./VoiceRecordingWaveform";
 import { useNavigate } from "@tanstack/react-router";

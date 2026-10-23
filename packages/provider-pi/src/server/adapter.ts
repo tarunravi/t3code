@@ -3084,6 +3084,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             }
             const forkEntryId = yield* piForkEntry(
               boundary,
+              driverKind,
               rollbackInput.providerThread.createdAt,
               request({ type: "get_entries" }),
             );
@@ -3239,6 +3240,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                     ? null
                     : yield* piForkEntry(
                         boundary,
+                        driverKind,
                         source.createdAt,
                         forkConnection.request({ type: "get_entries" }),
                       );
@@ -3412,6 +3414,7 @@ function piForkBoundary(input: {
 /** Reads the session tree only for an uncaptured boundary. */
 function piForkEntry<E>(
   boundary: Exclude<PiForkBoundary, { type: "nothing" }>,
+  driverKind: ProviderDriverKind,
   providerThreadCreatedAt: DateTime.Utc,
   readEntries: Effect.Effect<unknown, E>,
 ): Effect.Effect<string, E | ProviderAdapter.ProviderAdapterProtocolError> {

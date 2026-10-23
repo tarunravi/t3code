@@ -7,13 +7,13 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ThreadProjection,
   ProviderDriverKind,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   CheckpointScopeId,
   CommandId,
-  type OrchestrationV2DomainEvent,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -36,7 +36,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
-import { resolveCodexRollbackTurnCount } from "./Adapters/CodexAdapterV2.ts";
 import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
@@ -575,6 +574,81 @@ it.effect.each([
     }).pipe(Effect.provide(testLayer));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect("rejects an unavailable native rollback target before restoring files", () => {
+  const threadId = ThreadId.make("thread:rollback-provider-turn-unavailable");
+  const providerThreadId = ProviderThreadId.make(
+    "provider-thread:rollback-provider-turn-unavailable",
+  );
+  const providerSessionId = ProviderSessionId.make(
+    "provider-session:rollback-provider-turn-unavailable",
+  );
+  const checkpointId = CheckpointId.make("checkpoint:rollback-provider-turn-unavailable");
+  const scopeId = CheckpointScopeId.make("checkpoint-scope:rollback-provider-turn-unavailable");
+  const providerInstanceId = ProviderInstanceId.make("provider_rollback_provider_turn_unavailable");
+  const restore = vi.fn(() => Effect.die("checkpoint restore must not run"));
+  // The fork opens the session first: its capabilities decide whether a
+  // portable rewrite can replace the missing native turn.
+  const open = vi.fn(() =>
+    Effect.succeed({ providerSession: { capabilities: CodexProviderCapabilitiesV2 } } as never),
+  );
+  const projection = {
+    thread: {
+      worktreePath: "/tmp/missing-invalid-rollback-worktree",
+      branch: "feature/rollback",
+      activeProviderThreadId: providerThreadId,
+      modelSelection: { instanceId: providerInstanceId, model: "test-model" },
+    },
+    providerThreads: [{ id: providerThreadId, providerSessionId, providerInstanceId }],
+    providerSessions: [],
+    checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 1 }],
+    checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+    runs: [],
+    attempts: [],
+    providerTurns: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const layerTest = layerCheckpointRollbackService.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        ThreadCommandExecutor.layer,
+        Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
+        Layer.mock(EventSink.EventSinkV2)({}),
+        IdAllocator.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThread: () => Effect.succeed(projection.thread),
+          getCheckpointRollbackContext: () => Effect.succeed(projection),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: [],
+              archivedThreads: [],
+            }),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open,
+        }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () => Effect.succeed({} as never),
+        }),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+    const error = yield* service
+      .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
+      .pipe(Effect.flip);
+    assert.equal(error.reason, "provider-turn-unavailable");
+    assert.equal(
+      error.message,
+      `Provider turn for rollback target ${checkpointId} is unavailable on provider thread ${providerThreadId}.`,
+    );
+    assert.equal(error.cause, undefined);
+    assert.equal(restore.mock.calls.length, 0);
+  }).pipe(Effect.provide(layerTest));
+});
 
 const seedRollbackHistory = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;

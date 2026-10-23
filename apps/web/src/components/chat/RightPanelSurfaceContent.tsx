@@ -1,4 +1,3 @@
-import { SideChatPanel } from "./SideChatPanel";
 import { useThreadShell } from "../../state/entities";
 import type {
   EditorId,
