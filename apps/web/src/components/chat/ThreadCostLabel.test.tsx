@@ -73,11 +73,48 @@ describe("ThreadCostLabel", () => {
     await act(async () => trigger.focus());
 
     const text = popupText();
+    expect(text).toContain("Estimated cost at Usage page prices.");
     expect(text).toContain("Parent agent$3.15");
     expect(text).toContain("Subagents (2)≥ $0.45");
     expect(text).toContain("Workerchild-model1K tok$0.45");
     expect(text).toContain("Nestedcustom-model1K tokunpriced");
     expect(text).not.toContain("This thread");
+  });
+
+  it.each(["unpriced", "missing usage", "loading"])(
+    "never presents %s as a zero-dollar total",
+    async (kind) => {
+      const unknown = {
+        ...row("This thread", 0, "custom", null),
+        model: kind === "unpriced" ? "custom" : null,
+        incompleteUsage: kind !== "unpriced",
+      };
+      const trigger = await renderLabel({
+        totalUsd: 0,
+        partial: true,
+        parent: { usd: 0, partial: true },
+        subagents: { usd: 0, partial: false },
+        rows: [unknown],
+      });
+      expect(trigger.textContent).toBe("Cost unknown");
+      expect(trigger.getAttribute("aria-label")).not.toContain("$0");
+      await act(async () => trigger.focus());
+      expect(popupText()).toContain("Parent agentUnknown");
+    },
+  );
+
+  it("shows a known child cost even if the parent has no measured usage", async () => {
+    const trigger = await renderLabel({
+      totalUsd: 2,
+      partial: true,
+      parent: { usd: 0, partial: true },
+      subagents: { usd: 2, partial: false },
+      rows: [
+        { ...row("Parent", 0, "", null), model: null, incompleteUsage: true },
+        row("Child", 1, "m", 2),
+      ],
+    });
+    expect(trigger.textContent).toBe("≥ $2.00");
   });
 
   it("opens on hover and reports no subagents for a parent-only thread", async () => {

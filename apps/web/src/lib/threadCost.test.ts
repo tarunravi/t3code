@@ -26,19 +26,26 @@ function projection(
   reportedModel?: string,
 ): ThreadCostProjection {
   return {
-    runs: [{ id: "run:1", rootNodeId: "root", providerThreadId: "pt", modelSelection: { model } }],
+    runs: [
+      {
+        id: "run:1",
+        rootNodeId: "root",
+        providerThreadId: `pt:${model}`,
+        modelSelection: { model },
+      },
+    ],
     attempts: [{ id: "attempt:1", runId: "run:1" }],
     providerThreads: [
       {
-        id: "pt",
+        id: `pt:${model}`,
         nativeMetadata:
           reportedModel === undefined ? null : { modelSelection: { model: reportedModel } },
       },
     ],
     providerTurns: turns.map((turn, index) => ({
-      id: `turn:${index}`,
+      id: `turn:${model}:${index}`,
       nodeId: "root",
-      providerThreadId: "pt",
+      providerThreadId: `pt:${model}`,
       runAttemptId: "attempt:1",
       status: turn.status ?? "completed",
       startedAt: "startedAt" in turn ? turn.startedAt : 0,
@@ -87,7 +94,7 @@ describe("threadUsageByModel", () => {
           outputTokens: 75,
         },
       ],
-      incomplete: false,
+      incomplete: true,
     });
   });
   it("prices the provider-reported model and flags ended turns without totals", () => {
@@ -159,6 +166,83 @@ describe("estimateThreadCost", () => {
       null,
     ]);
   });
+  it("includes child costs when the parent has no own usage", () => {
+    const estimate = estimateThreadCost(
+      [source("parent", 0, projection("parent-model", [])), source("child", 1, child)],
+      new Map([["child-model", perMillion(1, 5)]]),
+    );
+    expect(estimate.totalUsd).toBeCloseTo(0.45);
+    expect(estimate.partial).toBe(false);
+  });
+
+  it("keeps missing and in-flight usage unknown, but cancelled unstarted turns cost nothing", () => {
+    for (const value of [
+      projection("missing", [{}]),
+      projection("running", [{ status: "running" }]),
+      null,
+    ]) {
+      const estimate = estimateThreadCost([source("parent", 0, value)], new Map());
+      expect(estimate.partial).toBe(true);
+      expect(estimate.rows[0]?.costUsd).toBeNull();
+    }
+    const cancelled = estimateThreadCost(
+      [source("parent", 0, projection("unused", [{ status: "cancelled", startedAt: null }]))],
+      new Map(),
+    );
+    expect(cancelled.partial).toBe(false);
+    expect(cancelled.totalUsd).toBe(0);
+  });
+
+  it("does not count duplicate sources or mirrored native turns twice", () => {
+    const estimate = estimateThreadCost(
+      [
+        source("parent", 0, parent),
+        source("parent", 1, parent),
+        source("native-mirror", 1, parent),
+        source("child", 1, child),
+      ],
+      new Map([
+        ["parent-model", perMillion(3, 15, 0.3)],
+        ["child-model", perMillion(1, 5)],
+      ]),
+    );
+    expect(estimate.totalUsd).toBeCloseTo(3.6);
+    expect(estimate.partial).toBe(false);
+  });
+
+  it("retains distinct turns on the same provider thread while deduplicating overlapping mirrors", () => {
+    const mirror = {
+      ...parent,
+      providerTurns: [
+        ...parent.providerTurns,
+        { ...parent.providerTurns[0]!, id: "distinct-turn" },
+      ],
+    } as ThreadCostProjection;
+    const estimate = estimateThreadCost(
+      [source("parent", 0, parent), source("mirror", 1, mirror)],
+      new Map([["parent-model", perMillion(3, 15, 0.3)]]),
+    );
+    expect(estimate.parent.usd).toBeCloseTo(3.15);
+    expect(estimate.subagents.usd).toBeCloseTo(3.15);
+    expect(estimate.totalUsd).toBeCloseTo(6.3);
+    expect(estimate.partial).toBe(false);
+  });
+
+  it("keeps completed usage as a partial estimate while another turn is running", () => {
+    const value = projection("parent-model", [
+      { usage: { inputTokens: 1_000_000, outputTokens: 100_000 } },
+      { status: "running", usage: { inputTokens: 9999, outputTokens: 9999 } },
+    ]);
+    const estimate = estimateThreadCost(
+      [source("parent", 0, value)],
+      new Map([["parent-model", perMillion(3, 15)]]),
+    );
+    expect(estimate.totalUsd).toBeCloseTo(4.5);
+    expect(estimate.partial).toBe(true);
+    expect(estimate.parent.partial).toBe(true);
+    expect(estimate.rows[0]?.incompleteUsage).toBe(true);
+  });
+
   it("sums every parent model into the parent subtotal when there are no subagents", () => {
     const twoModels = {
       ...parent,
