@@ -24,6 +24,7 @@ import * as HttpClient from "effect/http/HttpClient";
 
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
+  HANDOFF_RECOVERY_BUDGET,
   handoffBudget,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -378,12 +379,12 @@ it.layer(layerTest)("CursorDriver", (it) => {
         explicitWindow: {
           model: { id: "claude-opus-5-5", params: [{ id: "context", value: "500k" }] },
           window: 500_000,
-          allowance: 0,
+          allowance: DEFAULT_HANDOFF_TOKEN_CAP,
         },
         unknownWindow: {
           model: { id: "claude-opus-5-5", params: [{ id: "context", value: "max" }] },
           window: undefined,
-          allowance: 0,
+          allowance: HANDOFF_RECOVERY_BUDGET,
         },
         retainedDefault: catalogDefault,
       });

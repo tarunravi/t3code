@@ -191,6 +191,10 @@ it.effect("only a trusted touch restores an expired token with its original scop
 
     timestamp += 101;
     expect(yield* registry.resolve(token)).toBeUndefined();
+    expect(yield* registry.rebindProvider({
+      rawToken: token,
+      providerInstanceId: ProviderInstanceId.make("cursor"),
+    })).toBeUndefined();
     const otherThreadId = ThreadId.make("thread-active");
     const other = yield* registry.issue({
       threadId: otherThreadId,

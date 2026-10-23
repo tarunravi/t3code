@@ -27,6 +27,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   cursorMcpServers,
+  cursorSdkModelSelection,
   cursorRuntimeAgentPolicy,
   makeCursorAgentOptions,
   makeCursorAdapterV2,

@@ -1,4 +1,6 @@
+import { BackgroundTasksBannerSummary } from "./BackgroundTasks";
 import type {
+  EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
   ThreadId,
@@ -21,7 +23,6 @@ import {
 } from "lucide-react";
 import { Fragment } from "react";
 import { tickTextContent } from "~/lib/tickTextContent";
-import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
@@ -107,6 +108,7 @@ export function goalNowItem(input: {
 
 /** Background commands and subagents, for the end of the timeline. */
 export function backgroundWorkNowItem(input: {
+  readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
   readonly turnItems: ThreadStructure["turnItems"];
@@ -137,18 +139,18 @@ export function backgroundWorkNowItem(input: {
     .filter((row) => row.activity)
     .toSorted((left, right) => right.updatedAtMs - left.updatedAtMs)[0];
   const isCommand = (row: (typeof rows)[number]) => row.task.kind !== "subagent";
-  const verb = presentation.waiting ? "Waiting on" : "Running";
   const onlyThreadId = only?.childThreadId;
   const startedAtMs = only?.startedAtMs ?? null;
   return {
     id: `background-work:${input.threadId}`,
     icon: rows.every(isCommand) ? <TerminalIcon /> : <CircleDashedIcon />,
-    title: only ? (
-      <>
-        {verb} <span className={cn(isCommand(only) && "font-mono")}>{only.task.label}</span>
-      </>
-    ) : (
-      presentation.title
+    // The title opens the roster with each task's command and live output.
+    title: (
+      <BackgroundTasksBannerSummary
+        environmentId={input.environmentId}
+        threadId={input.threadId}
+        tasks={input.tasks}
+      />
     ),
     description: only ? (
       only.activity

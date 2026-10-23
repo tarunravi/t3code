@@ -68,10 +68,10 @@ import {
   type TurnDiffSummary,
 } from "../types";
 import {
-  DraftId, useComposerDraftStore, type ComposerFileAttachment,
+  useComposerDraftStore,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
-  type DraftId,
+  DraftId,
   type DraftThreadState,
 } from "../composerDraftStore";
 import * as Schema from "effect/Schema";

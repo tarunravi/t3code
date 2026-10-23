@@ -158,6 +158,11 @@ async function renderElement(element: ReactElement, options: { router?: false } 
   });
 }
 
+function work(id: string, entry: Record<string, unknown>): Entry {
+  return { id, kind: "work", createdAt: CREATED_AT,
+    entry: { id, createdAt: CREATED_AT, ...entry } } as Entry;
+}
+
 function renderTimeline(entries: ReadonlyArray<Entry>, props: Partial<TimelineProps> = {}) {
   return renderElement(
     <MessagesTimeline {...baseProps()} timelineEntries={entries as Entry[]} {...props} />,
@@ -198,14 +203,14 @@ describe("MessagesTimeline live thinking", () => {
   }
 
   it("streams the whole thought into the live row when on", async () => {
-    await renderStreamingThought(true);
-    expect(text()).toContain(STREAMED_TAIL);
+    const screen = await renderStreamingThought(true);
+    expect(screen.text()).toContain(STREAMED_TAIL);
   });
 
   it("keeps only the first sentence in the live row when off", async () => {
-    await renderStreamingThought(false);
-    expect(text()).toContain(FIRST_SENTENCE);
-    expect(text()).not.toContain(STREAMED_TAIL);
+    const screen = await renderStreamingThought(false);
+    expect(screen.text()).toContain(FIRST_SENTENCE);
+    expect(screen.text()).not.toContain(STREAMED_TAIL);
   });
 });
 

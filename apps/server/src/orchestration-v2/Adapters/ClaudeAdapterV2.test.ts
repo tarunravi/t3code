@@ -8194,6 +8194,34 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }
     });
 
+  it.effect("stops one background task through the live query", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        if (harness.runtime.stopBackgroundTask === undefined) {
+          throw new Error("Claude adapter runtime must expose stopBackgroundTask.");
+        }
+        const stopBackgroundTask = harness.runtime.stopBackgroundTask;
+        yield* startBackgroundBashTurn(harness);
+        yield* awaitUntil(
+          () => providerThreadRosterEvents(harness.events).length > 0,
+          "background task on roster",
+        );
+
+        const unknown = yield* Effect.exit(
+          stopBackgroundTask({ providerThread: harness.providerThread, taskId: "not-a-task" }),
+        );
+        assert.equal(unknown._tag, "Failure");
+        yield* stopBackgroundTask({ providerThread: harness.providerThread, taskId: WAKE_TASK_ID });
+        assert.deepEqual(harness.stoppedTaskIds, [WAKE_TASK_ID]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("records the command, tool use, and output file on a background task", () =>
     Effect.scoped(
       Effect.gen(function* () {
