@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -14,6 +14,12 @@ import {
 } from "./voiceRecordingStore.ts";
 
 const tempDirs: string[] = [];
+function setCreatedAt(dir: string, recording: { id: string }, createdAt: string): void {
+  const sidecar = NodePath.join(dir, `${recording.id}.json`);
+  const metadata = JSON.parse(NodeFS.readFileSync(sidecar, "utf8")) as { createdAt: string };
+  metadata.createdAt = createdAt;
+  NodeFS.writeFileSync(sidecar, JSON.stringify(metadata));
+}
 function makeTempDir(): string {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "voice-recordings-test-"));
   tempDirs.push(dir);
@@ -37,11 +43,12 @@ function saveAudio(dir: string, body: string, mimeType = "audio/webm;codecs=opus
 }
 
 describe("voiceRecordingStore", () => {
-  it("lists recordings newest first", async () => {
+  it("lists recordings newest first", () => {
     const dir = makeTempDir();
     const first = saveAudio(dir, "first");
-    await new Promise((resolve) => setTimeout(resolve, 5));
     const second = saveAudio(dir, "second");
+    setCreatedAt(dir, first, "2026-01-01T00:00:00.000Z");
+    setCreatedAt(dir, second, "2026-01-01T00:00:01.000Z");
 
     const listed = listVoiceRecordings(dir);
 
@@ -55,17 +62,18 @@ describe("voiceRecordingStore", () => {
     });
   });
 
-  it("evicts the oldest recording (audio + sidecar) past the cap", async () => {
+  it("evicts the oldest recording (audio + sidecar) past the cap", () => {
     const dir = makeTempDir();
     const oldest = saveAudio(dir, "oldest");
+    setCreatedAt(dir, oldest, "2026-01-01T00:00:00.000Z");
     for (let index = 1; index < VOICE_RECORDINGS_MAX_COUNT; index += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2));
-      saveAudio(dir, `filler-${index}`);
+      const filler = saveAudio(dir, `filler-${index}`);
+      setCreatedAt(dir, filler, `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`);
     }
     expect(listVoiceRecordings(dir)).toHaveLength(VOICE_RECORDINGS_MAX_COUNT);
 
-    await new Promise((resolve) => setTimeout(resolve, 2));
-    saveAudio(dir, "newest");
+    const newest = saveAudio(dir, "newest");
+    setCreatedAt(dir, newest, "2026-01-01T00:01:00.000Z");
 
     const listed = listVoiceRecordings(dir);
     expect(listed).toHaveLength(VOICE_RECORDINGS_MAX_COUNT);
