@@ -19,6 +19,7 @@ import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popov
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentElapsed } from "./AgentElapsed";
 import {
+  backgroundTaskEntries,
   backgroundTaskLabel,
   backgroundTasksBannerTitle,
   resolveSelectedBackgroundTaskId,
@@ -387,5 +388,20 @@ export function BackgroundTasksBannerPopover(props: {
         </div>
       </PopoverPopup>
     </Popover>
+  );
+}
+
+export function BackgroundTasksBannerSummary(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+}) {
+  const roster = useThreadBackgroundTasks(props.environmentId, props.threadId);
+  return (
+    <BackgroundTasksBannerPopover
+      environmentId={props.environmentId}
+      threadId={props.threadId}
+      entries={backgroundTaskEntries(props.tasks, roster)}
+    />
   );
 }

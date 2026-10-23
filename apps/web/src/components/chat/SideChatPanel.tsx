@@ -265,7 +265,7 @@ export function SideChatPanel(props: {
             {sideShellSeen ? "This side chat has ended." : "Opening side chat…"}
           </div>
         ) : (
-          <MessagesTimeline
+          <MessagesTimeline emptyPlaceholderInset={0}
             isWorking={isWorking}
             activeTurnInProgress={isWorking}
             listRef={listRef}

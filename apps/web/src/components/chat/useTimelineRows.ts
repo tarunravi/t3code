@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { ConversationRewriteRun } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   handoffRunsSignature,
@@ -9,6 +10,29 @@ import {
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
+
+const EMPTY_REWRITE_RUNS: ReadonlyArray<ConversationRewriteRun> = [];
+
+/** Terminal runs whose messages stay editable. Stable across streaming updates. */
+export function useStableRewriteRuns(
+  runs: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }>,
+): ReadonlyArray<ConversationRewriteRun> {
+  const [state, setState] = useState<{
+    readonly source: ReadonlyArray<HandoffTimelineRun & { readonly status?: string }> | null;
+    readonly signature: string;
+    readonly value: ReadonlyArray<ConversationRewriteRun>;
+  }>({ source: null, signature: "", value: EMPTY_REWRITE_RUNS });
+  if (state.source === runs) return state.value;
+  const terminal = runs.flatMap((run) =>
+    run.status === "failed" || run.status === "interrupted" || run.status === "cancelled"
+      ? [{ id: run.id, ordinal: run.ordinal, status: run.status }]
+      : [],
+  );
+  const signature = terminal.map((run) => `${run.id}\0${run.ordinal}\0${run.status}`).join("\n");
+  const value = signature === state.signature ? state.value : terminal;
+  setState({ source: runs, signature, value });
+  return value;
+}
 
 const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
 

@@ -443,7 +443,7 @@ describe("V2 session presentation", () => {
 
     const missing = [{ ...checkpoint, status: "missing" as const }];
     expect([
-      ...deriveRevertTurnCountByUserMessageId({ timelineEntries, checkpoints: missing }),
+      ...deriveRevertTurnCountByUserMessageId({ threadStartCheckpointReady: false, timelineEntries, checkpoints: missing }),
     ]).toEqual([[messageId, 0]]);
     expect(canRestoreFilesForRun(missing, runId)).toBe(false);
 
@@ -451,7 +451,7 @@ describe("V2 session presentation", () => {
     expect(canRestoreFilesForRun(ready, runId)).toBe(true);
     const failed = [{ ...checkpoint, status: "error" as const }];
     expect(
-      deriveRevertTurnCountByUserMessageId({ timelineEntries, checkpoints: failed }).size,
+      deriveRevertTurnCountByUserMessageId({ threadStartCheckpointReady: false, timelineEntries, checkpoints: failed }).size,
     ).toBe(0);
   });
 
@@ -488,6 +488,7 @@ describe("V2 session presentation", () => {
 
     expect([
       ...deriveRevertTurnCountByUserMessageId({
+        threadStartCheckpointReady: false,
         timelineEntries,
         checkpoints: [previousCheckpoint],
         runs: [{ id: failedRunId, ordinal: 2, status: "failed" }],
@@ -495,6 +496,7 @@ describe("V2 session presentation", () => {
     ]).toEqual([[messageId, 1]]);
     expect(
       deriveRevertTurnCountByUserMessageId({
+        threadStartCheckpointReady: false,
         timelineEntries,
         checkpoints: [previousCheckpoint],
         runs: [{ id: failedRunId, ordinal: 2, status: "running" }],

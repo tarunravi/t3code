@@ -494,7 +494,7 @@ export function useComposerSend(input: ComposerSendInput) {
       return;
     }
     const sideChatCommand =
-      isServerThread && !directAnnotation && !composerHasNonPromptContent
+      isServerThread && !directAnnotation && !draftHasNonPromptContent(composerDraftTarget)
         ? parseSideChatCommand(promptRef.current)
         : null;
     if (sideChatCommand !== null && rewritingMessage === null) {
@@ -1040,7 +1040,6 @@ export function useComposerSend(input: ComposerSendInput) {
       const rewound = await settlePromise(() =>
         waitForRevertedMessage(
           routeThreadRef,
-          rewritingMessage.messageId,
           rewritingMessage.turnCount,
           commandId,
           async () => {

@@ -1,3 +1,4 @@
+import { BackgroundTasksBannerSummary } from "./BackgroundTasks";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
@@ -155,6 +156,7 @@ export function runStopNowItem(input: {
 
 /** Background commands and subagents, for the end of the timeline. */
 export function backgroundWorkNowItem(input: {
+  readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
   readonly turnItems: ThreadStructure["turnItems"];
@@ -200,14 +202,14 @@ export function backgroundWorkNowItem(input: {
   return {
     id: `background-work:${input.threadId}`,
     icon: rows.every(isCommand) ? <TerminalIcon /> : <CircleDashedIcon />,
-    title:
-      only && typeof only.label !== "string" && only.task.label !== only.task.kind ? (
-        <>
-          {presentation.waiting ? "Waiting" : "Running"} · {only.label}
-        </>
-      ) : (
-        presentation.title
-      ),
+    // The title opens the roster with each task's command and live output.
+    title: (
+      <BackgroundTasksBannerSummary
+        environmentId={input.environmentId}
+        threadId={input.threadId}
+        tasks={input.tasks}
+      />
+    ),
     description: only ? (
       only.activity
     ) : newest ? (

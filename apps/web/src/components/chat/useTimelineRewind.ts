@@ -1,14 +1,20 @@
 import { type Dispatch, type SetStateAction } from "react";
 import { randomUUID } from "~/lib/utils";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
-import { type ComposerImageAttachment, type ComposerFileAttachment } from "../../composerDraftStore";
+import {
+  type ComposerImageAttachment,
+  type ComposerFileAttachment,
+} from "../../composerDraftStore";
 import { readPreparedConnection } from "../../state/session";
 import { recallableComposerPrompt } from "./composerPromptHistory";
 import { canRestoreFilesForRun } from "../../session-logic";
 import { prepareRevertedMessageAttachments, loadMessageRewriteDraft } from "../ChatView.logic";
 export interface MessageRewriteState {
- readonly messageId: MessageId; readonly turnCount: number; readonly restoreFiles: boolean;
- readonly routeThreadKey: string; readonly rewound: boolean;
+  readonly messageId: MessageId;
+  readonly turnCount: number;
+  readonly restoreFiles: boolean;
+  readonly routeThreadKey: string;
+  readonly rewound: boolean;
 }
 import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import type { ComposerThreadTarget } from "../../composerDraftStore";
@@ -41,13 +47,12 @@ import { openRevertConfirm } from "./ChatOverlayHosts";
 import { assetEnvironment } from "../../state/assets";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 interface TimelineRewindInput {
- readonly turnDiffSummaries: Parameters<typeof canRestoreFilesForRun>[0];
- readonly cancelQueuedEdit: () => void;
- readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
+  readonly turnDiffSummaries: Parameters<typeof canRestoreFilesForRun>[0];
+  readonly cancelQueuedEdit: () => void;
+  readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
   readonly routeThreadKey: string;
@@ -133,13 +138,15 @@ async function loadMessageForRewrite(input: {
   }
 }
 
-
 /**
  * Going back in a thread's timeline: reverting to an earlier turn (restoring that message into
  * the composer) and forking a new thread from a run.
  */
 export function useTimelineRewind(input: TimelineRewindInput) {
-  const { turnDiffSummaries, cancelQueuedEdit, setRewritingMessage,
+  const {
+    turnDiffSummaries,
+    cancelQueuedEdit,
+    setRewritingMessage,
     environmentId,
     routeThreadRef,
     routeThreadKey,
@@ -164,9 +171,6 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     refresh: true,
   });
 
-  const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {
-    reportFailure: false,
-  });
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, {
     reportFailure: false,
   });
@@ -240,105 +244,6 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
       });
     }
-  };
-  const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
-  const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
-    void onRevertToTurnCount(turnCount, messageId, restoreFiles);
-  };
-  const onConfirmRevertStable = useStableCallback(onConfirmRevert);
-
-  const onRollbackCheckpoint = async (input: {
-    readonly checkpointId: string;
-    readonly scopeId: string;
-  }) => {
-    if (!activeThread || isRevertingCheckpoint) return;
-    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
-      setThreadError(
-        activeThread.id,
-        `Reconnect ${activeEnvironmentUnavailableLabel} before reverting checkpoints.`,
-      );
-      return;
-    }
-    if (phase === "running" || isSendBusy || isConnecting) {
-      setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
-      return;
-    }
-    const localApi = readLocalApi();
-    const confirmed =
-      localApi == null
-        ? window.confirm("Roll back this thread to the selected checkpoint?")
-        : await localApi.dialogs.confirm(
-            "Roll back this thread to the selected checkpoint?\nThis action cannot be undone.",
-          );
-    if (!confirmed) return;
-
-    useComposerDraftStore.setState((store) => ({
-      rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
-    }));
-    setThreadError(activeThread.id, null);
-    const result = await revertThreadCheckpoint({
-      environmentId,
-      input: {
-        threadId: activeThread.id,
-        checkpointId: input.checkpointId,
-        scopeId: input.scopeId,
-      },
-    });
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      setThreadError(
-        activeThread.id,
-        error instanceof Error ? error.message : "Failed to revert thread state.",
-      );
-    }
-    useComposerDraftStore.setState((store) => {
-      const remaining = new Set(store.rewindingThreadKeys);
-      remaining.delete(routeThreadKey);
-      return { rewindingThreadKeys: remaining };
-    });
-  };
-
-  const onForkFromRun = async (input: {
-    readonly sourceThreadId: ThreadId;
-    readonly runId: RunId;
-  }) => {
-    if (!activeThread || activeEnvironmentUnavailable) return;
-    const targetThreadId = newThreadId();
-    const targetThreadRef = scopeThreadRef(environmentId, targetThreadId);
-    const result = await forkThreadFromRun({
-      environmentId,
-      input: {
-        sourceThreadId: input.sourceThreadId,
-        targetThreadId,
-        runId: input.runId,
-        title: `${activeThread.title} fork`,
-      },
-    });
-    if (result._tag === "Failure") {
-      if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThread.id,
-          error instanceof Error ? error.message : "Failed to fork this response.",
-        );
-      }
-      return;
-    }
-    const targetThreadReady = await waitForThreadShell(targetThreadRef);
-    if (!targetThreadReady) {
-      setThreadError(
-        activeThread.id,
-        "The fork was created, but its thread data did not reach this client. Reconnect and try opening it from the sidebar.",
-      );
-      return;
-    }
-    await navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(targetThreadRef),
-    });
-  };
-  const onForkFromRunStable = useStableCallback(onForkFromRun);
-
   };
   const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
   const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
