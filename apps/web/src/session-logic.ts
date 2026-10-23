@@ -1074,6 +1074,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       // A paged timeline can omit the predecessor. Only a settled run and an
       // actual earlier checkpoint establish a boundary; never guess ordinal - 1.
       const run = runsById.get(runId);
+      const ownCheckpoint = checkpointByRunId.get(runId);
       if (
         target === undefined &&
         previousRunId === null &&
@@ -1086,19 +1087,16 @@ export function deriveRevertTurnCountByUserMessageId(input: {
         for (const checkpoint of input.checkpoints) {
           if (
             isConversationRewriteCheckpoint(checkpoint) &&
-            checkpoint.checkpointTurnCount < run.ordinal &&
+            // An own checkpoint anchors turn-count units after a rewind.
+            checkpoint.checkpointTurnCount < (readyTurnCountByRunId.get(runId) ?? run.ordinal) &&
             (target === undefined || checkpoint.checkpointTurnCount > target)
           ) {
             target = checkpoint.checkpointTurnCount;
           }
         }
       }
-      if (
-        target === undefined &&
-        previousRunId === null &&
-        checkpointByRunId.get(runId)?.status === "missing"
-      ) {
-        target = 0;
+      if (target === undefined && previousRunId === null && ownCheckpoint?.status === "missing") {
+        target = Math.max(0, ownCheckpoint.checkpointTurnCount - 1);
       }
       targetByRunId.set(runId, target);
       previousRunId = runId;
