@@ -205,12 +205,12 @@ function VoiceRecordingRow({
         </span>
       </div>
       {recording.transcript ? (
-        <p className="mt-1.5 line-clamp-3 text-[13px] leading-relaxed text-foreground/90">
+        <p className="mt-1.5 line-clamp-3 text-sm leading-relaxed text-foreground/90">
           {recording.transcript}
         </p>
       ) : null}
       {recording.error ? (
-        <p className="mt-1.5 line-clamp-3 text-[13px] leading-relaxed text-destructive">
+        <p className="mt-1.5 line-clamp-3 text-sm leading-relaxed text-destructive">
           {recording.error}
         </p>
       ) : null}
@@ -286,7 +286,7 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
         headerAction={
           state.status === "ready" ? (
             <span className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground/60">
+              <span className="text-2xs text-muted-foreground/60">
                 {state.recordings.length === 30
                   ? "30 most recent"
                   : `${state.recordings.length} saved`}
@@ -310,7 +310,7 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
           </p>
         ) : state.status === "error" ? (
           <div className="flex flex-col items-start gap-3 px-3 py-5 sm:px-4">
-            <p className="max-w-[70ch] text-pretty text-[13px] leading-[1.45] text-muted-foreground/80">
+            <p className="max-w-[70ch] text-pretty text-sm leading-snug text-muted-foreground/80">
               {state.message}
             </p>
             <Button type="button" size="xs" variant="outline" onClick={() => void refresh()}>

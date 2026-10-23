@@ -70,7 +70,7 @@ export function ThreadCostLabel(props: {
                     <td className="pr-3" style={{ paddingLeft: `${(row.depth - 1) * 0.75}rem` }}>
                       {row.title}
                     </td>
-                    <td className="pr-3 text-muted-foreground">{row.model ?? "—"}</td>
+                    <td className="pr-3 text-muted-foreground">{row.model ?? "N/A"}</td>
                     <td className="pr-3 text-right">{formatTokens(row.totalTokens)} tok</td>
                     <td className="text-right">{formatRowCost(row)}</td>
                   </tr>

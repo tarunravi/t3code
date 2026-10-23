@@ -1927,16 +1927,18 @@ export const layerWsRpc = (
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
-        [ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput]: (input) =>
-          Effect.gen(function* () {
+        [ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput]: (input) => {
+          const operation = Effect.fn("ws.getBackgroundTaskOutput")(function* () {
             const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
             return yield* readBackgroundTaskOutput({
               taskId: input.taskId,
               outputFile: findBackgroundTaskOutputFile(providerThreads, input.taskId),
             });
-          }),
-        [ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask]: (input) =>
-          Effect.gen(function* () {
+          });
+          return operation();
+        },
+        [ORCHESTRATION_V2_WS_METHODS.stopBackgroundTask]: (input) => {
+          const operation = Effect.fn("ws.stopBackgroundTask")(function* () {
             const { providerThreads } = yield* loadBackgroundTaskProviderThreads(input);
             const providerThread = providerThreads.find((candidate) =>
               candidate.pendingBackgroundTasks?.some((task) => task.taskId === input.taskId),
@@ -1969,7 +1971,9 @@ export const layerWsRpc = (
               ),
             );
             return {};
-          }),
+          });
+          return operation();
+        },
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
           threadManagement.getTurnItem(input).pipe(
             Effect.mapError(

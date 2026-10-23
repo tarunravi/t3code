@@ -48,7 +48,7 @@ export function TokenRateLabel(props: {
         }
         aria-description={explanation}
       >
-        {text ?? "tok/s —"}
+        {text ?? "tok/s N/A"}
       </TooltipTrigger>
       <TooltipPopup>{explanation}</TooltipPopup>
     </Tooltip>
