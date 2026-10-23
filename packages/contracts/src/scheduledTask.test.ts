@@ -58,3 +58,18 @@ describe("webhook filters", () => {
     expect(accepts([{ path: "body.action", op: "matches", value: "^opened$" }])).toBe(false);
   });
 });
+
+
+describe("explicit idle/stall interval policy", () => {
+  it("preserves ordinary intervals and round-trips explicit opt-in in persisted JSON", () => {
+    for (const decode of [decodeSchedule, decodeUpsertSchedule]) {
+      expect(decode({ type: "interval", everyMs: 60000 })).toEqual({ type: "interval", everyMs: 60000 });
+      const optedIn = { type: "interval", everyMs: 60000,
+        idleStallRecovery: { timeoutMs: 120000, cooldownMs: 30000 } };
+      expect(decode(JSON.parse(JSON.stringify(optedIn)))).toEqual(optedIn);
+      for (const policy of [{ timeoutMs: 0, cooldownMs: 0 }, { timeoutMs: 1, cooldownMs: -1 }, true]) {
+        expect(() => decode({ ...optedIn, idleStallRecovery: policy })).toThrow();
+      }
+    }
+  });
+});

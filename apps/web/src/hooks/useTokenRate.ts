@@ -7,6 +7,7 @@ import {
   formatTokenRate,
   latestTokenRateTurn,
   liveTokenRateSource,
+  LIVE_TOKEN_RATE_WINDOW_MS,
   rollingTokenRate,
   type TokenRateSample,
 } from "../lib/tokenRate";
@@ -98,7 +99,15 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
     const availableRates = rates.filter((rate): rate is number => rate !== null);
     const rate =
       availableRates.length === 0 ? null : availableRates.reduce((sum, value) => sum + value, 0);
-    return { live: true, rate, text: formatLiveTokenRate(rate) };
+    const noRecentOutput = liveSources.every((source) => {
+      const newest = history.get(source.key)?.at(-1);
+      return newest !== undefined && nowMs - newest.atMs >= LIVE_TOKEN_RATE_WINDOW_MS;
+    });
+    return {
+      live: true,
+      rate,
+      text: formatLiveTokenRate(rate) ?? (noRecentOutput ? "No recent visible output" : "Measuring…"),
+    };
   }
   const rootProjection = sources[0]?.projection;
   const rate = completedTurnTokenRate(latestTokenRateTurn(rootProjection));

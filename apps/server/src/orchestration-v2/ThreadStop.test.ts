@@ -1552,3 +1552,35 @@ it.effect.each(["missing session", "completed", "failed", "cancelled"] as const)
       );
     }).pipe(Effect.provide(layerTest)),
 );
+
+
+it.effect("manual Stop wins over a delayed automatic fallback and its repeated observation", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:stop-automatic-fallback");
+    yield* createWatchingThread(threadId, 17);
+    yield* send(threadId, "work", "start_immediately");
+    const now = yield* DateTime.now;
+    const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+    yield* projections.apply({ id: EventId.make("event:fallback:failed"), type: "run.updated",
+      threadId, runId: run.id, occurredAt: now,
+      payload: { ...run, status: "failed", startedAt: now, completedAt: now } });
+    yield* orchestrator.dispatch({ type: "thread.stop", threadId,
+      commandId: CommandId.make("stop-before-fallback") });
+    const fallback = { type: "message.dispatch" as const, threadId,
+      commandId: CommandId.make(`provider-fallback:${threadId}:${run.id}`),
+      messageId: MessageId.make(`provider-fallback:${threadId}:${run.id}`),
+      manualContinuationOfRunId: run.id, automaticFallbackOfRunId: run.id,
+      text: "Continue.", attachments: [], dispatchMode: { type: "start_immediately" as const },
+      createdBy: "user" as const, creationSource: "server" as const };
+    const first = yield* orchestrator.dispatch(fallback);
+    const repeated = yield* orchestrator.dispatch(fallback);
+    assert.deepEqual(repeated, first);
+    const after = yield* orchestrator.getThreadProjection(threadId);
+    assert.deepEqual(after.runs.map((row) => row.id), [run.id]);
+    assert.equal(after.messages.length, 1);
+    assert.equal(after.runs[0]?.status, "failed");
+    assert.equal(after.turnItems.filter((item) => item.type === "run_interrupt_request").length, 1);
+  }).pipe(Effect.provide(layerTest)),
+);

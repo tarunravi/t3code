@@ -61,6 +61,9 @@ export const make = Effect.gen(function* () {
     readonly scopeId: CheckpointScopeId;
     readonly historicalRefOnly?: boolean | undefined;
   }) {
+    // This read is inside the existing dispatch lock, before any Git/ref operation.
+    const thread = yield* projections.getThread(input.threadId);
+    if (thread.preservationOnly === true) return;
     const { run, rootNode, scope, providerThread, readyCheckpointOrdinals, turnCheckpoints } =
       yield* projections.getCheckpointCaptureContext(input.threadId, input);
     if (input.historicalRefOnly) {

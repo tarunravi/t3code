@@ -5,6 +5,8 @@ import * as Schema from "effect/Schema";
 import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
+  OrchestrationV2AppThread,
+  OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
@@ -637,5 +639,19 @@ describe("latestProviderTurnForAttempt", () => {
     ];
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
+  });
+});
+
+
+describe("explicit preservation compatibility", () => {
+  it("defaults legacy absence to executable and round-trips opt-in intent", () => {
+    for (const thread of [OrchestrationV2AppThread, OrchestrationV2AppThreadJson]) {
+      const codec = Schema.Struct({ preservationOnly: thread.fields.preservationOnly });
+      const decode = Schema.decodeUnknownSync(codec);
+      expect(decode({})).toEqual({});
+      expect(Schema.encodeSync(codec)(decode({ preservationOnly: true }))).toEqual({ preservationOnly: true });
+      expect(() => decode({ preservationOnly: false })).toThrow();
+      expect(() => decode({ preservationOnly: "true" })).toThrow();
+    }
   });
 });

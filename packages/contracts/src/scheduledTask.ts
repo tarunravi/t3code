@@ -26,9 +26,17 @@ export const MIN_SCHEDULED_TASK_INTERVAL_MS = 60_000;
 
 const ScheduledTaskIntervalMs = Schema.Int.check(Schema.isGreaterThan(0));
 
+const IdleStallRecoveryOptions = Schema.Struct({
+  timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+  cooldownMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
 const ScheduledTaskIntervalSchedule = Schema.Struct({
   type: Schema.Literal("interval"),
   everyMs: ScheduledTaskIntervalMs,
+  idleStallRecovery: Schema.optional(IdleStallRecoveryOptions),
+}).annotate({
+  description: "Run repeatedly after a fixed number of milliseconds.",
 });
 
 const ScheduledTaskFixedTimeSchedule = Schema.Struct({
@@ -172,7 +180,10 @@ export type ScheduledTaskSchedule = typeof ScheduledTaskSchedule.Type;
 
 export const ScheduledTaskUpsertSchedule = Schema.Union([
   Schema.Struct({
-    type: Schema.Literal("interval"),
+    type: Schema.Literal("interval").annotate({
+      description: "Select interval scheduling.",
+    }),
+    idleStallRecovery: Schema.optional(IdleStallRecoveryOptions),
     everyMs: ScheduledTaskIntervalMs.check(
       Schema.isGreaterThanOrEqualTo(MIN_SCHEDULED_TASK_INTERVAL_MS),
     ).annotate({

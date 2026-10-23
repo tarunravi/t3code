@@ -1185,6 +1185,7 @@ it.effect(
         Layer.mergeAll(
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed({} as never),
             getCheckpointCaptureContext: () =>
               Effect.succeed({
                 run: {
@@ -1277,6 +1278,7 @@ it.effect.each(["interrupted", "failed", "cancelled"] as const)(
         Layer.mergeAll(
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed({} as never),
             getCheckpointCaptureContext: () =>
               Effect.succeed({
                 run,
@@ -1358,3 +1360,26 @@ it.effect.each(["interrupted", "failed", "cancelled"] as const)(
     }).pipe(Effect.provide(layer));
   },
 );
+
+
+it.effect("denies late frozen capture before context, baseline materialization or ref writes", () => {
+  let workspaceCalls = 0;
+  const deny = () => Effect.sync(() => { workspaceCalls++; throw new Error("Frozen workspace write"); });
+  return Effect.gen(function* () {
+    const capture = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
+    for (const historicalRefOnly of [false, true]) {
+      yield* capture.execute({ threadId, runId, scopeId, historicalRefOnly });
+    }
+    assert.equal(workspaceCalls, 0);
+  }).pipe(Effect.provide(CheckpointCaptureService.layer.pipe(Layer.provide(Layer.mergeAll(
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getThread: () => Effect.succeed({ preservationOnly: true } as never),
+      getCheckpointCaptureContext: deny,
+    }),
+    Layer.mock(CheckpointService.CheckpointServiceV2)({
+      capture: deny, captureBaseline: deny, materializeBaselineCheckpoint: deny,
+    }),
+    Layer.mock(EventSink.EventSinkV2)({ commitCommand: deny }),
+    IdAllocator.layer,
+  )))));
+});

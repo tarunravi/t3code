@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { isKnownOrchestrationV2EventType, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -256,6 +256,7 @@ export const layer: Layer.Layer<
           readonly stream_id: string;
           readonly event_type: string;
           readonly entity_id: string | null;
+          readonly preservation_intent: number;
           readonly imported_legacy_thread: number;
         }>`
           SELECT
@@ -265,9 +266,12 @@ export const layer: Layer.Layer<
             event.stream_id,
             event.event_type,
             CASE
-              WHEN event.application_event_version = 2
-                AND event.event_type IN ('message.updated', 'node.updated')
-              THEN json_extract(event.payload_json, '$.id')
+              WHEN event.application_event_version = 2 AND event.aggregate_kind = 'thread'
+                AND event.event_type LIKE 'thread.%'
+              THEN json_type(event.payload_json, '$.preservationOnly') IS NOT NULL
+              ELSE 0
+            END AS preservation_intent,
+            CASE
               WHEN event.application_event_version = 2
                 AND event.event_type = 'turn-item.updated'
                 AND event.command_id IS NULL
@@ -294,9 +298,36 @@ export const layer: Layer.Layer<
           ORDER BY event.sequence DESC
           LIMIT ${COMPACTION_PAGE_SIZE + 1}
         `.pipe(NodeSqliteClient.readOnly);
+        if (throughSequence === bounds[0]?.event_sequence) {
+          // Check the entire format set before deleting any page. A future event
+          // can own references to older history this version cannot interpret.
+          const formats = yield* sql<{
+            readonly application_event_version: number;
+            readonly aggregate_kind: string;
+            readonly event_type: string;
+          }>`
+            SELECT DISTINCT application_event_version, aggregate_kind, event_type
+            FROM orchestration_events
+          `.pipe(NodeSqliteClient.readOnly);
+          if (
+            formats.some(
+              (row) =>
+                (row.application_event_version !== 1 && row.application_event_version !== 2) ||
+                (row.application_event_version === 2 &&
+                  row.aggregate_kind === "thread" &&
+                  !isKnownOrchestrationV2EventType(row.event_type)),
+            )
+          ) {
+            return yield* new ProjectionMaintenanceError({
+              operation: "validate compaction history",
+              cause: "Unsupported history format; compaction refused",
+            });
+          }
+        }
         const page = rows.slice(0, COMPACTION_PAGE_SIZE);
         const obsolete: number[] = [];
         for (const row of page) {
+          if (row.preservation_intent === 1) continue;
           if (row.imported_legacy_thread === 1) {
             obsolete.push(row.sequence);
           } else if (row.application_event_version === 2) {
@@ -322,12 +353,7 @@ export const layer: Layer.Layer<
             ) {
               // A newer whole-thread payload already carries this link's state.
               obsolete.push(row.sequence);
-            } else if (
-              row.event_type === "thread.pull-request-link-updated" ||
-              row.event_type === "message.updated" ||
-              row.event_type === "node.updated" ||
-              (row.event_type === "turn-item.updated" && row.entity_id !== null)
-            ) {
+            } else if (row.event_type === "thread.pull-request-link-updated") {
               const key = encodeEntityKey([row.event_type, row.stream_id, row.entity_id]);
               const candidate = oldestCandidateByEntityKey.get(key);
               if (candidate === undefined) oldestCandidateByEntityKey.set(key, null);

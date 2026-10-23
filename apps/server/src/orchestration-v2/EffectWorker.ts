@@ -96,7 +96,18 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
-      execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
+      execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function* (effect, options) {
+        const current = yield* threads.getThreadRecords(effect.threadId, []).pipe(
+          Effect.tapError(() => effect.request.type === "provider-runtime.continue" &&
+            options?.willRetry !== true
+            ? threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId)
+            : Effect.void),
+          Effect.mapError((cause) => new OrchestrationEffectExecutionError({
+            effectId: effect.id, effectType: effect.request.type, cause,
+          })),
+        );
+        if (current.thread.preservationOnly === true) return;
+        const execute = () => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "provider-runtime.continue": {
@@ -559,6 +570,8 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
         }
+        };
+        yield* execute();
       }),
     });
   }),

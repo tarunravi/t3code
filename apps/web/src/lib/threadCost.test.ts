@@ -78,6 +78,7 @@ describe("threadUsageByModel", () => {
             cachedInputTokens: 600,
             cacheCreationTokens: 100,
             outputTokens: 50,
+            reasoningOutputTokens: 25,
           },
         },
         { usage: { inputTokens: 500, outputTokens: 25 } },

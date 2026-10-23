@@ -158,7 +158,10 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
-        Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed({ thread: {} } as never),
+          ...input.threads,
+        }),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
         ),
@@ -620,4 +623,34 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
       );
     }),
+);
+
+
+it.effect("denies delayed provider and checkpoint effects after explicit preservation", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    let reads = 0;
+    const layer = layerExecutorFor({ events, continueAfterRestart: true, threads: {
+      getThreadRecords: () => Effect.sync(() => {
+        reads++;
+        return { thread: { preservationOnly: true } } as never;
+      }),
+    }});
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const original = restartEffect(now, { type: "detach" });
+      const requests: EffectOutbox.OrchestrationEffectV2["request"][] = [
+        original.request,
+        { type: "provider-turn.start", runId },
+        { type: "provider-turn.steer", providerSessionId: oldSessionId, providerThreadId,
+          providerTurnId, messageId: "message:late" as never },
+        { type: "provider-runtime.continue", sourceRunId: runId },
+        { type: "checkpoint.capture", runId, scopeId: CheckpointScopeId.make("scope:frozen") },
+      ];
+      for (const request of requests) yield* executor.execute({ ...original, request });
+      assert.equal(reads, requests.length);
+      assert.deepEqual(yield* Ref.get(events), []);
+    }).pipe(Effect.provide(layer));
+  }),
 );
