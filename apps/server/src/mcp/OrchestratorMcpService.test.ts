@@ -1741,7 +1741,11 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
       yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        for (const input of [{ mode: "async" }, { task: "Summarize the diff.", mode: "later" }]) {
+        for (const input of [
+          { mode: "async" },
+          { task: "Summarize the diff.", mode: "later" },
+          { task: "Summarize the diff.", target: undefined },
+        ]) {
           const error = yield* service.delegateTask(scope, input).pipe(Effect.flip);
           assert.equal(error.code, "invalid_request");
           assert.include(error.message, "Invalid delegate_task arguments:");
@@ -2397,12 +2401,19 @@ describe("OrchestratorMcpService provider resolution", () => {
               const error = yield* service
                 .delegateTask(scope, {
                   task: "Summarize the diff.",
-                  target,
+                  ...(target === undefined ? {} : { target }),
                   mode: "async",
                   clientRequestId: `delegate-select-${testCase.name}`,
                 })
                 .pipe(Effect.flip);
               assert.equal(error.code, "provider_unavailable", testCase.name);
+              if (testCase.name === "inherited-unavailable") {
+                const nullTargetError = yield* service
+                  .delegateTask(scope, { task: "Summarize the diff.", target: null })
+                  .pipe(Effect.flip);
+                assert.equal(nullTargetError.code, error.code);
+                assert.equal(nullTargetError.message, error.message);
+              }
               if (
                 testCase.name === "explicit-unavailable" ||
                 testCase.name === "inherited-unavailable" ||

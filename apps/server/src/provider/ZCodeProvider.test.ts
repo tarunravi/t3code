@@ -89,7 +89,6 @@ describe("ZCode configured model discovery", () => {
       assert.equal(snapshot.models.length, 1);
       assert.equal(snapshot.models[0]?.slug, "default");
       assert.equal(snapshot.models[0]?.name, "bifrost/sparks/example-model (configured)");
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
       assert.notInclude(JSON.stringify(snapshot), "must-not-");
     }),
   );
@@ -151,7 +150,6 @@ describe("ZCode configured model discovery", () => {
         config().replace('"schemaVersion":1', '"schemaVersion":2'),
         config("", "model"),
         config("provider", "  "),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
         JSON.stringify({
           schemaVersion: 1,
           config: { defaultModelSelection: { modelId: "model" } },
