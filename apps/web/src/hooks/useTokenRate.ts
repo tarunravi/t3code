@@ -1,5 +1,5 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   appendTokenRateSample,
   completedTurnTokenRate,
@@ -23,6 +23,18 @@ export interface TokenRateProjectionSource {
   readonly projection: Projection | null | undefined;
 }
 
+function collectLiveSources(sources: readonly TokenRateProjectionSource[]) {
+  const seen = new Set<string>();
+  return sources.flatMap(({ key, projection }) => {
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const source = liveTokenRateSource(projection);
+    return source === null
+      ? []
+      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+  });
+}
+
 /**
  * Live rolling estimate while a run is active; otherwise the latest completed-turn
  * average. Samples are keyed by run so history never leaks into the next run.
@@ -32,8 +44,7 @@ export function useTokenRate(projection: Projection | null | undefined): {
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const sources = useMemo(() => [{ key: "thread", projection }], [projection]);
-  return useTokenRateSources(sources);
+  return useTokenRateSources([{ key: "thread", projection }]);
 }
 
 export function useTokenRateSources(sources: readonly TokenRateProjectionSource[]): {
@@ -41,17 +52,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const liveSources = useMemo(() => {
-    const seen = new Set<string>();
-    return sources.flatMap(({ key, projection }) => {
-      if (seen.has(key)) return [];
-      seen.add(key);
-      const source = liveTokenRateSource(projection);
-      return source === null
-        ? []
-        : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
-    });
-  }, [sources]);
+  const liveSources = collectLiveSources(sources);
   const [history, setHistory] = useState<ReadonlyMap<string, readonly TokenRateSample[]>>(
     () => new Map(),
   );
