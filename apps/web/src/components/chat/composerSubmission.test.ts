@@ -325,7 +325,6 @@ describe("send while recording", () => {
     draft = "Edited draft";
     transcript.resolve(true);
     await sending;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(stopAndAwaitTranscript).toHaveBeenCalledOnce();
     expect(sent).toEqual(["Edited draft dictated text"]);
   });

@@ -1,5 +1,3 @@
-// @effect-diagnostics globalTimers:off -- the provider-fallback worker test waits
-// on the live clock for a forked event-stream consumer; TestClock sleeps would hang.
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as ProviderFallbackWorker from "./ProviderFallbackWorker.ts";
 import { providerFallbackCommand } from "./ProviderFallbackWorker.ts";
@@ -7783,32 +7781,75 @@ it.layer(layerTest)("provider fallback", (it) => {
     Effect.scoped(
       Effect.gen(function* () {
         const { orchestrator, threadId, startRun, endRun } = yield* setup("worker");
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const events = yield* EventSink.EventSinkV2;
+        const afterSequence = yield* events.latestSequence();
+        const ready = yield* Deferred.make<void>();
+        const processedFailures = yield* Queue.unbounded<RunId>();
+        const dispatch = vi.fn(threads.dispatch);
+        // Pin the cursor before activation: replay covers events written before
+        // the forked worker finishes subscribing, without replaying old failures.
+        const streamDomainEvents = events.stream({ afterSequence, threadId }).pipe(
+          Stream.map((stored) => stored.event),
+          Stream.mapError(
+            (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+          ),
+          Stream.rechunk(1),
+          (stream) =>
+            Stream.transformPull(stream, (pull) =>
+              Effect.sync(() => {
+                let previousFailure: RunId | undefined;
+                return Effect.gen(function* () {
+                  yield* Deferred.succeed(ready, undefined);
+                  // runForEach requests the next chunk only AFTER retry/dispatch
+                  // completes. No buffering may sit between this pull and the worker.
+                  if (previousFailure !== undefined) {
+                    yield* Queue.offer(processedFailures, previousFailure);
+                    previousFailure = undefined;
+                  }
+                  const chunk = yield* pull;
+                  const event = chunk[0];
+                  if (event.type === "run.updated" && event.payload.status === "failed") {
+                    previousFailure = event.payload.id;
+                  }
+                  return chunk;
+                });
+              }),
+            ),
+        );
         yield* Layer.build(
           ProviderFallbackWorker.layer.pipe(
             Layer.provide(ServerSettings.layerTest(fallbackSettings)),
+            Layer.provide(
+              Layer.succeed(ThreadManagementService.ThreadManagementService, {
+                ...threads,
+                dispatch,
+                streamDomainEvents,
+              }),
+            ),
           ),
         );
-        // The worker subscribes to live events from a forked fiber.
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        yield* Deferred.await(ready);
         const runCount = orchestrator
           .getThreadProjection(threadId)
           .pipe(Effect.map((projection) => projection.runs.length));
-        const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)));
-
-        yield* endRun(yield* startRun, "provider_error");
-        yield* settle;
+        const first = yield* startRun;
+        yield* endRun(first, "provider_error");
+        assert.equal(yield* Queue.take(processedFailures), first.id);
         assert.equal(yield* runCount, 1);
-        yield* endRun(yield* startRun, "provider_error");
-        for (let attempt = 0; attempt < 40 && (yield* runCount) < 3; attempt += 1) {
-          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
-        }
+        assert.equal(dispatch.mock.calls.length, 0);
+        const second = yield* startRun;
+        yield* endRun(second, "provider_error");
+        assert.equal(yield* Queue.take(processedFailures), second.id);
+        assert.equal(dispatch.mock.calls.length, 1);
         const { runs } = yield* orchestrator.getThreadProjection(threadId);
         assert.lengthOf(runs, 3);
         assert.equal(runs[2]?.automaticFallbackOfRunId, runs[1]?.id);
 
         yield* endRun(runs[2]!, "provider_error");
-        yield* settle;
+        assert.equal(yield* Queue.take(processedFailures), runs[2]!.id);
         assert.equal(yield* runCount, 3);
+        assert.equal(dispatch.mock.calls.length, 1);
       }),
     ),
   );
