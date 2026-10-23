@@ -1,5 +1,5 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   appendTokenRateSample,
   completedTurnTokenRate,
@@ -32,7 +32,8 @@ export function useTokenRate(projection: Projection | null | undefined): {
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  return useTokenRateSources([{ key: "thread", projection }]);
+  const sources = useMemo(() => [{ key: "thread", projection }], [projection]);
+  return useTokenRateSources(sources);
 }
 
 export function useTokenRateSources(sources: readonly TokenRateProjectionSource[]): {
@@ -40,15 +41,17 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const seen = new Set<string>();
-  const liveSources = sources.flatMap(({ key, projection }) => {
-    if (seen.has(key)) return [];
-    seen.add(key);
-    const source = liveTokenRateSource(projection);
-    return source === null
-      ? []
-      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
-  });
+  const liveSources = useMemo(() => {
+    const seen = new Set<string>();
+    return sources.flatMap(({ key, projection }) => {
+      if (seen.has(key)) return [];
+      seen.add(key);
+      const source = liveTokenRateSource(projection);
+      return source === null
+        ? []
+        : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+    });
+  }, [sources]);
   const [history, setHistory] = useState<ReadonlyMap<string, readonly TokenRateSample[]>>(
     () => new Map(),
   );
