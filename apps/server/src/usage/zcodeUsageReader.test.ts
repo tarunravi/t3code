@@ -7,6 +7,7 @@ import * as NodeSqlite from "node:sqlite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { UsageAggregator } from "./usageAggregation.ts";
+import { parseRateTable, priceUsage } from "./usagePricing.ts";
 import { totalTokens } from "@t3tools/provider-core/server/usage";
 import { readZCodeUsage } from "./zcodeUsageReader.ts";
 
@@ -95,6 +96,7 @@ describe("readZCodeUsage", () => {
         provider: "zcode",
         model: MODEL,
         reportedCostUsd: null,
+        speed: "standard",
         totals: {
           uncachedInputTokens: 30,
           cachedInputTokens: 60,
@@ -104,6 +106,27 @@ describe("readZCodeUsage", () => {
         },
       });
       expect(records.reduce((sum, record) => sum + totalTokens(record.totals), 0)).toBe(480);
+      const rates = parseRateTable({
+        [MODEL]: {
+          input_cost_per_token: 2e-6,
+          output_cost_per_token: 8e-6,
+          cache_read_input_token_cost: 0.5e-6,
+          cache_creation_input_token_cost: 3e-6,
+          provider_specific_entry: { fast: 6 },
+        },
+      });
+      for (const record of records) {
+        const priced = priceUsage(rates, record);
+        expect(priced.costUsd).toBeCloseTo(0.00028, 12);
+        expect(priced.costSource).toBe("modelPriced");
+        expect(priced.speedPremiumUsd).toBe(0);
+        expect(priced.categoryCostUsd).toEqual({
+          input: 30 * 2e-6,
+          cacheRead: 60 * 0.5e-6,
+          cacheWrite: 10 * 3e-6,
+          output: 20 * 8e-6,
+        });
+      }
       const aggregator = new UsageAggregator({
         timeZone: "UTC",
         sinceDay: "2026-08-01",
