@@ -22,6 +22,72 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("labels OMP instances without changing server-owned models or explicit options", () => {
+    const selection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("omp_private"),
+      model: "custom-source/opaque-model",
+      options: [
+        { id: "native-thinking", value: "server/choice" },
+        { id: "native-toggle", value: false },
+      ],
+    };
+    const config = {
+      providers: [
+        {
+          instanceId: selection.instanceId,
+          driver: "omp",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          supportedRuntimeModes: ["full-access"],
+          models: [
+            {
+              slug: selection.model,
+              name: "Server Model",
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "native-thinking",
+                    label: "Server Thinking",
+                    type: "select",
+                    options: [{ id: "server/choice", label: "Server Choice" }],
+                  },
+                  {
+                    id: "native-toggle",
+                    label: "Server Toggle",
+                    type: "boolean",
+                    currentValue: true,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    const [option] = buildModelOptions(config, selection, undefined, null);
+    expect(option).toMatchObject({
+      providerKey: "omp_private",
+      providerDriver: "omp",
+      providerLabel: "oh-my-pi",
+      label: "Server Model",
+      supportedRuntimeModes: ["full-access"],
+      selection,
+    });
+    expect(buildModelOptions(config, null, undefined, null)[0]?.selection.options).toBeUndefined();
+    expect(resolveSelectableModelSelection(config, selection, null)).toEqual(selection);
+    expect(buildModelOptions(null, selection, undefined, null)[0]?.selection).toEqual(selection);
+
+    const namedConfig = {
+      ...config,
+      providers: config.providers.map((provider) => ({ ...provider, displayName: "Private OMP" })),
+    };
+    expect(buildModelOptions(namedConfig, selection, undefined, null)[0]?.providerLabel).toBe(
+      "Private OMP",
+    );
+  });
+
   it("distinguishes same-name OpenCode models without changing their routing", () => {
     const sources = [
       { id: "anthropic", label: "Anthropic" },
