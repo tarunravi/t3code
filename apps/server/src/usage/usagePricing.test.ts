@@ -214,6 +214,28 @@ describe("usage pricing", () => {
     }
   });
 
+  it("resolves combo routing names without guessing unknown or other provider prices", () => {
+    const table = parseRateTable({
+      "gpt-test": rate(2e-6),
+      "combo/explicit": rate(3e-6),
+      explicit: rate(1e-6),
+    });
+    expect(resolveStandardRates(table, "combo/gpt-test")).toEqual(
+      resolveStandardRates(table, "gpt-test"),
+    );
+    expect(priceUsage(table, record("combo/gpt-test"))).toEqual(
+      priceUsage(table, record("gpt-test")),
+    );
+    expect(lookupRate(table, "combo/explicit")?.inputCostPerToken).toBe(3e-6);
+    expect(lookupRate(table, "combo/unknown")).toBeNull();
+    expect(lookupRate(table, "other/gpt-test")).toBeNull();
+    const overrides = createOverrideRateTable({
+      "combo/gpt-test": { inputCostPerMillionTokens: 9, outputCostPerMillionTokens: 10 },
+    });
+    expect(resolveStandardRates(table, "combo/gpt-test", overrides)?.inputCostPerToken).toBe(9e-6);
+    expect(priceUsage(table, record("combo/unknown", 2)).costUsd).toBe(2);
+  });
+
   it("prices a bracketed context-tier variant at the base model's rate", () => {
     const table = parseRateTable({ "claude-fable-5-1": rate(1e-5, 2.5e-7) });
 

@@ -17,35 +17,45 @@ const EMPTY_TREE_ATOM = Atom.make<readonly ThreadProjectionTreeEntry[]>([]).pipe
 );
 
 /** Walks delegated threads breadth-first and ignores malformed lineage cycles. */
-export const threadProjectionTreeAtom = Atom.family((key: string) =>
-  Atom.make((get): readonly ThreadProjectionTreeEntry[] => {
-    const root = parseThreadKey(key);
-    const queue: ThreadProjectionTreeEntry[] = [
-      { ref: root, depth: 0, title: null, projection: null },
-    ];
-    const visited = new Set<string>([key]);
-    const entries: ThreadProjectionTreeEntry[] = [];
-    for (let entry = queue.shift(); entry !== undefined; entry = queue.shift()) {
-      const thread = get(environmentThreadDetails.threadAtom(entry.ref));
-      const projection = thread?.projection ?? null;
-      const current = { ...entry, projection };
-      entries.push(current);
-      for (const subagent of projection?.subagents ?? []) {
-        if (subagent.childThreadId === null) continue;
-        const childRef = scopeThreadRef(entry.ref.environmentId, subagent.childThreadId);
-        const childKey = threadKey(childRef);
-        if (visited.has(childKey)) continue;
-        visited.add(childKey);
-        queue.push({
-          ref: childRef,
-          depth: entry.depth + 1,
-          title: subagent.title,
-          projection: null,
-        });
+export function createThreadProjectionTreeAtom(
+  threadAtom: (ref: ScopedThreadRef) => Atom.Atom<{
+    readonly projection: OrchestrationV2ThreadProjection;
+  } | null>,
+) {
+  return Atom.family((key: string) =>
+    Atom.make((get): readonly ThreadProjectionTreeEntry[] => {
+      const root = parseThreadKey(key);
+      const queue: ThreadProjectionTreeEntry[] = [
+        { ref: root, depth: 0, title: null, projection: null },
+      ];
+      const visited = new Set<string>([key]);
+      const entries: ThreadProjectionTreeEntry[] = [];
+      for (let entry = queue.shift(); entry !== undefined; entry = queue.shift()) {
+        const thread = get(threadAtom(entry.ref));
+        const projection = thread?.projection ?? null;
+        const current = { ...entry, projection };
+        entries.push(current);
+        for (const subagent of projection?.subagents ?? []) {
+          if (subagent.childThreadId === null) continue;
+          const childRef = scopeThreadRef(entry.ref.environmentId, subagent.childThreadId);
+          const childKey = threadKey(childRef);
+          if (visited.has(childKey)) continue;
+          visited.add(childKey);
+          queue.push({
+            ref: childRef,
+            depth: entry.depth + 1,
+            title: subagent.title,
+            projection: null,
+          });
+        }
       }
-    }
-    return entries;
-  }).pipe(Atom.withLabel(`web-thread-projection-tree:${key}`)),
+      return entries;
+    }).pipe(Atom.withLabel(`web-thread-projection-tree:${key}`)),
+  );
+}
+
+export const threadProjectionTreeAtom = createThreadProjectionTreeAtom(
+  environmentThreadDetails.threadAtom,
 );
 
 export function useThreadProjectionTree(

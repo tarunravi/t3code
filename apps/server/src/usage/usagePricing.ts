@@ -205,7 +205,9 @@ function resolveRate(table: RateTable, model: string): ModelRate | null {
   const key = stripVariantSuffix(normalizeRateKey(model));
   const bareName = bareModelName(key);
   if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
-  return table.get(key) ?? null;
+  // `combo/` is the local Codex routing namespace, not a different model.
+  // Keep explicit routed prices authoritative and other provider prefixes distinct.
+  return table.get(key) ?? (key.startsWith("combo/") ? table.get(key.slice(6)) : null) ?? null;
 }
 
 export type PricedRecord = Pick<
