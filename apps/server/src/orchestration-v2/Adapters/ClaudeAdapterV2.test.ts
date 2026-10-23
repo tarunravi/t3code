@@ -8038,10 +8038,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         const stopBackgroundTask = harness.runtime.stopBackgroundTask;
         yield* startBackgroundBashTurn(harness);
-        yield* awaitUntil(
-          () => providerThreadRosterEvents(harness.events).length > 0,
-          "background task on roster",
-        );
+        yield* harness.until(() => providerThreadRosterEvents(harness.events).length > 0);
 
         const unknown = yield* Effect.exit(
           stopBackgroundTask({ providerThread: harness.providerThread, taskId: "not-a-task" }),
@@ -8065,7 +8062,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const latestTask = () =>
           providerThreadRosterEvents(harness.events).at(-1)?.providerThread
             .pendingBackgroundTasks?.[0];
-        yield* awaitUntil(() => latestTask()?.outputFile !== undefined, "output file recorded");
+        yield* harness.until(() => latestTask()?.outputFile !== undefined);
 
         const task = latestTask();
         assert.deepInclude(task, {
@@ -11820,7 +11817,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           );
         }
-        yield* awaitUntil(() => subagentEvents().length >= taskIds.length, "subagents created");
+        yield* harness.until(() => subagentEvents().length >= taskIds.length);
         yield* Queue.offer(
           harness.sdkMessages,
           makeResultFrame({
@@ -11828,7 +11825,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             result: "Spawned the subagents in the background.",
           }),
         );
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "first turn terminal");
+        yield* harness.until(() => harness.terminalEvents().length === 1);
 
         const notify = (index: number) =>
           Queue.offer(
@@ -11847,18 +11844,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
 
         yield* notify(0);
-        yield* awaitUntil(() => harness.continuationRequests.length === 1, "first wake offered");
+        yield* harness.until(() => harness.continuationRequests.length === 1);
         // The continuation for the first wake never ran (its dispatch failed).
         yield* harness.continuationRequests[0]!.clearIfCurrent!();
 
         yield* notify(1);
-        yield* awaitUntil(() => harness.continuationRequests.length === 2, "second wake offered");
+        yield* harness.until(() => harness.continuationRequests.length === 2);
 
         // A late release from the dropped offer must not free the live one.
         yield* harness.continuationRequests[0]!.clearIfCurrent!();
         yield* notify(2);
-        let quietYields = 0;
-        yield* awaitUntil(() => quietYields++ >= 50, "third wake stays with the live request");
+        yield* yieldTicks(50);
         assert.lengthOf(harness.continuationRequests, 2);
       }).pipe(
         Effect.provide(

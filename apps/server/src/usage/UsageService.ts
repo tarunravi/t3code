@@ -701,7 +701,7 @@ export const make = Effect.gen(function* () {
       provider: "zcode",
       dir: zcodeDir,
       volumeId: yield* Effect.promise(() => readDirectoryVolumeId(zcodeDir)),
-      files: zcode.missing ? null : zcode.files,
+      files: zcode.missing ? null : zcode.files.map((file) => ({ ...file, malformedRecords: 0 })),
       status: zcode.error ? "partial" : "ok",
       message: zcode.error
         ? "ZCode usage history could not be fully read."
