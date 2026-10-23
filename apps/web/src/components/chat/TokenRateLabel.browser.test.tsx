@@ -127,8 +127,8 @@ describe("TokenRateLabel", () => {
     const projection = streaming("live output");
     await root.rerender(<TokenRateLabel projection={projection} />);
     expect(container.textContent).toBe("tok/s N/A");
-    await root.rerender(<TokenRateLabel projection={projection} className="test-label" />);
-    expect(container.querySelector("span")?.classList.contains("test-label")).toBe(true);
+    await root.rerender(<TokenRateLabel projection={projection} className="ml-1" />);
+    expect(container.querySelector("span")?.classList.contains("ml-1")).toBe(true);
     await render(completed);
     expect(container.textContent).toBe("100 tok/s (turn avg)");
   });
