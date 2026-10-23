@@ -29,9 +29,9 @@ export interface ThreadCostRow {
   /** Null when the thread has no measured usage yet. */
   readonly model: string | null;
   readonly totalTokens: number;
-  /** Null when the model has no known price. */
+  /** Null when usage or the model price is unavailable. */
   readonly costUsd: number | null;
-  /** Some ended turns lacked complete usage, or the thread has not loaded. */
+  /** Some turns are unfinished or lack complete usage, or the thread has not loaded. */
   readonly incompleteUsage: boolean;
 }
 
@@ -55,7 +55,7 @@ export interface ThreadCostEstimate {
 /**
  * Sums each ended provider turn's normalized usage by the model that served it.
  * The provider-reported model wins over the requested one (ZCode reports `default`
- * as its selection). In-flight turns are skipped until their totals arrive.
+ * as its selection). In-flight turns mark the estimate incomplete until totals arrive.
  */
 export function threadUsageByModel(projection: ThreadCostProjection): {
   readonly usage: readonly ModelTokenUsage[];
@@ -72,7 +72,10 @@ export function threadUsageByModel(projection: ThreadCostProjection): {
   const byModel = new Map<string, ModelTokenUsage>();
   let incomplete = false;
   for (const turn of projection.providerTurns) {
-    if (turn.status === "pending" || turn.status === "running") continue;
+    if (turn.status === "pending" || turn.status === "running") {
+      if (turn.startedAt !== null) incomplete = true;
+      continue;
+    }
     const usage = turn.turnTokenUsage;
     if (usage === undefined || usage.usageStatus === "unavailable") {
       // A turn cancelled before it started never consumed tokens.
@@ -149,7 +152,11 @@ export function estimateThreadCost(
   const rows: ThreadCostRow[] = [];
   const parent = { usd: 0, partial: false };
   const subagents = { usd: 0, partial: false };
+  const seenThreads = new Set<string>();
+  const seenTurns = new Set<string>();
   for (const source of sources) {
+    if (seenThreads.has(source.threadId)) continue;
+    seenThreads.add(source.threadId);
     const section = source.depth === 0 ? parent : subagents;
     const base = { threadId: source.threadId, title: source.title, depth: source.depth };
     if (source.projection === null) {
@@ -157,10 +164,26 @@ export function estimateThreadCost(
       rows.push({ ...base, model: null, totalTokens: 0, costUsd: null, incompleteUsage: true });
       continue;
     }
-    const { usage, incomplete } = threadUsageByModel(source.projection);
+    // Native subagents can be mirrored in more than one projection.
+    // Count each provider turn only once across the entire descendant tree.
+    const providerTurns = source.projection.providerTurns.filter((turn) => {
+      if (seenTurns.has(turn.id)) return false;
+      seenTurns.add(turn.id);
+      return true;
+    });
+    const { usage, incomplete } = threadUsageByModel({
+      ...source.projection,
+      providerTurns,
+    });
     if (incomplete) section.partial = true;
     if (usage.length === 0) {
-      rows.push({ ...base, model: null, totalTokens: 0, costUsd: 0, incompleteUsage: incomplete });
+      rows.push({
+        ...base,
+        model: null,
+        totalTokens: 0,
+        costUsd: incomplete ? null : 0,
+        incompleteUsage: incomplete,
+      });
       continue;
     }
     for (const entry of usage) {

@@ -7,12 +7,13 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 
 function formatSubtotal(subtotal: ThreadCostSubtotal): string {
+  if (subtotal.partial && subtotal.usd === 0) return "Unknown";
   return `${subtotal.partial ? "≥ " : ""}${formatUsd(subtotal.usd)}`;
 }
 
 function formatRowCost(row: ThreadCostRow): string {
   if (row.costUsd !== null) return `${formatUsd(row.costUsd)}${row.incompleteUsage ? "*" : ""}`;
-  return row.model === null ? "loading" : "unpriced";
+  return row.model === null ? "usage unavailable" : "unpriced";
 }
 
 /** Estimated cost of the thread and its delegated subagents, at Usage page prices. */
@@ -21,10 +22,17 @@ export function ThreadCostLabel(props: {
   readonly className?: string | undefined;
 }) {
   const estimate = useThreadCostEstimate(props.threadRef);
-  if (estimate === null || estimate.rows.every((row) => row.model === null)) return null;
+  if (
+    estimate === null ||
+    estimate.rows.every((row) => row.model === null && !row.incompleteUsage && row.costUsd === 0)
+  )
+    return null;
   const subagentRows = estimate.rows.filter((row) => row.depth > 0);
   const subagentCount = new Set(subagentRows.map((row) => row.threadId)).size;
-  const text = `${estimate.partial ? "≥ " : "≈ "}${formatUsd(estimate.totalUsd)}`;
+  const text =
+    estimate.partial && estimate.totalUsd === 0
+      ? "Cost unknown"
+      : `${estimate.partial ? "≥ " : "≈ "}${formatUsd(estimate.totalUsd)}`;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -33,7 +41,7 @@ export function ThreadCostLabel(props: {
           "shrink-0 text-2xs leading-none tabular-nums text-secondary-label/50",
           props.className,
         )}
-        aria-label={`Estimated thread cost ${formatUsd(estimate.totalUsd)}${estimate.partial ? ", partial" : ""}`}
+        aria-label={`Estimated thread cost ${text}${estimate.partial ? ", partial" : ""}`}
       >
         {text}
       </TooltipTrigger>
@@ -72,7 +80,8 @@ export function ThreadCostLabel(props: {
           ) : null}
           {estimate.partial ? (
             <div className="text-muted-foreground">
-              ≥ marks a lower bound: unpriced models and turns without usage totals are excluded.
+              Partial costs exclude unpriced models and unfinished or unmeasured turns. ≥ marks a
+              known lower bound, not the final bill.
             </div>
           ) : null}
         </div>
