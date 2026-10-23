@@ -1889,7 +1889,10 @@ const make = Effect.gen(function* () {
           constraints.push(NO_SUBAGENT_MODELS);
         const { listed, omitted } = listCapabilityModels({
           provider: { ...provider, models: allowedModels },
-          preferences: settings.providerModelPreferences?.[provider.instanceId],
+          preferences: {
+            hiddenModels: [],
+            modelOrder: settings.providerModelPreferences?.[provider.instanceId]?.modelOrder ?? [],
+          },
           searchTerms,
           isPinned: (model) =>
             model.isCustom ||
