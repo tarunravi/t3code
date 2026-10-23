@@ -1489,7 +1489,11 @@ const make = Effect.gen(function* () {
 
     if (input.enforceSubagentAllowlist === true) {
       const settings = yield* loadSubagentSettings;
-      if (hiddenSubagentModels(settings, instanceId).has(model)) return yield* failure("model_unavailable", `Model ${model} is not allowed as a subagent on provider ${instanceId}.`);
+      if (hiddenSubagentModels(settings, instanceId).has(model))
+        return yield* failure(
+          "model_unavailable",
+          `Model ${model} is not allowed as a subagent on provider ${instanceId}.`,
+        );
     }
     const requestedOptions = input.target?.options;
     if (requestedOptions !== undefined) {
@@ -1849,80 +1853,89 @@ const make = Effect.gen(function* () {
     return task;
   });
 
-  const capabilities = Effect.fn("OrchestratorMcpService.capabilities")(function* (scope: McpInvocationScope, input: OrchestratorMcpCapabilitiesInput = {}) {
-      const { parent, limits } = yield* loadCaller(scope);
-      const providers = yield* loadProviders;
-      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-      const settings = yield* serverSettings.getSettings.pipe(
-        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
-      );
-      const sources = yield* usageLimitSources.current;
-      const providerUsage = providerCapabilityUsage(providers, sources);
-      const inherited = parent?.thread.modelSelection;
-      const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
-      return {
-        parentThreadId: parent?.thread.id ?? null,
-        inheritedProviderInstanceId: inherited?.instanceId ?? null,
-        inheritedModel: inherited?.model ?? null,
-        inheritedOptions: inherited?.options ?? [],
-        runtimeMode: limits.runtimeMode,
-        interactionMode: limits.interactionMode,
-        providers: providers.map((provider) => {
-          const constraints = [...providerConstraints(
+  const capabilities = Effect.fn("OrchestratorMcpService.capabilities")(function* (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpCapabilitiesInput = {},
+  ) {
+    const { parent, limits } = yield* loadCaller(scope);
+    const providers = yield* loadProviders;
+    const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+    );
+    const sources = yield* usageLimitSources.current;
+    const providerUsage = providerCapabilityUsage(providers, sources);
+    const inherited = parent?.thread.modelSelection;
+    const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
+    return {
+      parentThreadId: parent?.thread.id ?? null,
+      inheritedProviderInstanceId: inherited?.instanceId ?? null,
+      inheritedModel: inherited?.model ?? null,
+      inheritedOptions: inherited?.options ?? [],
+      runtimeMode: limits.runtimeMode,
+      interactionMode: limits.interactionMode,
+      providers: providers.map((provider) => {
+        const constraints = [
+          ...providerConstraints(
             provider,
             orchestrationCapableInstanceIds.has(provider.instanceId),
-          )];
-          const allowedModels = modelsAllowedForSubagents(provider, hiddenSubagentModels(settings, provider.instanceId));
-          if (constraints.length === 0 && provider.models.length > 0 && allowedModels.length === 0) constraints.push(NO_SUBAGENT_MODELS);
-          const { listed, omitted } = listCapabilityModels({
-            provider: { ...provider, models: allowedModels },
-            preferences: settings.subagentModelPreferences?.[provider.instanceId],
-            searchTerms,
-            isPinned: (model) =>
-              model.isCustom ||
-              (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
-              (settings.favorites ?? []).some(
-                (favorite) =>
-                  favorite.provider === provider.instanceId && favorite.model === model.slug,
-              ),
-          });
-          return {
-            providerInstanceId: provider.instanceId,
-            driverKind: provider.driver,
-            displayName: provider.displayName ?? null,
-            models: listed.map((model) => {
-              const options = model.capabilities?.optionDescriptors ?? [];
-              return {
-                id: model.slug,
-                ...(model.name.toLowerCase() === model.slug.toLowerCase()
-                  ? {}
-                  : { label: model.name }),
-                ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
-              };
-            }),
-            ...(omitted === 0 ? {} : { omittedModels: omitted }),
-            ...(provider.supportedRuntimeModes === undefined ||
-            provider.supportedRuntimeModes.length === 0
-              ? {}
-              : { runtimeModes: [...provider.supportedRuntimeModes] }),
-            canRunChildTask: constraints.length === 0,
-            canRunCrossProviderChildTask: constraints.length === 0,
-            constraints: [...constraints],
-          };
-        }),
-        ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
-        features: {
-          appOwnedSubagents: true,
-          asyncPolling: true,
-          cancellation: true,
-          batchThreadCreation: true,
-          threadManagement: true,
-          incrementalThreadRead: true,
-          scheduledTasks: true,
-          maxBatchThreads: 20,
-        },
-      };
-    });
+          ),
+        ];
+        const allowedModels = modelsAllowedForSubagents(
+          provider,
+          hiddenSubagentModels(settings, provider.instanceId),
+        );
+        if (constraints.length === 0 && provider.models.length > 0 && allowedModels.length === 0)
+          constraints.push(NO_SUBAGENT_MODELS);
+        const { listed, omitted } = listCapabilityModels({
+          provider: { ...provider, models: allowedModels },
+          preferences: settings.providerModelPreferences?.[provider.instanceId],
+          searchTerms,
+          isPinned: (model) =>
+            model.isCustom ||
+            (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
+            (settings.favorites ?? []).some(
+              (favorite) =>
+                favorite.provider === provider.instanceId && favorite.model === model.slug,
+            ),
+        });
+        return {
+          providerInstanceId: provider.instanceId,
+          driverKind: provider.driver,
+          displayName: provider.displayName ?? null,
+          models: listed.map((model) => {
+            const options = model.capabilities?.optionDescriptors ?? [];
+            return {
+              id: model.slug,
+              ...(model.name.toLowerCase() === model.slug.toLowerCase()
+                ? {}
+                : { label: model.name }),
+              ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
+            };
+          }),
+          ...(omitted === 0 ? {} : { omittedModels: omitted }),
+          ...(provider.supportedRuntimeModes === undefined ||
+          provider.supportedRuntimeModes.length === 0
+            ? {}
+            : { runtimeModes: [...provider.supportedRuntimeModes] }),
+          canRunChildTask: constraints.length === 0,
+          canRunCrossProviderChildTask: constraints.length === 0,
+          constraints: [...constraints],
+        };
+      }),
+      ...(Object.keys(providerUsage).length > 0 ? { providerUsage } : {}),
+      features: {
+        appOwnedSubagents: true,
+        asyncPolling: true,
+        cancellation: true,
+        batchThreadCreation: true,
+        threadManagement: true,
+        incrementalThreadRead: true,
+        scheduledTasks: true,
+        maxBatchThreads: 20,
+      },
+    };
+  });
 
   /** Failures a caller can fix by changing its arguments, so they carry a corrected call. */
   const withDelegateTaskCorrection = <A>(
@@ -2222,174 +2235,189 @@ const make = Effect.gen(function* () {
     }),
 
     capabilities,
-    delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, rawInput) {
-      const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      const input = yield* withDelegateTaskCorrection(scope, decodeDelegateTaskInput(rawInput));
-      const parentRun = parent.runs
-        .filter(ThreadManagementService.isActiveRun)
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      if (
-        parentRun === undefined ||
-        parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
-      ) {
-        return yield* failure(
-          "parent_not_active",
-          "Delegated tasks require an active run owned by this MCP provider session.",
-        );
-      }
-      const providers = yield* loadProviders;
-      const key = yield* requestKey(input.clientRequestId);
-      const commandId = stableCommandId({
-        scope,
-        requestKey: key,
-        operation: "delegate-task",
-      });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* withDelegateTaskCorrection(scope, resolveTargetRechecking({
-        parent, target: input.target, providers, enforceSubagentAllowlist: true,
-        skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      }));
-      const { runtimeMode, interactionMode } = yield* withDelegateTaskCorrection(scope, Effect.all({
-        runtimeMode: resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target),
-        interactionMode: resolveInteractionMode(parent.thread.interactionMode, input.interactionMode),
-      }));
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
-          })
-          .pipe(
-            Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
-            ),
+    delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(
+      function* (callerScope, rawInput) {
+        const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+        const input = yield* withDelegateTaskCorrection(scope, decodeDelegateTaskInput(rawInput));
+        const parentRun = parent.runs
+          .filter(ThreadManagementService.isActiveRun)
+          .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+        if (
+          parentRun === undefined ||
+          parentRun.rootNodeId === null ||
+          parentRun.providerInstanceId !== scope.thread.providerInstanceId
+        ) {
+          return yield* failure(
+            "parent_not_active",
+            "Delegated tasks require an active run owned by this MCP provider session.",
           );
-        // Launch preparation creates the worktree from the project root, so a
-        // parent checkout in another repository (such as a Git folder inside
-        // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
-          yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+        }
+        const providers = yield* loadProviders;
+        const key = yield* requestKey(input.clientRequestId);
+        const commandId = stableCommandId({
+          scope,
+          requestKey: key,
+          operation: "delegate-task",
+        });
+        const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+        const target = yield* withDelegateTaskCorrection(
+          scope,
+          resolveTargetRechecking({
+            parent,
+            target: input.target,
+            providers,
+            enforceSubagentAllowlist: true,
+            skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+          }),
+        );
+        const { runtimeMode, interactionMode } = yield* withDelegateTaskCorrection(
+          scope,
+          Effect.all({
+            runtimeMode: resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target),
+            interactionMode: resolveInteractionMode(
+              parent.thread.interactionMode,
+              input.interactionMode,
+            ),
+          }),
+        );
+        let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+        if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+          const project = yield* requireProject(parent.thread.projectId);
+          const base = yield* gitDriver
+            .resolveCommit({
+              cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+              revision: "HEAD",
+            })
             .pipe(
               Effect.mapError(() =>
-                failure(
-                  "invalid_request",
-                  `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-                ),
+                failure("invalid_request", "Unable to resolve the parent checkout commit."),
               ),
             );
-        }
-        workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
-      }
-      // ThreadManagementService.dispatch is the chokepoint for this command
-      // type's own enablement check, using the same command id and its
-      // receipt-replay exemption, so no separate assert runs here.
-      const result = yield* threadManagement
-        .dispatch({
-          type: "delegated_task.request",
-          createdBy: "agent",
-          creationSource: "mcp",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          task: input.task,
-          ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
-          runtimeMode,
-          interactionMode,
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          // Async delegations wake the parent on every child terminal; wait
-          // delegations deliver through the blocking tool call, so a wake is
-          // only needed if the parent settled first (timeout, disconnect).
-          completionWake: input.mode === "wait" ? "settled_only" : "always",
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "ThreadManagementProviderInstanceDisabledError"
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to create delegated task: ${errorMessage(error)}`,
+          // Launch preparation creates the worktree from the project root, so a
+          // parent checkout in another repository (such as a Git folder inside
+          // Scratch) would hand it a commit it cannot find.
+          if (parent.thread.worktreePath !== null) {
+            yield* gitDriver
+              .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+              .pipe(
+                Effect.mapError(() =>
+                  failure(
+                    "invalid_request",
+                    `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+                  ),
                 ),
-          ),
+              );
+          }
+          workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
+        }
+        // ThreadManagementService.dispatch is the chokepoint for this command
+        // type's own enablement check, using the same command id and its
+        // receipt-replay exemption, so no separate assert runs here.
+        const result = yield* threadManagement
+          .dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            parentThreadId: scope.thread.threadId,
+            parentRunId: parentRun.id,
+            parentNodeId: parentRun.rootNodeId,
+            task: input.task,
+            ...(input.title === undefined ? {} : { title: input.title }),
+            modelSelection: target.modelSelection,
+            runtimeMode,
+            interactionMode,
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            // Async delegations wake the parent on every child terminal; wait
+            // delegations deliver through the blocking tool call, so a wake is
+            // only needed if the parent settled first (timeout, disconnect).
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${errorMessage(error)}`,
+                  ),
+            ),
+          );
+        const taskEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
         );
-      const taskEvent = result.storedEvents.find(
-        (stored) =>
-          stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
-      );
-      if (taskEvent?.event.type !== "subagent.updated") {
-        return yield* failure(
-          "orchestration_error",
-          "Delegated task command did not produce a task projection.",
+        if (taskEvent?.event.type !== "subagent.updated") {
+          return yield* failure(
+            "orchestration_error",
+            "Delegated task command did not produce a task projection.",
+          );
+        }
+        const taskId = taskEvent.event.payload.id;
+        const childThreadId = taskEvent.event.payload.childThreadId;
+        const childRunEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "run.created" && stored.event.threadId === childThreadId,
         );
-      }
-      const taskId = taskEvent.event.payload.id;
-      const childThreadId = taskEvent.event.payload.childThreadId;
-      const childRunEvent = result.storedEvents.find(
-        (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
-      );
-      if (
-        childThreadId !== null &&
-        childRunEvent?.event.type === "run.created" &&
-        childRunEvent.event.payload.workspacePreparation !== undefined
-      ) {
-        yield* threadLaunch.prepareRun({
-          commandId,
-          threadId: childThreadId,
-          runId: childRunEvent.event.payload.id,
-        });
-      }
+        if (
+          childThreadId !== null &&
+          childRunEvent?.event.type === "run.created" &&
+          childRunEvent.event.payload.workspacePreparation !== undefined
+        ) {
+          yield* threadLaunch.prepareRun({
+            commandId,
+            threadId: childThreadId,
+            runId: childRunEvent.event.payload.id,
+          });
+        }
 
-      if (input.mode !== "wait") {
-        return yield* readTask(scope, taskId, false, true);
-      }
-      const timeoutMs = Math.min(
-        MAX_WAIT_TIMEOUT_MS,
-        Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-      );
-      const waited = yield* waitForTask(scope, taskId, timeoutMs);
-      if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) {
-        return waited.value;
-      }
-      // An incomplete wait gives up delivery: upgrade so a later terminal
-      // wakes the parent even mid-turn.
-      yield* threadManagement
-        .dispatch({
-          type: "delegated_task.wake-policy",
-          commandId: stableCommandId({
-            scope,
-            requestKey: key,
-            operation: "delegate-task-wake-policy",
-          }),
-          parentThreadId: scope.thread.threadId,
-          taskId,
-          completionWake: "always",
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("orchestrator-mcp.delegate-task.wake-policy-failed", {
-              taskId,
-              outcome:
-                error._tag === "OrchestratorCommandPreviouslyRejectedError"
-                  ? "previously_rejected"
-                  : "dispatch_failed",
-              error,
-            }),
-          ),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("orchestrator-mcp.delegate-task.wake-policy-failed", {
-              taskId,
-              outcome: "defect",
-              cause,
-            }),
-          ),
+        if (input.mode !== "wait") {
+          return yield* readTask(scope, taskId, false, true);
+        }
+        const timeoutMs = Math.min(
+          MAX_WAIT_TIMEOUT_MS,
+          Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
         );
-      return yield* readTask(scope, taskId, Option.isNone(waited), true);
-    }),
+        const waited = yield* waitForTask(scope, taskId, timeoutMs);
+        if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) {
+          return waited.value;
+        }
+        // An incomplete wait gives up delivery: upgrade so a later terminal
+        // wakes the parent even mid-turn.
+        yield* threadManagement
+          .dispatch({
+            type: "delegated_task.wake-policy",
+            commandId: stableCommandId({
+              scope,
+              requestKey: key,
+              operation: "delegate-task-wake-policy",
+            }),
+            parentThreadId: scope.thread.threadId,
+            taskId,
+            completionWake: "always",
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("orchestrator-mcp.delegate-task.wake-policy-failed", {
+                taskId,
+                outcome:
+                  error._tag === "OrchestratorCommandPreviouslyRejectedError"
+                    ? "previously_rejected"
+                    : "dispatch_failed",
+                error,
+              }),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestrator-mcp.delegate-task.wake-policy-failed", {
+                taskId,
+                outcome: "defect",
+                cause,
+              }),
+            ),
+          );
+        return yield* readTask(scope, taskId, Option.isNone(waited), true);
+      },
+    ),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
       return yield* readTask(scope, taskId, false, true);
