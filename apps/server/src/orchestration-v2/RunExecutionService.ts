@@ -47,7 +47,9 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
@@ -598,9 +600,11 @@ export class RunExecutionServiceV2 extends Context.Service<
   RunExecutionServiceV2Shape
 >()("t3/orchestration-v2/RunExecutionService/RunExecutionServiceV2") {}
 
-export const layer: Layer.Layer<
+export const layerFromServices: Layer.Layer<
   RunExecutionServiceV2,
   never,
+  | ProjectionStore.ProjectionStoreV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
   | CheckpointService.CheckpointServiceV2
   | EventSink.EventSinkV2
   | IdAllocator.IdAllocatorV2
@@ -613,6 +617,8 @@ export const layer: Layer.Layer<
   RunExecutionServiceV2,
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const commands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -928,6 +934,14 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
+        // Only admission is serialized with freeze/Stop; no Git or provider I/O
+        // holds the dispatch lock. Already-admitted OS work cannot be undone.
+        const admitStart = () => commands.withLock(input.run.threadId, Effect.gen(function* () {
+          const current = yield* projections.getThread(input.run.threadId);
+          if (current.preservationOnly === true) return false;
+          return input.shouldStartProviderTurn === undefined ||
+            (yield* input.shouldStartProviderTurn());
+        }));
         const responseStreamingMode = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
             Effect.map(
@@ -939,6 +953,7 @@ export const layer: Layer.Layer<
             // Synchronous-before-first-edit: the baseline is still awaited
             // here so the first agent edit never races it; the budget only
             // bounds how long the prompt dispatch waits.
+            if (!(yield* admitStart())) return null;
             const baselineScope = input.checkpointScope;
             const baselineOrdinalWithinScope = Math.max(0, input.run.ordinal - 1);
             const baselineStartedAt = yield* DateTime.now;
@@ -1017,10 +1032,7 @@ export const layer: Layer.Layer<
               runId: input.run.id,
               baselineElapsedMs,
             });
-          if (
-            input.shouldStartProviderTurn !== undefined &&
-            !(yield* input.shouldStartProviderTurn())
-          ) {
+          if (!(yield* admitStart())) {
             return null;
           }
           return responseStreamingMode;
@@ -1734,9 +1746,7 @@ export const layer: Layer.Layer<
         // Check after the context read: ingestion can settle the run while
         // it awaits. A failed ownership read fails the start below.
         const shouldStart =
-          input.shouldStartProviderTurn === undefined
-            ? Exit.succeed(true)
-            : yield* Effect.exit(input.shouldStartProviderTurn());
+          yield* Effect.exit(admitStart());
         if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
           yield* Fiber.interrupt(providerEventFiber);
           return;
@@ -1825,6 +1835,9 @@ export const layer: Layer.Layer<
  * always set one, so a missing reason means a person stopped the run.
  */
 export const USER_STOP_REASON = "Stopped by user";
+export const layer = layerFromServices.pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);
 
 export function makeInterruptResultTurnItem(input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];

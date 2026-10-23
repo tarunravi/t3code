@@ -80,3 +80,34 @@ it("uses the thread provider for stale background work without provider threads"
     expect(event?.type === "turn-item.updated" ? event.payload.status : null).toBe("cancelled");
   }).pipe(Effect.provide(layer), Effect.runPromise);
 });
+
+
+it.each([false, true])("preserves a frozen source across two startups and shutdown (continue=%s)", async (enabled) => {
+  const threadId = ThreadId.make("thread:explicit-preserved-source");
+  let writes = 0;
+  const projection = { thread: { id: threadId, preservationOnly: true } } as unknown as OrchestrationV2ThreadProjection;
+  const deny = () => Effect.sync(() => { writes++; throw new Error("Frozen history must not be rewritten"); });
+  const layer = ProviderRuntimeRecovery.layer.pipe(Layer.provide(Layer.mergeAll(
+    ServerSettings.layerTest({ continueThreadsAfterServerUpdate: enabled }),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getRecoveryThreadIds: () => Effect.succeed([threadId]),
+      getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+    }),
+    Layer.mock(EventSink.EventSinkV2)({ commitCommand: deny, writeWithEffects: deny }),
+    IdAllocator.layer,
+    Layer.mock(EffectOutbox.EffectOutboxV2)({
+      reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+      recoverFailedCheckpoint: deny,
+    }),
+  )));
+  await Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    for (let i = 0; i < 2; i++) {
+      const result = yield* recovery.reconcile("startup");
+      expect(result.terminalizedRuns).toBe(0);
+      yield* recovery.prepareForShutdown;
+      yield* recovery.reconcile("shutdown");
+    }
+  }).pipe(Effect.provide(layer), Effect.runPromise);
+  expect(writes).toBe(0);
+});

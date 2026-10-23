@@ -823,6 +823,7 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+      if (projection.thread.preservationOnly === true) continue;
       const enabled =
         continueAfterRestart !== null &&
         resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
@@ -860,6 +861,7 @@ export const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (
+          projection.thread.preservationOnly === true ||
           !resolveProjectSettings(enabled, projection.thread.projectId).settings
             .continueThreadsAfterServerUpdate
         )

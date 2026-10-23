@@ -1,6 +1,8 @@
 import {
   CommandId,
   MessageId,
+  ProviderSessionId,
+  OrchestrationV2TurnItemJson,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ScheduledTask,
   ScheduledTaskError,
@@ -44,6 +46,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import { IdleStallRecoveryDispatchGate } from "../orchestration-v2/Orchestrator.ts";
+import { decideIdleStallRecovery, type IdleStallRecoveryInput } from "./IdleStallPolicy.ts";
+import { OrchestrationV2RunJson, OrchestrationV2RunAttemptJson } from "@t3tools/contracts";
+
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -712,6 +718,177 @@ export const layer = Layer.effect(
         ),
     );
 
+    // Closed terminal evidence only. Active/buffered silence is never proof of a stall.
+    const terminalRecoveryObservation = Effect.fnUntraced(function* (
+      run: NonNullable<IdleStallRecoveryInput["run"]>, attempt: NonNullable<IdleStallRecoveryInput["attempt"]>,
+    ) {
+      const failed = run.status === "failed" && attempt.status === "failed";
+      if ((!failed && (run.status !== "completed" || attempt.status !== "completed")) ||
+        run.startedAt === null || attempt.startedAt === null || attempt.providerTurnId === null) return null;
+      const rows = yield* sql<{ sequence: number; event_type: string; occurred_at: string;
+        payload_json: string | null; total_bytes: number; stream_version: number }>`
+        WITH recent AS (SELECT sequence, stream_version, event_type, occurred_at, payload_json, metadata_json
+          FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${run.threadId}
+            AND application_event_version = 2 ORDER BY sequence DESC LIMIT 257),
+        budget AS (SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB)) + length(CAST(metadata_json AS BLOB))), 0) AS bytes FROM recent)
+        SELECT sequence, stream_version, event_type, occurred_at, bytes AS total_bytes,
+          CASE WHEN bytes <= 131072 THEN payload_json ELSE NULL END AS payload_json
+        FROM recent CROSS JOIN budget ORDER BY sequence ASC
+      `;
+      if (rows.length === 0 || rows.length > 256 || rows[0]!.total_bytes > 131072) return null;
+      let startSequence: number | null = null;
+      let previousVersion: number | null = null;
+      let terminalTurn = false;
+      let terminalRun = false;
+      let terminalAttempt = false;
+      let failureId: string | null = null;
+      const events: NonNullable<IdleStallRecoveryInput["observation"]>["events"][number][] = [];
+      const streaming = new Map<string, boolean>();
+      for (const row of rows) {
+        if (row.payload_json === null) return null;
+        const payload = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))(row.payload_json);
+        if ((row.event_type === "run-attempt.created" || row.event_type === "run-attempt.updated") &&
+          payload.id === attempt.id && payload.runId === run.id &&
+          payload.providerThreadId === attempt.providerThreadId && payload.providerInstanceId === run.providerInstanceId && payload.status === "running" &&
+          payload.startedAt === DateTime.formatIso(attempt.startedAt)) startSequence ??= row.sequence;
+        if (startSequence === null || row.sequence < startSequence) continue;
+        if (previousVersion !== null && row.stream_version !== previousVersion + 1) return null;
+        previousVersion = row.stream_version;
+        const exactTurn = row.event_type === "provider-turn.updated" && payload.id === attempt.providerTurnId &&
+          payload.runAttemptId === attempt.id && payload.providerThreadId === attempt.providerThreadId;
+        const exactRun = row.event_type === "run.updated" && payload.id === run.id && payload.activeAttemptId === attempt.id;
+        if (exactTurn) terminalTurn = payload.status === attempt.status &&
+          payload.completedAt === (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
+        if (exactRun) terminalRun = payload.status === run.status &&
+          payload.completedAt === (run.completedAt === null ? null : DateTime.formatIso(run.completedAt));
+        if (row.event_type === "run-attempt.updated" && payload.id === attempt.id) {
+          terminalAttempt = payload.runId === run.id && payload.status === attempt.status &&
+            payload.providerThreadId === attempt.providerThreadId && payload.providerTurnId === attempt.providerTurnId &&
+            payload.completedAt === (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
+        }
+        const at = Date.parse(row.occurred_at);
+        if (exactTurn || exactRun) events.push({ sequence: row.sequence, occurredAtMs: at,
+          kind: "tool", subjectId: `${row.event_type}:${String(payload.id)}`, value: String(payload.status) });
+        else if (payload.runId === run.id && payload.providerTurnId === attempt.providerTurnId &&
+          row.event_type === "turn-item.updated" && typeof payload.id === "string") {
+          if (failed && payload.type === "error") {
+            const decoded = Schema.decodeUnknownOption(OrchestrationV2TurnItemJson)(payload);
+            if (Option.isNone(decoded) || decoded.value.type !== "error") return null;
+            if (decoded.value.providerThreadId !== attempt.providerThreadId || decoded.value.threadId !== run.threadId ||
+              run.completedAt === null || at < DateTime.toEpochMillis(attempt.startedAt) || at > DateTime.toEpochMillis(run.completedAt)) return null;
+            const failure = decoded.value.failure;
+            // Native structured code, not message matching or a generic retryable flag.
+            failureId = decoded.value.status === "failed" && failure.class === "transport_error" &&
+              failure.code === "responseStreamDisconnected" && failure.retryable === true
+              ? decoded.value.id : null;
+          } else if (payload.type === "assistant_message" || payload.type === "reasoning") {
+            streaming.set(payload.id, payload.streaming === true);
+            if (typeof payload.text === "string") events.push({ sequence: row.sequence, occurredAtMs: at,
+              kind: payload.type === "reasoning" ? "reasoning" : "assistant", subjectId: payload.id, value: payload.text });
+          } else if (payload.type === "command_execution" || payload.type === "dynamic_tool") {
+            const value = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([payload.status, payload.output ?? null, payload.exitCode ?? null]);
+            events.push({ sequence: row.sequence, occurredAtMs: at, kind: "tool", subjectId: payload.id, value });
+          }
+        }
+      }
+      if (startSequence === null || !terminalTurn || !terminalRun || [...streaming.values()].some(Boolean) ||
+        (failed && (!terminalAttempt || failureId === null || run.completedAt === null || attempt.completedAt === null))) return null;
+      return { runId: run.id, attemptId: attempt.id, providerInstanceId: run.providerInstanceId,
+        providerThreadId: attempt.providerThreadId, providerTurnId: attempt.providerTurnId,
+        observedAtMs: DateTime.toEpochMillis(yield* localNow), completeSinceMs: DateTime.toEpochMillis(attempt.startedAt),
+        visibility: "complete", liveness: failed ? "stale" : "idle", failureId, activeOperations: [], events } satisfies NonNullable<IdleStallRecoveryInput["observation"]>;
+    });
+
+    const recoveryGeneration = (task: ScheduledTask) => Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))([
+      task.createdAt, task.projectId, task.threadId, task.schedule, task.prompt,
+    ]);
+    const recoveryFireKey = Effect.fnUntraced(function* (taskId: string, key: string) {
+      const digest = Array.from(new Uint8Array(yield* crypto.digest("SHA-256", new TextEncoder().encode(key))),
+        (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${taskId}:idle-stall:${digest}`;
+    });
+    const recoveryInput = Effect.fn("ScheduledTaskService.recoveryInput")(function* (
+      task: ScheduledTask, previousRunAt = task.lastRunAt,
+    ) {
+      const policy = task.schedule.type === "interval" ? task.schedule.idleStallRecovery : undefined;
+      if (policy === undefined || task.threadId === null || !task.enabled ||
+        recoveryGeneration(task).length > 65536) return null;
+      // Exact latest run, exact active attempt: no history scan or unbounded payload under the lock.
+      const rows = yield* sql<{ run: string; attempt: string; blocked: number; session_id: string | null; dead_session: number; pending_effect: number }>`
+        SELECT run.payload_json AS run, attempt.payload_json AS attempt,
+          json_extract(provider.payload_json, '$.providerSessionId') AS session_id,
+          EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_sessions AS session
+            WHERE session.provider_session_id = json_extract(provider.payload_json, '$.providerSessionId')
+              AND session.thread_id = run.thread_id AND session.provider_instance_id = json_extract(run.payload_json, '$.providerInstanceId')
+              AND session.status IN ('stopped', 'error')
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_sessions AS live
+                WHERE live.thread_id = run.thread_id AND live.status IN ('starting','ready','running','waiting'))) AS dead_session,
+          EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox
+            WHERE thread_id = run.thread_id AND status IN ('pending','running')
+              AND effect_type != 'thread-title.generate') AS pending_effect,
+          (json_extract(thread.payload_json, '$.preservationOnly') IS 1
+            OR thread.archived_at IS NOT NULL OR thread.deleted_at IS NOT NULL
+            OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests
+              WHERE thread_id = run.thread_id AND status = 'pending')
+            OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS other
+              WHERE other.thread_id = run.thread_id AND other.run_id != run.run_id
+                AND other.status IN ('queued','preparing','starting','running','waiting'))
+            OR EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items
+              WHERE thread_id = run.thread_id AND run_id = run.run_id AND
+                (type = 'run_interrupt_request' OR status IN ('pending','running','waiting')))
+            OR EXISTS (SELECT 1 FROM orchestration_v2_projection_subagents
+              WHERE thread_id = run.thread_id AND status IN ('pending','running','waiting'))
+          ) AS blocked
+        FROM orchestration_v2_projection_runs AS run
+        JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = run.thread_id
+        JOIN orchestration_v2_projection_run_attempts AS attempt
+          ON attempt.attempt_id = json_extract(run.payload_json, '$.activeAttemptId')
+          AND attempt.run_id = run.run_id AND attempt.thread_id = run.thread_id
+        JOIN orchestration_v2_projection_provider_threads AS provider
+          ON provider.provider_thread_id = run.provider_thread_id AND provider.thread_id = run.thread_id
+        JOIN orchestration_v2_projection_provider_turns AS turn
+          ON turn.provider_turn_id = attempt.provider_turn_id
+          AND turn.provider_thread_id = provider.provider_thread_id
+          AND turn.thread_id = run.thread_id AND turn.run_attempt_id = attempt.attempt_id
+          AND json_extract(provider.payload_json, '$.providerInstanceId') = json_extract(run.payload_json, '$.providerInstanceId')
+          AND provider.status IN ('idle', 'active')
+        WHERE run.thread_id = ${task.threadId}
+          AND run.run_id = (SELECT run_id FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${task.threadId} ORDER BY ordinal DESC LIMIT 1)
+          AND length(run.payload_json) <= 65536 AND length(attempt.payload_json) <= 65536
+        LIMIT 1
+      `;
+      const row = rows[0];
+      if (row === undefined || row.blocked) return null;
+      const run = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunJson))(row.run);
+      const attempt = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunAttemptJson))(row.attempt);
+      if (run.status === "failed") {
+        if (attempt.status !== "failed" || row.session_id === null || !row.dead_session || row.pending_effect ||
+          threadManagement.isProviderSessionLive === undefined ||
+          (yield* threadManagement.isProviderSessionLive(ProviderSessionId.make(row.session_id)))) return null;
+      }
+      const observation = yield* terminalRecoveryObservation(run, attempt);
+      if (observation === null || observation.events.length > 256) return null;
+      const observationJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(observation);
+      if (new TextEncoder().encode(observationJson).byteLength > 128 * 1024) return null;
+      const now = yield* localNow;
+      const input = {
+        enabled: true, taskId: task.id, taskGeneration: recoveryGeneration(task), run, attempt,
+        nowMs: DateTime.toEpochMillis(now), timeoutMs: policy.timeoutMs,
+        maxObservationAgeMs: 5000, cooldownMs: policy.cooldownMs,
+        lastRecoveryAtMs: previousRunAt === null ? null : Date.parse(previousRunAt),
+        recoveredEpisodeKeys: [], blockers: { manualStop: false, frozen: false, superseded: false,
+          awaitingInput: false, finalizing: run.status === "waiting", otherActiveOrQueuedRun: false },
+        observation,
+      } satisfies IdleStallRecoveryInput;
+      const decision = decideIdleStallRecovery(input);
+      if (decision.episodeKey === null) return input;
+      const commandId = `scheduled-task:${yield* recoveryFireKey(task.id, decision.episodeKey)}`;
+      const receipt = yield* sql`SELECT 1 FROM orchestration_command_receipts
+        WHERE command_id = ${commandId} AND aggregate_kind = 'thread' AND aggregate_id = ${task.threadId} AND status = 'accepted' LIMIT 1`;
+      return { ...input, recoveredEpisodeKeys: receipt.length === 0 ? [] : [decision.episodeKey] };
+    });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -781,6 +958,15 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        const recoveryOnly = trigger === "scheduled" && active.schedule.type === "interval" &&
+          active.schedule.idleStallRecovery !== undefined;
+        const recovery = recoveryOnly ? yield* recoveryInput(active) : null;
+        const proposal = recovery === null ? null : decideIdleStallRecovery(recovery);
+        if (recoveryOnly && proposal?.eligible !== true) {
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${nextRunAt(active, startedAt)}
+            WHERE task_id = ${active.id} AND updated_at = ${active.updatedAt}`;
+          return { task: active, threadId: null };
+        }
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -799,7 +985,8 @@ export const layer = Layer.effect(
 
         yield* notifyChanged;
 
-        const fireKey =
+        const episodeKey = proposal?.episodeKey;
+        const fireKey = episodeKey != null ? yield* recoveryFireKey(active.id, episodeKey) :
           webhook === undefined
             ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
             : `${active.id}:webhook:${webhook.deliveryId}`;
@@ -848,7 +1035,17 @@ export const layer = Layer.effect(
                     createdBy: active.createdBy,
                     creationSource: active.creationSource,
                   })
-                  .pipe(Effect.as(ThreadId.make(active.threadId))),
+                  .pipe(
+                    Effect.provideService(IdleStallRecoveryDispatchGate, !recoveryOnly ? {} : { check: Effect.gen(function* () {
+                      const current = yield* findTask(active.id);
+                      if (current === null || !current.enabled || recoveryGeneration(current) !== recoveryGeneration(active)) return false;
+                      const latest = yield* recoveryInput(current, active.lastRunAt);
+                      if (latest === null) return false;
+                      const decision = decideIdleStallRecovery(latest);
+                      return decision.eligible && decision.episodeKey === episodeKey;
+                    }) }),
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
               );
 
         const runSucceeded = result._tag === "Success";

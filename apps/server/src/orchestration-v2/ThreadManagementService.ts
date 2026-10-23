@@ -392,6 +392,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error
   >;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly isProviderSessionLive?: ProviderSessionManager.ProviderSessionManagerV2["Service"]["isLive"];
   readonly listProjectThreads: (input: {
     readonly projectId: ProjectId;
     readonly includeSubagents: boolean;
@@ -1245,6 +1246,7 @@ const make = Effect.gen(function* () {
         );
       },
     ),
+    isProviderSessionLive: sessions.isLive,
     getThreadProjection,
     getCheckpointContext,
     getThreadSnapshot,

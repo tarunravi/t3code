@@ -28,7 +28,7 @@ export function completedTurnTokenRate(
 
 export function formatTokenRate(rate: number | null): string | null {
   if (rate === null || !Number.isFinite(rate)) return null;
-  return `${Math.max(0, Math.round(rate))} tok/s (turn avg)`;
+  return `${rate > 0 && rate < 1 ? "<1" : Math.max(0, Math.round(rate))} tok/s (turn avg)`;
 }
 
 /** Provider turns are grouped by provider thread, not chronological order. */
@@ -140,7 +140,7 @@ export function liveTokenRateSource(
   return { key: run.id, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
 }
 
-/** Keeps only the newest sample before the window as the rate's baseline. */
+/** A sparse observation cannot establish when output arrived; start a fresh window. */
 export function appendTokenRateSample(
   samples: readonly TokenRateSample[],
   sample: TokenRateSample,
@@ -148,6 +148,8 @@ export function appendTokenRateSample(
 ): TokenRateSample[] {
   const last = samples.at(-1);
   if (last !== undefined && last.tokens === sample.tokens) return [...samples];
+  if (last !== undefined && (sample.atMs - last.atMs > windowMs || sample.tokens < last.tokens))
+    return [sample];
   const next = [...samples, sample];
   const cutoff = sample.atMs - windowMs;
   let baseIndex = 0;
@@ -156,28 +158,30 @@ export function appendTokenRateSample(
   return next.slice(baseIndex);
 }
 
-/** Measured to `now`, so the rate decays toward zero while streaming stalls. */
+/** Only recent, positive observed text growth supports a live estimate. */
 export function rollingTokenRate(
   samples: readonly TokenRateSample[],
   nowMs: number,
   windowMs: number = LIVE_TOKEN_RATE_WINDOW_MS,
 ): number | null {
   const newest = samples.at(-1);
-  if (newest === undefined) return null;
-  let base = samples[0]!;
-  for (const sample of samples) if (sample.atMs <= nowMs - windowMs) base = sample;
+  if (newest === undefined || nowMs - newest.atMs >= windowMs) return null;
+  const base = samples.find((sample) => sample.atMs >= nowMs - windowMs);
+  if (base === undefined) return null;
   const spanMs = nowMs - base.atMs;
-  if (spanMs < MIN_LIVE_SPAN_MS) return null;
-  return (Math.max(0, newest.tokens - base.tokens) / spanMs) * 1000;
+  const delta = newest.tokens - base.tokens;
+  if (spanMs < MIN_LIVE_SPAN_MS || delta <= 0) return null;
+  return (delta / spanMs) * 1000;
 }
 
 export function formatLiveTokenRate(rate: number | null): string | null {
   if (rate === null || !Number.isFinite(rate)) return null;
-  return `~${Math.max(0, Math.round(rate))} tok/s`;
+  if (rate <= 0) return null;
+  return `~${rate < 1 ? "<1" : Math.round(rate)} tok/s`;
 }
 
 export const LIVE_TOKEN_RATE_EXPLANATION =
-  "Live output speed over the last few seconds, estimated from streamed text and reasoning (~4 characters per token). Tool-call arguments are not counted.";
+  "Recent visible output speed, estimated from streamed text and reasoning (~4 characters per token). Tool-call arguments and unexposed reasoning are not counted. No recent visible output does not mean the provider is idle.";
 
 export function tokenRateExplanation(turn: OrchestrationV2ProviderTurn | null | undefined): string {
   if (completedTurnTokenRate(turn) !== null)

@@ -864,7 +864,10 @@ export function applyToProjection(
     case "thread.guest-share-updated":
       return {
         ...base,
-        thread: event.payload,
+        thread: {
+          ...event.payload,
+          preservationOnly: event.payload.preservationOnly ?? projection.thread.preservationOnly,
+        },
       };
     // Reordering and PR refreshes preserve the orchestrator's activity timestamp.
     case "thread.active-reordered":
@@ -2042,7 +2045,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.model-selection-updated":
             case "thread.provider-switched":
             case "thread.guest-share-updated": {
-              const payloadJson = yield* encodeThreadPayload(event.payload);
+              const threadPayload = event.type !== "thread.created" &&
+                event.payload.preservationOnly === undefined
+                ? { ...event.payload, preservationOnly: (yield* getThread(event.threadId)).preservationOnly }
+                : event.payload;
+              const payloadJson = yield* encodeThreadPayload(threadPayload);
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`
               INSERT INTO orchestration_v2_projection_threads (

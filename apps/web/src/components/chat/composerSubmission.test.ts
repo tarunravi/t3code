@@ -382,6 +382,22 @@ describe("send while recording", () => {
     },
   );
 
+  it("releases the pending submission after transcript finalization rejects", async () => {
+    const submitVoiceDraft = createVoiceDraftSubmitter();
+    const submit = vi.fn();
+    const options = {
+      stopAndAwaitTranscript: vi.fn().mockRejectedValueOnce(new Error("Recording cancelled")),
+      isCurrentDraft: () => true,
+      submit,
+    };
+    await expect(submitVoiceDraft(options)).rejects.toThrow("Recording cancelled");
+    expect(submit).not.toHaveBeenCalled();
+
+    options.stopAndAwaitTranscript.mockResolvedValueOnce(true);
+    await submitVoiceDraft(options);
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
   it("does not submit another thread's draft after switching during transcription", async () => {
     const submitVoiceDraft = createVoiceDraftSubmitter();
     const transcript = Promise.withResolvers<boolean>();

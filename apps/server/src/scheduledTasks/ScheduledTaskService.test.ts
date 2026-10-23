@@ -6,6 +6,7 @@ import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ScheduledTaskError,
   ScheduledTaskId,
   ThreadId,
@@ -23,12 +24,22 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerSettings from "../serverSettings.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import { CommandId, EventId, MessageId, NodeId, ProviderSessionId, ProviderThreadId, ProviderTurnId, RunAttemptId, RunId, TurnItemId } from "@t3tools/contracts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 
@@ -401,4 +412,180 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
       assert.lengthOf((yield* service.list()).tasks, 0);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+
+it.effect.each(["eligible", "production-idle", "production-stale", "stale-concurrent", "stale-repeat-recreated", "stale-wrong-identity", "stale-wrong-error-owner", "stale-other-live-session", "stale-live-session", "stale-missing-liveness", "stale-no-session", "stale-running", "stale-tool", "stale-child", "stale-input", "stale-stop", "stale-frozen", "stale-restart-pending", "stale-nontransient", "stale-quota", "stale-permission", "stale-refusal", "stale-no-start-event", "stale-queued", "stale-late-stop", "stale-late-freeze", "stale-late-config", "stale-late-identity", "stale-late-tool", "stale-late-live", "unknown", "oversized", "late-stop", "frozen", "ordinary", "manual"] as const)(
+  "gates opted-in scheduled recovery atomically while preserving %s behavior", (scenario) =>
+  Effect.gen(function* () {
+    const nowMs = Date.UTC(2026, 9, 23, 12);
+    yield* TestClock.setTime(nowMs);
+    const now = DateTime.makeUnsafe(nowMs);
+    const startedAt = DateTime.makeUnsafe(nowMs - 180000);
+    const completedAt = DateTime.makeUnsafe(nowMs - 120000);
+    const sql = yield* SqlClient.SqlClient;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:scheduled-recovery");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const providerThreadId = ProviderThreadId.make("provider-thread:scheduled-recovery");
+    const providerTurnId = ProviderTurnId.make("turn:scheduled-recovery");
+    const runId = RunId.make("run:scheduled-recovery");
+    const attemptId = RunAttemptId.make("attempt:scheduled-recovery");
+    const nodeId = NodeId.make("node:scheduled-recovery");
+    const stale = scenario === "production-stale" || scenario.startsWith("stale-");
+    const shouldRecover = ["production-stale", "stale-concurrent", "stale-repeat-recreated"].includes(scenario);
+    const providerSessionId = ProviderSessionId.make("session:scheduled-stale");
+    const terminalStatus = scenario === "stale-running" ? "running" as const : stale ? "failed" as const : "completed" as const;
+    const modelSelection = { instanceId: providerInstanceId, model: "test", options: [{ id: "reasoningEffort", value: "max" }] };
+    const realManagement = yield* ThreadManagementService.ThreadManagementService.pipe(Effect.provide(
+      ThreadManagementService.layer.pipe(Layer.provide(Layer.mergeAll(ServerSettings.layerTest(), CommandReceiptStore.layer)))));
+    yield* orchestrator.dispatch({ type: "thread.create", threadId, commandId: CommandId.make("create-policy-thread"),
+      projectId: ProjectId.make("project:test"), title: "Policy thread", modelSelection,
+      runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
+      createdBy: "user", creationSource: "web" });
+    const run = { id: runId, threadId, ordinal: 1, providerInstanceId, modelSelection, providerThreadId,
+      userMessageId: MessageId.make("message:policy-source"), rootNodeId: nodeId, activeAttemptId: attemptId,
+      status: scenario === "stale-queued" ? "queued" as const : terminalStatus, requestedAt: startedAt, startedAt: scenario === "stale-queued" ? null : startedAt, completedAt, checkpointId: null, contextHandoffId: null };
+    const attempt = { id: attemptId, runId, attemptOrdinal: 1, rootNodeId: nodeId, providerInstanceId,
+      providerThreadId, providerTurnId, reason: "initial" as const, status: scenario === "stale-queued" ? "pending" as const : terminalStatus, startedAt: scenario === "stale-queued" ? null : startedAt, completedAt };
+    const events = [
+      { type: "run.created", payload: run },
+      { type: "run-attempt.created", payload: attempt },
+      { type: "provider-thread.updated", payload: { id: providerThreadId, driver: "codex", providerInstanceId,
+        providerSessionId: stale ? providerSessionId : null, appThreadId: threadId, ownerNodeId: null, nativeThreadRef: null,
+        nativeConversationHeadRef: null, status: "idle", firstRunOrdinal: 1, lastRunOrdinal: 1,
+        handoffIds: [], forkedFrom: null, createdAt: startedAt, updatedAt: completedAt } },
+      { type: "provider-turn.updated", payload: { id: providerTurnId, providerThreadId, nodeId,
+        runAttemptId: attemptId, nativeTurnRef: null, ordinal: 1, status: terminalStatus, startedAt, completedAt } },
+    ];
+    for (const [index, event] of events.entries()) yield* projections.apply({ ...event,
+      id: EventId.make(`event:policy:${index}`), threadId, occurredAt: now } as never);
+    if (stale) yield* projections.apply({ id: EventId.make("session:stale"), type: "provider-session.updated", threadId, occurredAt: completedAt,
+      payload: { id: providerSessionId, driver: "codex", providerInstanceId, status: "error", cwd: "/projects/test", model: "test", capabilities: CodexProviderCapabilitiesV2, createdAt: startedAt, updatedAt: completedAt, lastError: "Stream disconnected" } } as never);
+    const failureItem = { id: TurnItemId.make("item:transport-failure"), nativeItemRef: null, parentItemId: null, title: null, updatedAt: completedAt, threadId, runId, providerThreadId: scenario === "stale-wrong-error-owner" ? ProviderThreadId.make("provider-thread:wrong-error") : providerThreadId, providerTurnId, nodeId, ordinal: 1, type: "error" as const, status: "failed" as const,
+            startedAt: completedAt, completedAt, failure: { class: scenario === "stale-quota" ? "usage_limit" as const : scenario === "stale-permission" ? "permission_error" as const : "transport_error" as const, code: scenario === "stale-refusal" ? "refusal" : "responseStreamDisconnected", retryable: scenario !== "stale-nontransient", message: "Disconnected" } };
+    if (stale || ["eligible", "production-idle", "late-stop", "oversized"].includes(scenario)) {
+      const sink = yield* EventSink.EventSinkV2;
+      yield* sink.write({ events: [
+        ...(scenario === "stale-no-start-event" ? [] : [{ id: EventId.make("durable-attempt-start"), type: "run-attempt.created" as const, threadId, runId,
+          occurredAt: startedAt, payload: { ...attempt, status: "running" as const, completedAt: null } }]),
+        { id: EventId.make("durable-turn-end"), type: "provider-turn.updated", threadId, runId,
+          occurredAt: completedAt, payload: { id: providerTurnId, providerThreadId, nodeId,
+            runAttemptId: attemptId, nativeTurnRef: null, ordinal: 1, status: terminalStatus, startedAt, completedAt } },
+        ...(stale ? [{ id: EventId.make("durable-transient-failure"), type: "turn-item.updated" as const, threadId, runId, occurredAt: completedAt,
+          payload: failureItem }] : []),
+        { id: EventId.make("durable-attempt-end"), type: "run-attempt.updated", threadId, runId,
+          occurredAt: completedAt, payload: attempt },
+        { id: EventId.make("durable-run-end"), type: "run.updated", threadId, runId,
+          occurredAt: completedAt, payload: run },
+      ] });
+      if (scenario === "oversized") yield* sink.write({ events: [{
+        id: EventId.make("oversize-history"), type: "thread.metadata-updated", threadId,
+        occurredAt: now, payload: { ...(yield* projections.getThread(threadId)), title: "x".repeat(131073) },
+      }] });
+    }
+    const schedule = { type: "interval", everyMs: 60000,
+      ...(scenario === "ordinary" ? {} : { idleStallRecovery: { timeoutMs: 60000, cooldownMs: 0 } }) };
+    yield* insertRow(sql, { id: "policy-task", next: DateTime.formatIso(now), enabled: 1,
+      status: "never", scheduleJson: JSON.stringify(schedule) }, DateTime.formatIso(startedAt));
+    yield* sql`UPDATE scheduled_tasks SET thread_id = ${threadId} WHERE task_id = 'policy-task'`;
+    if (["frozen", "stale-frozen"].includes(scenario)) yield* orchestrator.dispatch({ type: "thread.metadata.update", threadId,
+      commandId: CommandId.make("freeze-before-policy"), preservationOnly: true });
+    const activeTool = projections.apply({ id: EventId.make("tool:observation"), type: "turn-item.updated", threadId, occurredAt: now,
+      payload: { id: TurnItemId.make("tool:active"), threadId, runId, nodeId, providerThreadId, providerTurnId,
+        nativeItemRef: null, parentItemId: null, ordinal: 9, status: "running", title: null,
+        startedAt, completedAt: null, updatedAt: now, type: "command_execution", input: "bounded test tool" } });
+    if (scenario === "stale-stop") yield* orchestrator.dispatch({ type: "thread.stop", threadId, commandId: CommandId.make("stale-stop") });
+    if (scenario === "stale-wrong-identity") yield* sql`UPDATE orchestration_v2_projection_run_attempts SET payload_json = json_set(payload_json, '$.providerThreadId', 'provider-thread:wrong') WHERE attempt_id = ${attemptId}`;
+    if (scenario === "stale-other-live-session") yield* projections.apply({ id: EventId.make("session:other-live"), type: "provider-session.updated", threadId, occurredAt: now,
+      payload: { id: ProviderSessionId.make("session:other-live"), driver: ProviderDriverKind.make("codex"), providerInstanceId, status: "running", cwd: "/projects/test", model: "test", capabilities: CodexProviderCapabilitiesV2, createdAt: startedAt, updatedAt: now, lastError: null } });
+    if (scenario === "stale-no-session") yield* sql`DELETE FROM orchestration_v2_projection_provider_sessions WHERE provider_session_id = ${providerSessionId}`;
+    if (scenario === "stale-input") yield* sql`INSERT INTO orchestration_v2_projection_runtime_requests (runtime_request_id, thread_id, node_id, provider_turn_id, kind, status, created_at, payload_json) VALUES ('request:wait', ${threadId}, ${nodeId}, ${providerTurnId}, 'user_input', 'pending', ${DateTime.formatIso(now)}, '{}')`;
+    if (scenario === "stale-tool") yield* activeTool;
+    if (scenario === "stale-child") yield* sql`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, parent_node_id, provider, origin, status, updated_at, payload_json) VALUES ('child:active', ${threadId}, ${nodeId}, 'codex', 'provider', 'running', ${DateTime.formatIso(now)}, '{}')`;
+    if (scenario === "stale-restart-pending") yield* sql`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count, available_at, created_at, updated_at) VALUES ('restart:pending', 'restart:command', ${threadId}, 'provider-runtime.continue', '{}', 'pending', 0, ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)})`;
+    let tick: Effect.Effect<void> = Effect.die("Scheduler registration missing");
+    const register: Scheduler.Scheduler["Service"]["register"] = <E, R>(
+      name: string, work: Effect.Effect<void, E, R>,
+    ) => Effect.context<R>().pipe(Effect.map((context) => {
+      if (name === "scheduled-tasks") tick = work.pipe(Effect.provideContext(context), Effect.orDie);
+    }));
+    const { isProviderSessionLive, ...withoutLiveness } = realManagement;
+    let sent = 0;
+    let sentToBoundary = false;
+    const layer = ScheduledTaskService.layer.pipe(Layer.provide(Layer.mergeAll(
+      NodeCrypto.layer,
+      Layer.mock(Scheduler.Scheduler)({ register }),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false) }),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.succeed(ThreadManagementService.ThreadManagementService, { ...withoutLiveness,
+        ...(scenario === "stale-missing-liveness" ? {} : { isProviderSessionLive: (id: ProviderSessionId) => {
+          assert.equal(id, providerSessionId);
+          return scenario === "stale-live-session" || (scenario === "stale-late-live" && sentToBoundary)
+            ? Effect.succeed(true) : isProviderSessionLive!(id);
+        } }), sendToThread: (input) => Effect.gen(function* () {
+        sentToBoundary = true;
+        assert.isFalse("modelSelection" in input);
+        if (["late-stop", "stale-late-stop"].includes(scenario)) yield* orchestrator.dispatch({ type: "thread.stop", threadId,
+          commandId: CommandId.make("stop-after-observation") });
+        if (scenario === "stale-late-freeze") yield* orchestrator.dispatch({ type: "thread.metadata.update", threadId, commandId: CommandId.make("late-freeze"), preservationOnly: true });
+        if (scenario === "stale-late-config") yield* sql`UPDATE scheduled_tasks SET prompt = 'Changed execution prompt' WHERE task_id = 'policy-task'`;
+        if (scenario === "stale-late-identity") yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.activeAttemptId', 'attempt:superseded') WHERE run_id = ${runId}`;
+        if (scenario === "stale-late-tool") yield* activeTool;
+        const result = yield* realManagement.sendToThread(input);
+        sent++;
+        return result;
+      }).pipe(Effect.orDie) }),
+    )));
+    const exercise = Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      if (scenario === "manual") yield* service.runNow({ id: ScheduledTaskId.make("policy-task") });
+      else if (scenario === "stale-concurrent") {
+        const firstTick = tick;
+        yield* Effect.gen(function* () {
+          yield* ScheduledTaskService.ScheduledTaskService;
+          yield* Effect.all([firstTick, tick], { concurrency: "unbounded", discard: true });
+        }).pipe(Effect.provide(Layer.fresh(layer)));
+      } else {
+        yield* tick;
+        if (scenario === "production-idle" || shouldRecover) {
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(now)} WHERE task_id = 'policy-task'`;
+          yield* tick;
+          if (scenario === "stale-repeat-recreated") yield* Effect.gen(function* () {
+            // Simulate an earlier projection after restart; the durable command receipt must still win.
+            yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND run_id != ${runId}`;
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({ events: [{ id: EventId.make("duplicate-failure-after-restart"), type: "turn-item.updated", threadId, runId, occurredAt: completedAt, payload: failureItem }] });
+            sentToBoundary = false;
+            yield* ScheduledTaskService.ScheduledTaskService;
+            yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(now)} WHERE task_id = 'policy-task'`;
+            yield* tick;
+            assert.isFalse(sentToBoundary);
+          }).pipe(Effect.provide(Layer.fresh(layer)));
+        }
+      }
+      assert.equal(sent, (shouldRecover || ["eligible", "production-idle", "ordinary", "manual"].includes(scenario)) ? 1 : 0);
+      if (shouldRecover && scenario !== "stale-repeat-recreated") {
+        const queued = yield* sql<{ payload_json: string }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND run_id != ${runId}`;
+        assert.lengthOf(queued, 1);
+        assert.deepEqual(JSON.parse(queued[0]!.payload_json).modelSelection, modelSelection);
+      }
+      const rows = yield* sql<{ count: number }>`SELECT count(*) AS count FROM orchestration_command_receipts
+        WHERE command_id GLOB 'scheduled-task:policy-task:idle-stall:*' AND status = 'accepted'`;
+      assert.equal(rows[0]?.count, (shouldRecover || ["eligible", "production-idle"].includes(scenario)) ? 1 : 0);
+    }).pipe(Effect.provide(layer));
+    yield* exercise;
+  }).pipe(Effect.provide((() => {
+    const db = SqlitePersistence.layerMemory;
+    const registry = ProviderAdapterRegistry.layerFromAdapters([{ instanceId: ProviderInstanceId.make("codex"),
+      driver: "codex", getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+      openSession: () => Effect.die("Provider execution forbidden in scheduler tests") } as never]);
+    return Layer.mergeAll(db, ProjectionStore.layer.pipe(Layer.provide(db)),
+      ProviderReplayHarness.layerWithRegistry({ name: "idle-stall-integration" }, registry,
+        { databaseLayer: db, runEffectWorker: false }));
+  })())),
 );

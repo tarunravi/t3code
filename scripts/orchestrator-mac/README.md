@@ -2,6 +2,18 @@
 
 Builds this fork as `T3Code`: bundle id `com.t3tools.t3code.orchestrator`, desktop profile `t3code-pr-2829`, backend home from `T3_ORCH_HOME` (use `~/.t3` for Tarun's install), auto-update off. `overlay.patch` applies that identity in a scratch worktree, so the source tree keeps upstream's identity.
 
+## Source-only overlay checks
+
+`T3_FLAVOR=normal` selects `normal-overlay.patch`: display name `T3 Code`, upstream bundle id and desktop profile, backend home from `T3_HOME` (default `~/.t3`), and auto-update off. Both overlays retain upstream's build and permission guards.
+
+```sh
+git apply --check scripts/orchestrator-mac/normal-overlay.patch
+git apply --check scripts/orchestrator-mac/overlay.patch
+node --test scripts/orchestrator-mac/overlay.test.mjs
+```
+
+The test applies each overlay only to temporary source copies. It does not import or run build, signing, reinstall, or app-startup code; passing is not installer or release acceptance.
+
 ## Build
 
 Requires Node 24.13 or newer, pnpm 11, Xcode command-line tools, and a code-signing identity.
