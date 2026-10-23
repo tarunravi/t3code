@@ -412,6 +412,85 @@ describe("V2 session presentation", () => {
     });
   });
 
+  describe("paged rewrite boundaries", () => {
+    const runId = RunId.make("paged-run");
+    const messageId = MessageId.make("paged-message");
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: messageId,
+        kind: "message",
+        createdAt: "2026-10-23T00:00:00.000Z",
+        message: {
+          id: messageId,
+          role: "user",
+          text: "Rewrite the first loaded turn",
+          runId,
+          inputIntent: "turn_start",
+          streaming: false,
+          createdAt: "2026-10-23T00:00:00.000Z",
+          updatedAt: "2026-10-23T00:00:00.000Z",
+        },
+      },
+    ];
+    const ownCheckpoint = {
+      runId,
+      checkpointTurnCount: 5,
+      checkpointRef: "paged-checkpoint" as never,
+      status: "missing" as const,
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-10-23T00:00:01.000Z",
+    };
+
+    it("rewinds a completed first-loaded turn outside git to four, not thread start", () => {
+      expect([
+        ...deriveRevertTurnCountByUserMessageId({
+          timelineEntries,
+          checkpoints: [ownCheckpoint],
+          threadStartCheckpointReady: false,
+          availableRevertTurnCounts: new Set([0, 4, 5]),
+          // useStableRewriteRuns omits completed runs, even with a run ordinal of 9.
+          runs: [],
+        }),
+      ]).toEqual([[messageId, 4]]);
+    });
+
+    it("still filters unavailable targets and clamps the baseline to zero", () => {
+      const input = { timelineEntries, threadStartCheckpointReady: false };
+      expect([
+        ...deriveRevertTurnCountByUserMessageId({
+          ...input,
+          checkpoints: [ownCheckpoint],
+          availableRevertTurnCounts: new Set([0, 5]),
+        }),
+      ]).toEqual([]);
+      expect([
+        ...deriveRevertTurnCountByUserMessageId({
+          ...input,
+          checkpoints: [{ ...ownCheckpoint, checkpointTurnCount: 1 }],
+        }),
+      ]).toEqual([[messageId, 0]]);
+    });
+
+    it.each(["ready", "missing"] as const)(
+      "uses checkpoint units after a rewind with an own %s checkpoint",
+      (status) => {
+        expect([
+          ...deriveRevertTurnCountByUserMessageId({
+            timelineEntries,
+            checkpoints: [
+              { ...ownCheckpoint, runId: RunId.make("previous-run"), checkpointTurnCount: 4 },
+              { ...ownCheckpoint, status },
+            ],
+            threadStartCheckpointReady: false,
+            availableRevertTurnCounts: new Set([0, 4, 5]),
+            runs: [{ id: runId, ordinal: 9, status: "failed" }],
+          }),
+        ]).toEqual([[messageId, 4]]);
+      },
+    );
+  });
+
   it("offers conversation-only rewrites for turns without a file snapshot", () => {
     const runId = RunId.make("run-outside-git");
     const messageId = MessageId.make("message-outside-git");
@@ -443,15 +522,23 @@ describe("V2 session presentation", () => {
 
     const missing = [{ ...checkpoint, status: "missing" as const }];
     expect([
-      ...deriveRevertTurnCountByUserMessageId({ threadStartCheckpointReady: false, timelineEntries, checkpoints: missing }),
-    ]).toEqual([[messageId, 0]]);
+      ...deriveRevertTurnCountByUserMessageId({
+        threadStartCheckpointReady: false,
+        timelineEntries,
+        checkpoints: missing,
+      }),
+    ]).toEqual([[messageId, 1]]);
     expect(canRestoreFilesForRun(missing, runId)).toBe(false);
 
     const ready = [{ ...checkpoint, status: "ready" as const }];
     expect(canRestoreFilesForRun(ready, runId)).toBe(true);
     const failed = [{ ...checkpoint, status: "error" as const }];
     expect(
-      deriveRevertTurnCountByUserMessageId({ threadStartCheckpointReady: false, timelineEntries, checkpoints: failed }).size,
+      deriveRevertTurnCountByUserMessageId({
+        threadStartCheckpointReady: false,
+        timelineEntries,
+        checkpoints: failed,
+      }).size,
     ).toBe(0);
   });
 
