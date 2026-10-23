@@ -122,6 +122,16 @@ async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
   await renderProjection(projectionFor(providerTurn));
 }
 describe("TokenRateLabel", () => {
+  it("settles a live projection with real timers across parent rerenders", async () => {
+    await using _fixture = await setup();
+    const projection = streaming("live output");
+    await root.rerender(<TokenRateLabel projection={projection} />);
+    expect(container.textContent).toBe("tok/s N/A");
+    await root.rerender(<TokenRateLabel projection={projection} className="test-label" />);
+    expect(container.querySelector("span")?.classList.contains("test-label")).toBe(true);
+    await render(completed);
+    expect(container.textContent).toBe("100 tok/s (turn avg)");
+  });
   it("measures live assistant and reasoning item nodes beneath the root, then shows the turn average", async () => {
     await using _fixture = await setup();
     {
