@@ -60,6 +60,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import { delegateTaskCorrection } from "./delegateTaskCorrection.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -571,7 +572,7 @@ describe("OrchestratorMcpService", () => {
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+          usageSourcesTestLayer,
         );
         const scope: McpInvocationScope = {
           environmentId: EnvironmentId.make("environment:mcp-orphan"),
@@ -1417,6 +1418,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         models: [
           ...opencodeSlugs.map((slug) => model(slug, { isLegacy: slug === "oc/m03" })),
           model("oc-custom", { isCustom: true }),
+          model("oc-subagent-hidden"),
         ],
       },
     ];
@@ -1442,6 +1444,9 @@ describe("OrchestratorMcpService provider resolution", () => {
                     { provider: codexInstanceId, model: "gpt-4" },
                     { provider: opencodeInstanceId, model: "oc/m10" },
                   ],
+                  subagentModelPreferences: {
+                    [opencodeInstanceId]: { hiddenModels: ["oc-subagent-hidden"] },
+                  },
                   providerModelPreferences: {
                     [opencodeInstanceId]: { hiddenModels: ["oc/m02"], modelOrder: ["oc/m12"] },
                   },
@@ -1452,7 +1457,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+                usageSourcesTestLayer,
               ),
             ),
           ),
@@ -2077,7 +2082,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+                usageSourcesTestLayer,
               ),
             ),
           );
@@ -2373,7 +2378,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                     ? "No V2 provider adapter is registered. "
                     : "") +
                   "Provider instance is disabled.";
-                assert.equal(error.message, expectedMessage);
+                assert.equal(
+                  error.message,
+                  `${expectedMessage}\n\n${delegateTaskCorrection(yield* service.capabilities(scope))}`,
+                );
                 const threadError = yield* service
                   .createThreads(scope, {
                     threads: [{ prompt: "Summarize the diff.", target }],
@@ -2745,7 +2753,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+          usageSourcesTestLayer,
         );
         yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
@@ -2856,7 +2864,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+            usageSourcesTestLayer,
           );
           yield* Effect.gen(function* () {
             const service = yield* OrchestratorMcpService.OrchestratorMcpService;
@@ -3001,7 +3009,7 @@ describe("OrchestratorMcpService thread lookup", () => {
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        usageSourcesTestLayer,
+          usageSourcesTestLayer,
         ),
       ),
     );

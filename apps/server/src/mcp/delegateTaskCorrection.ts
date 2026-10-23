@@ -1,7 +1,7 @@
 import type {
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpProviderCapability,
-  ProviderOptionDescriptor,
+  OrchestratorMcpModelOption,
 } from "@t3tools/contracts";
 
 const MAX_MODELS_PER_PROVIDER = 12;
@@ -12,10 +12,8 @@ type CorrectionCapabilities = Pick<
 >;
 type ModelCapability = OrchestratorMcpProviderCapability["models"][number];
 
-function describeOption(descriptor: ProviderOptionDescriptor): string {
-  return descriptor.type === "boolean"
-    ? `${descriptor.id}=true|false`
-    : `${descriptor.id}=${descriptor.options.map((choice) => choice.id).join("|")}`;
+function describeOption(descriptor: OrchestratorMcpModelOption): string {
+  return `${descriptor.id}=${descriptor.values.join("|")}`;
 }
 
 function describeModel(model: ModelCapability): string {
@@ -25,16 +23,16 @@ function describeModel(model: ModelCapability): string {
     : `${model.id} (${options.map(describeOption).join("; ")})`;
 }
 
-/** A select option the agent is most likely to vary, set to its default value. */
-function exampleOptions(model: ModelCapability | undefined): Record<string, string> | undefined {
-  const descriptor = model?.options?.find(
-    (candidate) => candidate.type === "select" && candidate.options.length > 0,
-  );
-  if (descriptor === undefined || descriptor.type !== "select") return undefined;
+/** Show one advertised option, preferring its default when it is an allowed value. */
+function exampleOptions(
+  model: ModelCapability | undefined,
+): Record<string, string | boolean> | undefined {
+  const descriptor = model?.options?.find((candidate) => candidate.values.length > 0);
+  if (descriptor === undefined) return undefined;
   const value =
-    descriptor.currentValue ??
-    descriptor.options.find((choice) => choice.isDefault === true)?.id ??
-    descriptor.options[0]!.id;
+    descriptor.default !== undefined && descriptor.values.includes(descriptor.default)
+      ? descriptor.default
+      : descriptor.values[0]!;
   return { [descriptor.id]: value };
 }
 
