@@ -642,6 +642,117 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "runtime capture blocks same-thread dispatch until finalization releases its lock",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = ThreadId.make("runtime-capture-lock");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Before capture",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: "/nonexistent/runtime-capture-lock",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Do not execute provider work.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        yield* threads.interruptThread({
+          projectId: ProjectId.make(`${threadId}:project`),
+          commandId: CommandId.make(`${threadId}:interrupt`),
+          threadId,
+          runId: run.id,
+          reason: "Cancel pending start without executing provider work",
+        });
+        const captureEntered = yield* Deferred.make<void>();
+        const releaseCapture = yield* Deferred.make<void>();
+        const dispatchQueued = yield* Deferred.make<void>();
+        const getContext = projections.getCheckpointCaptureContext;
+        const captureSpy = vi
+          .spyOn(projections, "getCheckpointCaptureContext")
+          .mockImplementation((...args) =>
+            Deferred.succeed(captureEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCapture)),
+              Effect.andThen(getContext(...args)),
+            ),
+          );
+        const withLock = executor.withLock;
+        let lockRequests = 0;
+        const observeLock: typeof withLock = (key, effect) => {
+          if (key !== threadId || ++lockRequests !== 2) return withLock(key, effect);
+          return Deferred.succeed(dispatchQueued, undefined).pipe(
+            Effect.andThen(withLock(key, effect)),
+          );
+        };
+        const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+        yield* Effect.gen(function* () {
+          const capture = yield* worker.runOnce.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(captureEntered),
+            Fiber.join(capture).pipe(
+              Effect.andThen(Effect.die("Runtime worker did not reach checkpoint capture.")),
+            ),
+          );
+          const dispatch = yield* orchestrator
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`${threadId}:update`),
+              threadId,
+              title: "After capture",
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(dispatchQueued),
+            Fiber.join(dispatch).pipe(
+              Effect.andThen(Effect.die("Dispatch bypassed the runtime capture lock.")),
+            ),
+          );
+          assert.isUndefined(dispatch.pollUnsafe());
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).thread.title,
+            "Before capture",
+          );
+          yield* Deferred.succeed(releaseCapture, undefined);
+          assert.isTrue(yield* Fiber.join(capture));
+          yield* Fiber.join(dispatch);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(after.thread.title, "After capture");
+          assert.equal(after.runs[0]?.status, "interrupted");
+          assert.isNotNull(after.runs[0]?.checkpointId);
+          assert.deepEqual(after.providerTurns, []);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              captureSpy.mockRestore();
+              lockSpy.mockRestore();
+            }),
+          ),
+        );
+      }),
+  );
+
   it.effect("forks a side chat from a parent run in progress and discards it with the parent", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

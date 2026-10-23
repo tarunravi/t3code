@@ -16,6 +16,7 @@ import {
   orchestrationEffectClaimsTotal,
   orchestrationEffectQueueWait,
 } from "../observability/Metrics.ts";
+import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -467,6 +468,7 @@ export const layerExecutor: Layer.Layer<
                 threadId: effect.threadId,
                 runId: effect.request.runId,
                 scopeId: effect.request.scopeId,
+                historicalRefOnly: effect.request.historicalRefOnly,
               })
               .pipe(
                 Effect.mapError(
@@ -594,6 +596,9 @@ export class OrchestrationEffectWorkerError extends Schema.TaggedError<Orchestra
   },
 ) {}
 
+const isEffectExecutionError = Schema.is(OrchestrationEffectExecutionError);
+const isRunFinalizationError = Schema.is(RunFinalizationService.RunFinalizationError);
+const isCaptureExecutionError = Schema.is(CheckpointCaptureService.CheckpointCaptureExecutionError);
 const isOrchestrationEffectWorkerError = Schema.is(OrchestrationEffectWorkerError);
 
 export interface OrchestrationEffectWorkerV2Shape {
@@ -799,11 +804,23 @@ export const layerWithOptions = (
             nonRetryable,
             error,
           });
+          const executionError = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
+          const finalizationError = isEffectExecutionError(executionError)
+            ? executionError.cause
+            : undefined;
+          const captureError = isRunFinalizationError(finalizationError)
+            ? finalizationError.cause
+            : finalizationError;
+          const incompleteCapture =
+            isCaptureExecutionError(captureError) && captureError.reason === "incomplete-target";
+          // A capture is replay-safe and gates completed runs and the next turn.
+          // Exhausting its retry budget would strand the run at waiting forever.
           const updated = nonRetryable
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts
+            : effect.attemptCount >= maxAttempts &&
+                (effect.request.type !== "checkpoint.capture" || incompleteCapture)
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
