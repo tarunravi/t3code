@@ -154,6 +154,25 @@ describe("TokenRateLabel", () => {
       expect(container.textContent).toBe("100 tok/s (turn avg)");
     }
   });
+  it("keeps one refresh timer across samples and releases it when streaming stops", async () => {
+    await using _fixture = await setup();
+    using _timers = fakeTimers();
+    using interval = vi.spyOn(globalThis, "setInterval");
+    using clear = vi.spyOn(globalThis, "clearInterval");
+    vi.setSystemTime(0);
+    await renderProjection(streaming(""));
+    expect(interval).toHaveBeenCalledExactlyOnceWith(expect.any(Function), 1000);
+    vi.setSystemTime(2000);
+    await renderProjection(streaming("x".repeat(400)));
+    expect(container.textContent).toBe("~50 tok/s");
+    expect(interval).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTime(2000));
+    expect(container.textContent).toBe("~25 tok/s");
+    await render(completed);
+    expect(clear).toHaveBeenCalledExactlyOnceWith(interval.mock.results[0]!.value);
+    await root.unmount();
+    expect(clear).toHaveBeenCalledOnce();
+  });
   it("aggregates unique live descendant rates while the parent waits or has completed", async () => {
     await using _fixture = await setup();
     {
