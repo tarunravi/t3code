@@ -466,7 +466,7 @@ function SubagentTimelineLink(props: {
         <span className="text-xs text-muted-foreground tabular-nums">
           {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
         </span>
-        <TokenRateLabel projection={childProjection?.projection} className="font-mono text-3xs" />
+        <TokenRateLabel projection={childProjection?.projection} />
       </span>
       {threadId !== null ? (
         <ChevronRightIcon
@@ -513,12 +513,7 @@ function SubagentTimelineLink(props: {
           status={liveStatus}
           result={agent?.result ?? props.result}
           progress={agent?.progress ?? props.progress}
-          tokenRate={
-            <TokenRateLabel
-              projection={childProjection?.projection}
-              className="font-mono text-3xs"
-            />
-          }
+          tokenRate={<TokenRateLabel projection={childProjection?.projection} />}
         />
       </ThreadHoverCardPopup>
     </Tooltip>

@@ -325,8 +325,8 @@ export const make = Effect.gen(function* () {
   };
 
   /** Re-reads sign-in health on one machine, or on this Mac and every devbox when no target is given. */
-  const refreshChecks = (target?: DesktopDevboxLoginTarget) =>
-    Effect.gen(function* () {
+  const refreshChecks = (target?: DesktopDevboxLoginTarget) => {
+    const operation = Effect.fn("DesktopDevbox.refreshChecks")(function* () {
       const script = buildHealthScript(yield* signInAwsProfile);
       const targets = [
         MAC_TARGET,
@@ -353,9 +353,11 @@ export const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       );
       yield* Ref.update(checks, (current) => ({ ...current, ...Object.fromEntries(results) }));
-    }).pipe(Effect.ensuring(Ref.update(checking, (count) => count - 1)), (effect) =>
+    });
+    return operation().pipe(Effect.ensuring(Ref.update(checking, (count) => count - 1)), (effect) =>
       Ref.update(checking, (count) => count + 1).pipe(Effect.andThen(effect)),
     );
+  };
 
   const snapshot = Effect.gen(function* () {
     const current = yield* Ref.get(aws);
@@ -397,8 +399,8 @@ export const make = Effect.gen(function* () {
     );
 
   /** Adds or refreshes one devbox's alias, or drops it once the instance is terminated. */
-  const writeSshConfig = (instance: DevboxInstance, change: "upsert" | "remove") =>
-    Effect.gen(function* () {
+  const writeSshConfig = (instance: DevboxInstance, change: "upsert" | "remove") => {
+    const operation = Effect.fn("DesktopDevbox.writeSshConfig")(function* () {
       const current = yield* requireConfig;
       const existing = yield* readSshConfig;
       const next =
@@ -418,14 +420,16 @@ export const make = Effect.gen(function* () {
           : `~/.ssh/config: ${instance.name} → ${instance.instanceId} over SSM`,
       );
     });
+    return operation();
+  };
 
   const waitFor = (
     devbox: string,
     what: string,
     timeout: Duration.Duration,
     probe: Effect.Effect<boolean>,
-  ) =>
-    Effect.gen(function* () {
+  ) => {
+    const operation = Effect.fn("DesktopDevbox.waitFor")(function* () {
       yield* log(devbox, `Waiting for ${what}…`);
       const deadline = Date.now() + Duration.toMillis(timeout);
       while (!(yield* probe)) {
@@ -437,14 +441,16 @@ export const make = Effect.gen(function* () {
       }
       yield* log(devbox, `${what}: ready`);
     });
+    return operation();
+  };
 
   const githubToken = runCommand("gh", ["auth", "token"]).pipe(
     Effect.flatMap((result) => require(result, "Reading this Mac's gh credential")),
     Effect.map((token) => token.trim()),
   );
 
-  const copyAwsProfile = (devbox: string, profile: string) =>
-    Effect.gen(function* () {
+  const copyAwsProfile = (devbox: string, profile: string) => {
+    const operation = Effect.fn("DesktopDevbox.copyAwsProfile")(function* () {
       const text = yield* fs.readFileString(awsConfigPath).pipe(Effect.orElseSucceed(() => ""));
       const sections = awsProfileSections(text, profile);
       if (sections.length === 0) return;
@@ -452,9 +458,11 @@ export const make = Effect.gen(function* () {
         stdin: sections,
       }), "Copying the AWS profile");
     });
+    return operation();
+  };
 
-  const setup = (instance: DevboxInstance) =>
-    Effect.gen(function* () {
+  const setup = (instance: DevboxInstance) => {
+    const operation = Effect.fn("DesktopDevbox.setup")(function* () {
       const current = yield* requireConfig;
       const devbox = instance.name;
       if (instance.state !== "running") {
@@ -511,9 +519,11 @@ export const make = Effect.gen(function* () {
       }), "Brain setup");
       yield* refreshChecks(devbox);
     });
+    return operation();
+  };
 
-  const launch = (devbox: string) =>
-    Effect.gen(function* () {
+  const launch = (devbox: string) => {
+    const operation = Effect.fn("DesktopDevbox.launch")(function* () {
       const current = yield* requireConfig;
       const publicKey = yield* fs
         .readFileString(`${path.join(home, ".ssh", "id_ed25519")}.pub`)
@@ -547,9 +557,11 @@ export const make = Effect.gen(function* () {
       ), "Waiting for the instance");
       yield* setup(yield* requireInstance(devbox));
     });
+    return operation();
+  };
 
-  const changePower = (verb: "start" | "stop" | "terminate", devbox: string) =>
-    Effect.gen(function* () {
+  const changePower = (verb: "start" | "stop" | "terminate", devbox: string) => {
+    const operation = Effect.fn("DesktopDevbox.changePower")(function* () {
       const current = yield* requireConfig;
       const instance = yield* requireInstance(devbox);
       yield* log(devbox, `${verb} ${instance.instanceId}…`);
@@ -571,6 +583,8 @@ export const make = Effect.gen(function* () {
       }
       yield* Ref.update(checks, (value) => ({ ...value, [devbox]: null }));
     });
+    return operation();
+  };
 
   const actions: Record<
     DesktopDevboxAction,
@@ -584,8 +598,8 @@ export const make = Effect.gen(function* () {
   };
 
   /** A new devbox's name must be free in AWS and in the shared ssh_config block. */
-  const checkNewName = (devbox: string) =>
-    Effect.gen(function* () {
+  const checkNewName = (devbox: string) => {
+    const operation = Effect.fn("DesktopDevbox.checkNewName")(function* () {
       const invalid = validateDevboxName(devbox);
       if (invalid !== null) return yield* Effect.fail(new DevboxStepError(invalid));
       yield* managedInstances;
@@ -599,9 +613,11 @@ export const make = Effect.gen(function* () {
         );
       }
     });
+    return operation();
+  };
 
-  const run = ({ action, devbox }: DesktopDevboxActionInput) =>
-    Effect.gen(function* () {
+  const run = ({ action, devbox }: DesktopDevboxActionInput) => {
+    const operation = Effect.fn("DesktopDevbox.run")(function* () {
       if ((yield* Ref.get(jobs)).get(devbox)?.running) {
         return yield* snapshot;
       }
@@ -622,10 +638,12 @@ export const make = Effect.gen(function* () {
         Effect.forkIn(layerScope),
       );
       return yield* snapshot;
-    }).pipe(Effect.mapError(toError));
+    });
+    return operation().pipe(Effect.mapError(toError));
+  };
 
-  const getState = (options: DesktopDevboxStateOptions = {}) =>
-    Effect.gen(function* () {
+  const getState = (options: DesktopDevboxStateOptions = {}) => {
+    const operation = Effect.fn("DesktopDevbox.getState")(function* () {
       if (options.refresh || options.checkHealth) {
         yield* refreshAws;
       }
@@ -634,14 +652,16 @@ export const make = Effect.gen(function* () {
       }
       return yield* snapshot;
     });
+    return operation();
+  };
 
   const listAwsProfiles = fs.readFileString(awsConfigPath).pipe(
     Effect.map(parseAwsProfiles),
     Effect.orElseSucceed(() => []),
   );
 
-  const setEnabled = (input: DesktopDevboxEnableInput) =>
-    Effect.gen(function* () {
+  const setEnabled = (input: DesktopDevboxEnableInput) => {
+    const operation = Effect.fn("DesktopDevbox.setEnabled")(function* () {
       if (input === null) {
         yield* fs.remove(configPath).pipe(Effect.ignore);
         yield* Ref.set(config, null);
@@ -685,6 +705,8 @@ export const make = Effect.gen(function* () {
       yield* refreshAws;
       return yield* snapshot;
     });
+    return operation();
+  };
 
   const updateLogin = (id: string, update: (login: DesktopDevboxLogin) => DesktopDevboxLogin) =>
     Ref.update(logins, (all) => all.map((login) => (login.id === id ? update(login) : login)));
@@ -704,8 +726,8 @@ export const make = Effect.gen(function* () {
           ]).pipe(Effect.flatMap((result) => require(result, "Reading this Mac's Claude session")))
         : Effect.succeed(undefined);
 
-  const startLogin = (input: DesktopDevboxLoginStart) =>
-    Effect.gen(function* () {
+  const startLogin = (input: DesktopDevboxLoginStart) => {
+    const operation = Effect.fn("DesktopDevbox.startLogin")(function* () {
       if (input.awsProfile !== undefined && (yield* Ref.get(config)) === null) {
         yield* setSignInAwsProfile({ awsProfile: input.awsProfile });
       }
@@ -786,8 +808,8 @@ export const make = Effect.gen(function* () {
       ]);
 
       let output = "";
-      const append = (chunk: string) =>
-        Effect.gen(function* () {
+      const append = (chunk: string) => {
+        const operation = Effect.fn("DesktopDevbox.append")(function* () {
           output = (output + chunk).slice(-MAX_LOGIN_OUTPUT * 4);
           // gh waits for Enter before it opens the device page.
           if (/Press Enter to open/iu.test(chunk)) yield* Queue.offer(inputs, "\n");
@@ -799,6 +821,8 @@ export const make = Effect.gen(function* () {
             codes: extractCodes(output),
           }));
         });
+        return operation();
+      };
       const session = Effect.scoped(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(
@@ -859,27 +883,33 @@ export const make = Effect.gen(function* () {
         layerScope,
       );
       return yield* snapshot;
-    }).pipe(Effect.mapError(toError));
+    });
+    return operation().pipe(Effect.mapError(toError));
+  };
 
-  const setSignInAwsProfile = (input: DesktopSignInAwsProfileInput) =>
-    Effect.gen(function* () {
+  const setSignInAwsProfile = (input: DesktopSignInAwsProfileInput) => {
+    const operation = Effect.fn("DesktopDevbox.setSignInAwsProfile")(function* () {
       yield* fs
         .writeFileString(machinesPath, JSON.stringify({ awsProfile: input.awsProfile }, null, 2))
         .pipe(Effect.orDie);
       yield* Ref.set(machinesAwsProfile, input.awsProfile);
       return yield* snapshot;
     });
+    return operation();
+  };
 
   const ssoCacheDir = path.join(home, ".aws", "sso", "cache");
-  const readSsoExpiry = (profile: string) =>
-    Effect.gen(function* () {
+  const readSsoExpiry = (profile: string) => {
+    const operation = Effect.fn("DesktopDevbox.readSsoExpiry")(function* () {
       const files = (yield* fs.readDirectory(ssoCacheDir)).filter((name) => name.endsWith(".json"));
       const cacheFiles = yield* Effect.forEach(files, (name) =>
         fs.readFileString(path.join(ssoCacheDir, name)).pipe(Effect.orElseSucceed(() => "")),
       );
       const configText = yield* fs.readFileString(awsConfigPath);
       return ssoSessionExpiry(configText, profile, cacheFiles);
-    }).pipe(Effect.orElseSucceed(() => null));
+    });
+    return operation().pipe(Effect.orElseSucceed(() => null));
+  };
 
   const getAwsLoginStatus = Effect.gen(function* () {
     const profile = yield* Ref.get(awsLoginProfile);
@@ -921,8 +951,8 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  const setAwsLoginGuard = (input: DesktopAwsLoginGuardInput) =>
-    Effect.gen(function* () {
+  const setAwsLoginGuard = (input: DesktopAwsLoginGuardInput) => {
+    const operation = Effect.fn("DesktopDevbox.setAwsLoginGuard")(function* () {
       if (input === null) {
         yield* fs.remove(awsLoginPath).pipe(Effect.ignore);
         yield* Ref.set(awsLoginProfile, null);
@@ -937,6 +967,8 @@ export const make = Effect.gen(function* () {
       yield* Ref.set(awsLoginProfile, input.awsProfile);
       return yield* getAwsLoginStatus;
     });
+    return operation();
+  };
 
   return DesktopDevbox.of({
     getState,

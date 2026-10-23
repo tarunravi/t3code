@@ -79,8 +79,8 @@ export const orphanedBackgroundWorkEvents = <E>(input: {
   readonly onCancelledItem?: (item: OrchestrationV2ThreadProjection["turnItems"][number]) => void;
   readonly now: DateTime.Utc;
   readonly allocateEventId: () => Effect.Effect<EventId, E>;
-}): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> =>
-  Effect.gen(function* () {
+}): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> => {
+  const operation = Effect.fn("OrphanedBackgroundWork.orphanedBackgroundWorkEvents")(function* () {
     const { projection, now, allocateEventId } = input;
     const events: Array<OrchestrationV2DomainEvent> = [];
     const cancelledStaleNodeIds = new Set<string>();
@@ -229,6 +229,8 @@ export const orphanedBackgroundWorkEvents = <E>(input: {
     }
     return events;
   });
+  return operation();
+};
 
 /**
  * Clears the persisted Waiting roster and idles active provider threads whose
@@ -245,8 +247,8 @@ export const staleProviderThreadEvents = <E>(input: {
   ) => void;
   readonly now: DateTime.Utc;
   readonly allocateEventId: () => Effect.Effect<EventId, E>;
-}): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> =>
-  Effect.gen(function* () {
+}): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, E> => {
+  const operation = Effect.fn("OrphanedBackgroundWork.staleProviderThreadEvents")(function* () {
     const { projection, now } = input;
     const events: Array<OrchestrationV2DomainEvent> = [];
     for (const providerThread of projection.providerThreads ?? []) {
@@ -283,3 +285,5 @@ export const staleProviderThreadEvents = <E>(input: {
     }
     return events;
   });
+  return operation();
+};

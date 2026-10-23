@@ -27,7 +27,7 @@ function formatMs(ms: number): string {
 }
 
 function formatRate(rate: number | null): string {
-  return rate === null ? "—" : `${rate.toFixed(rate < 10 ? 1 : 0)}`;
+  return rate === null ? "N/A" : `${rate.toFixed(rate < 10 ? 1 : 0)}`;
 }
 
 function formatCount(value: number): string {
@@ -86,7 +86,7 @@ function HarnessSummary({ harness, rows }: { harness: string; rows: readonly Usa
       />
       <Stat
         label="Time to first token"
-        value={ttft === null ? "—" : formatMs(ttft)}
+        value={ttft === null ? "N/A" : formatMs(ttft)}
         hint={ttft === null ? "Not recorded by this source" : "Typical, across models"}
       />
       <Stat
@@ -101,7 +101,7 @@ function HarnessSummary({ harness, rows }: { harness: string; rows: readonly Usa
       />
       <Stat
         label="Failed"
-        value={requests === 0 ? "—" : `${((failed / requests) * 100).toFixed(1)}%`}
+        value={requests === 0 ? "N/A" : `${((failed / requests) * 100).toFixed(1)}%`}
         hint={fastest ? `Fastest: ${fastest.model}` : undefined}
       />
     </div>
@@ -141,22 +141,20 @@ function SpeedTable({
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span>{row.model}</span>
                   {row.effort ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
                       {row.effort}
                     </span>
                   ) : null}
                   {row.speedTier && row.speedTier !== "standard" ? (
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary">
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-2xs text-primary">
                       {row.speedTier}
                     </span>
                   ) : null}
                   {row.upstream && row.upstream !== "openai" ? (
-                    <span className="text-[11px] text-muted-foreground">via {row.upstream}</span>
+                    <span className="text-2xs text-muted-foreground">via {row.upstream}</span>
                   ) : null}
                   {showEnvironment ? (
-                    <span className="text-[11px] text-muted-foreground">
-                      · {row.environmentLabel}
-                    </span>
+                    <span className="text-2xs text-muted-foreground">· {row.environmentLabel}</span>
                   ) : null}
                 </span>
               </td>
@@ -168,7 +166,7 @@ function SpeedTable({
               </td>
               <td className="whitespace-nowrap py-2 ps-3 text-right text-muted-foreground tabular-nums">
                 {row.timeToFirstToken === null
-                  ? "—"
+                  ? "N/A"
                   : `${formatMs(row.timeToFirstToken.medianMs)} / ${formatMs(row.timeToFirstToken.p90Ms)}`}
               </td>
               <td className="whitespace-nowrap py-2 ps-3 text-right text-foreground tabular-nums">
@@ -230,7 +228,7 @@ export function UsageSpeedSection({
       source.detail === null
         ? []
         : [
-            `${showEnvironment ? `${environment.label}: ` : ""}${SOURCE_LABELS[source.source]} — ${source.detail}`,
+            `${showEnvironment ? `${environment.label}: ` : ""}${SOURCE_LABELS[source.source]}: ${source.detail}`,
           ],
     ),
   );

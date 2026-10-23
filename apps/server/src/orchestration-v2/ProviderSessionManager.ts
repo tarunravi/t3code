@@ -749,8 +749,8 @@ export const layerWithOptions = (
       const settleOrphanedBackgroundWork = (
         entry: LiveSessionEntry,
         threadIds: Iterable<ThreadId>,
-      ) =>
-        Effect.gen(function* () {
+      ) => {
+        const operation = Effect.fn("settleOrphanedBackgroundWork")(function* () {
           const providerSessionId = entry.runtime.providerSessionId;
           const liveThreadIds = new Set(
             Array.from((yield* Ref.get(sessions)).values()).flatMap((other) =>
@@ -803,6 +803,8 @@ export const layerWithOptions = (
             }
           }
         });
+        return operation();
+      };
       // Read as soon as the session leaves the live map: after that, a
       // replacement session with the same id can open and report tasks of its
       // own on the same provider threads. OpenCode's background subagents run

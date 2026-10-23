@@ -3871,7 +3871,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                     <span
                       data-chat-composer-voice-status="true"
-                      className="shrink-0 text-xs font-medium text-rose-600 tabular-nums dark:text-rose-400"
+                      className="shrink-0 text-xs font-medium text-destructive tabular-nums"
                     >
                       {voiceInput.state.phase === "recording"
                         ? formatVoiceElapsed(voiceInput.elapsedSeconds)
@@ -3942,11 +3942,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       voiceInput.state.phase === "transcribing" ? (
                         <span
                           data-chat-composer-voice-status="true"
-                          className="flex items-center gap-1.5 rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 tabular-nums dark:text-rose-400"
+                          className="flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive tabular-nums"
                         >
                           <span
                             className={cn(
-                              "size-1.5 rounded-full bg-rose-500",
+                              "size-1.5 rounded-full bg-destructive",
                               voiceInput.state.phase === "recording" && "animate-pulse",
                             )}
                           />
@@ -4023,10 +4023,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     </>
                   ) : null}
                   <ComposerFooterPrimaryActions
-                    compact={isVoiceRecordingBar || isComposerResting || isComposerPrimaryActionsCompact}
+                    compact={
+                      isVoiceRecordingBar || isComposerResting || isComposerPrimaryActionsCompact
+                    }
                     canOperateThread={canOperateThread}
                     activeContextWindow={
-                      !isVoiceRecordingBar && settings.contextWindowMeterEnabled ? activeContextWindow : null
+                      !isVoiceRecordingBar && settings.contextWindowMeterEnabled
+                        ? activeContextWindow
+                        : null
                     }
                     reserveContextWindowMeter={!isVoiceRecordingBar && reserveContextWindowMeter}
                     activeThreadModelDisplayName={activeThreadModelDisplayName}
