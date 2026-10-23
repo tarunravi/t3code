@@ -1193,6 +1193,7 @@ describe("UsageService", () => {
           assert.strictEqual(source?.status, "ok");
           assert.strictEqual(source?.scannedFiles, 1);
           assert.strictEqual(source?.distinctSessions, 2);
+          assert.strictEqual(source?.malformedRecords, 0);
           assert.strictEqual(
             source?.fingerprint.resolvedHomePath,
             yield* Effect.promise(() => NodeFSP.realpath(root)),

@@ -616,7 +616,20 @@ it.effect("rejects an unavailable native rollback target before restoring files"
         IdAllocator.layer,
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThread: () => Effect.succeed(projection.thread),
-          getCheckpointRollbackContext: () => Effect.succeed(projection),
+          getCheckpointRollbackContext: () =>
+            Effect.succeed({
+              thread: projection.thread,
+              providerThread: projection.providerThreads[0],
+              providerSession: undefined,
+              checkpoint: projection.checkpoints[0],
+              scope: projection.checkpointScopes[0],
+              targetAttempt: undefined,
+              providerTurns: [],
+              rolledBackAttemptIds: [],
+              runsToRollback: [],
+              rootNodes: [],
+              staleCheckpoints: [],
+            }),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 1,

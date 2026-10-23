@@ -53,7 +53,7 @@ function parseUsage(row: Record<string, unknown>): UsageRecord | null {
     sessionId: row.session_id,
     totals,
     reportedCostUsd: null,
-    fast: false,
+    speed: "standard",
     dedupeKey: `zcode:${row.id}`,
   };
 }
