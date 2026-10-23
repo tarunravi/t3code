@@ -1,5 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointScopeId,
   NodeId,
@@ -95,7 +95,15 @@ it.effect(
     }),
 );
 
-it.effect.each([true, false])("keeps an existing turn ref only when asked, keep=%s", (keep) => {
+it.effect.each([
+  true,
+  false,
+  "lookup-failure",
+  "retry",
+  "historical",
+  "historical-missing",
+  "historical-no-git",
+] as const)("keeps the first captured turn ref, keep=%s", (keep) => {
   const scope: OrchestrationV2CheckpointScope = {
     id: CheckpointScopeId.make("checkpoint-scope:keep-existing-ref"),
     threadId: ThreadId.make("thread:keep-existing-ref"),
@@ -109,15 +117,31 @@ it.effect.each([true, false])("keeps an existing turn ref only when asked, keep=
     cwd: "/repo",
     createdAt: DateTime.makeUnsafe("2026-09-25T00:00:00.000Z"),
   };
-  const captureCheckpoint = vi.fn(() => Effect.void);
+  let refExists = keep !== "retry" && keep !== "historical-missing";
+  const captureCheckpoint = vi.fn(() =>
+    Effect.sync(() => {
+      refExists = true;
+    }),
+  );
   const testLayer = CheckpointService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         IdAllocator.layer,
         Layer.mock(CheckpointStore.CheckpointStore)({
-          isGitRepository: () => Effect.succeed(true),
-          hasCheckpointRef: () => Effect.succeed(true),
+          isGitRepository: () => Effect.succeed(keep !== "historical-no-git"),
+          hasCheckpointRef: () =>
+            keep === "lookup-failure"
+              ? Effect.fail(
+                  new VcsProcessTimeoutError({
+                    operation: "test.ref",
+                    command: "git",
+                    cwd: "/repo",
+                    timeoutMs: 30000,
+                  }),
+                )
+              : Effect.succeed(refExists),
           captureCheckpoint,
+          listAuthoredPaths: () => Effect.succeed(null),
           diffCheckpoints: () => Effect.succeed(""),
         }),
       ),
@@ -126,16 +150,42 @@ it.effect.each([true, false])("keeps an existing turn ref only when asked, keep=
   );
   return Effect.gen(function* () {
     const checkpoints = yield* CheckpointService.CheckpointServiceV2;
-    const checkpoint = yield* checkpoints.capture({
+    const capture = checkpoints.capture({
       scope,
       ordinalWithinScope: 1,
       runId: scope.runId,
       nodeId: scope.nodeId!,
       appRunOrdinal: 1,
       capturedAt: scope.createdAt,
-      keepExistingRef: keep,
+      keepExistingRef: keep !== false,
+      historicalRefOnly: typeof keep === "string" && keep.startsWith("historical"),
     });
+    if (
+      keep === "lookup-failure" ||
+      keep === "historical-missing" ||
+      keep === "historical-no-git"
+    ) {
+      const failure = yield* capture.pipe(Effect.flip);
+      assert.instanceOf(failure, CheckpointService.CheckpointCaptureError);
+      if (keep !== "lookup-failure")
+        assert.include(String(failure.cause), "Historical checkpoint unavailable");
+      assert.equal(
+        captureCheckpoint.mock.calls.length,
+        0,
+        "an unknown ref must never be overwritten",
+      );
+      return;
+    }
+    const checkpoint = yield* capture;
     assert.equal(checkpoint.status, "ready");
-    assert.equal(captureCheckpoint.mock.calls.length, keep ? 0 : 1);
+    if (keep === "retry") {
+      const replay = yield* capture;
+      assert.equal(replay.ref, checkpoint.ref);
+      assert.equal(replay.id, checkpoint.id);
+    }
+    assert.equal(
+      captureCheckpoint.mock.calls.length,
+      keep === true || keep === "historical" ? 0 : 1,
+    );
   }).pipe(Effect.provide(testLayer));
 });

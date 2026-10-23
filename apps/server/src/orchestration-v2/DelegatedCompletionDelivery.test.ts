@@ -4,12 +4,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
+  RunAttemptId,
   CommandId,
   EventId,
   MessageId,
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2CheckpointScope,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -22,6 +27,14 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as CheckpointCapture from "./CheckpointCaptureService.ts";
+import * as CheckpointService from "./CheckpointService.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EffectWorker from "./EffectWorker.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -111,6 +124,9 @@ const layerTestProviderInstanceRegistry = Layer.succeed(
 const layerTest = Layer.mergeAll(
   RuntimeLayer.layer,
   RuntimeLayer.layerEventSink,
+  EffectOutbox.layer,
+  ProjectionStore.layer,
+  ThreadCommandExecutor.layer,
   ProviderContinuationRequests.layer,
 ).pipe(
   Layer.provideMerge(RuntimeLayer.layerProjectService),
@@ -141,7 +157,7 @@ const layerTest = Layer.mergeAll(
   ),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -3626,6 +3642,278 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         );
         assert.equal(finished?.status, "completed");
         assert.notEqual(finished?.completionDelivery?.state, "disposed");
+      }),
+  );
+});
+
+it.layer(layerDeliveryTest)("legacy checkpoint recovery", (it) => {
+  it.effect(
+    "repairs parent and child captures once, settles the child, and requires queue resume",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+        const commands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:legacy-parent");
+        const projectId = ProjectId.make("project:legacy-parent");
+        const runId = RunId.make("run:legacy-parent");
+        const rootNodeId = NodeId.make("node:legacy-parent");
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId,
+          runId,
+          rootNodeId,
+          taskId: NodeId.make("node:legacy-already-settled"),
+          deliveryState: "delivered",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId: threadId,
+          projectId,
+          parentRunId: runId,
+          rootNodeId,
+          name: "legacy-child",
+          completionWake: "settled_only",
+          continuationPending: false,
+          now,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("legacy:followup"),
+          threadId,
+          messageId: MessageId.make("legacy:followup"),
+          text: "Queued followup",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const stage = (targetThreadId: ThreadId, targetRunId: RunId, nodeId: NodeId) =>
+          Effect.gen(function* () {
+            const view = yield* orchestrator.getThreadProjection(targetThreadId);
+            const run = view.runs.find((row) => row.id === targetRunId)!;
+            const providerThread = parentProviderThreadId(targetThreadId);
+            const scopeId = CheckpointScopeId.make(`scope:${targetRunId}`);
+            const attemptId = RunAttemptId.make(`attempt:${targetRunId}`);
+            const commandId = CommandId.make(`command:effect:checkpoint.capture:${targetRunId}`);
+            const event = { threadId: targetThreadId, runId: targetRunId, nodeId, occurredAt: now };
+            yield* sink.writeWithEffects({
+              commandId: CommandId.make(`legacy:stage:${targetRunId}`),
+              events: [
+                ...(targetThreadId === threadId
+                  ? []
+                  : [
+                      {
+                        id: EventId.make(`legacy:provider-thread:${targetRunId}`),
+                        type: "provider-thread.updated" as const,
+                        threadId: targetThreadId,
+                        nodeId,
+                        occurredAt: now,
+                        payload: {
+                          ...(yield* orchestrator.getThreadProjection(threadId))
+                            .providerThreads[0]!,
+                          id: providerThread,
+                          appThreadId: targetThreadId,
+                          ownerNodeId: nodeId,
+                        },
+                      },
+                    ]),
+                {
+                  id: EventId.make(`legacy:run:${targetRunId}`),
+                  type: "run.updated",
+                  ...event,
+                  payload: {
+                    ...run,
+                    status: "waiting",
+                    rootNodeId: nodeId,
+                    activeAttemptId: attemptId,
+                    providerThreadId: providerThread,
+                    completedAt: null,
+                  },
+                },
+                {
+                  id: EventId.make(`legacy:node:${targetRunId}`),
+                  type: "node.updated",
+                  ...event,
+                  payload: {
+                    id: nodeId,
+                    threadId: targetThreadId,
+                    runId: targetRunId,
+                    parentNodeId: null,
+                    rootNodeId: nodeId,
+                    kind: "root_turn",
+                    status: "waiting",
+                    countsForRun: true,
+                    providerThreadId: providerThread,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    runtimeRequestId: null,
+                    checkpointScopeId: scopeId,
+                    startedAt: now,
+                    completedAt: null,
+                  },
+                },
+                {
+                  id: EventId.make(`legacy:attempt:${targetRunId}`),
+                  type: "run-attempt.updated",
+                  ...event,
+                  payload: {
+                    id: attemptId,
+                    runId: targetRunId,
+                    attemptOrdinal: 1,
+                    rootNodeId: nodeId,
+                    providerInstanceId: modelSelection.instanceId,
+                    providerThreadId: providerThread,
+                    providerTurnId: null,
+                    reason: "initial",
+                    status: "completed",
+                    startedAt: now,
+                    completedAt: now,
+                  },
+                },
+                {
+                  id: EventId.make(`legacy:scope:${targetRunId}`),
+                  type: "checkpoint-scope.created",
+                  ...event,
+                  payload: {
+                    id: scopeId,
+                    threadId: targetThreadId,
+                    runId: targetRunId,
+                    nodeId,
+                    parentScopeId: null,
+                    providerThreadId: providerThread,
+                    kind: "root_run",
+                    ordinalWithinParent: 0,
+                    advancesAppRunCount: true,
+                    cwd: "/historical-repo",
+                    createdAt: now,
+                  },
+                },
+              ],
+              effects: [
+                {
+                  id: `effect:checkpoint.capture:${targetRunId}`,
+                  commandId,
+                  threadId: targetThreadId,
+                  request: { type: "checkpoint.capture", runId: targetRunId, scopeId },
+                },
+              ],
+            });
+            // This test database represents the old server's exhausted outbox.
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'failed', attempt_count = 5,
+          completed_at = ${DateTime.formatIso(now)} WHERE effect_id = ${`effect:checkpoint.capture:${targetRunId}`}`;
+          });
+        yield* stage(threadId, runId, rootNodeId);
+        yield* stage(child.childThreadId, child.childRunId, NodeId.make("node:legacy-child-root"));
+        yield* recovery.recover;
+        yield* recovery.recover;
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+            (task) => task.id === child.taskId,
+          )?.status,
+          "running",
+        );
+        let captureCount = 0;
+        const checkpoint = (
+          scope: OrchestrationV2CheckpointScope,
+          ordinalWithinScope: number,
+        ): OrchestrationV2Checkpoint => ({
+          id: CheckpointId.make(`checkpoint:${scope.id}:${ordinalWithinScope}`),
+          threadId: scope.threadId,
+          scopeId: scope.id,
+          runId: null,
+          nodeId: scope.nodeId,
+          parentCheckpointId: null,
+          ordinalWithinScope,
+          appRunOrdinal: null,
+          ref: CheckpointRef.make(`original:${scope.id}:${ordinalWithinScope}`),
+          status: "ready",
+          files: [],
+          capturedAt: now,
+        });
+        const captureLayer = Layer.effect(
+          CheckpointCapture.CheckpointCaptureServiceV2,
+          CheckpointCapture.make,
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(ProjectionStore.ProjectionStoreV2, projections),
+              Layer.succeed(EventSink.EventSinkV2, sink),
+              IdAllocator.layer,
+              Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, commands),
+              Layer.mock(CheckpointService.CheckpointServiceV2)({
+                materializeBaselineCheckpoint: ({ scope, ordinalWithinScope }) =>
+                  Effect.succeed(checkpoint(scope, ordinalWithinScope)),
+                capture: (input) =>
+                  Effect.sync(() => {
+                    assert.isTrue(input.historicalRefOnly);
+                    captureCount++;
+                    return {
+                      ...checkpoint(input.scope, input.ordinalWithinScope),
+                      runId: input.runId,
+                      appRunOrdinal: input.appRunOrdinal,
+                    };
+                  }),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const capture = yield* CheckpointCapture.CheckpointCaptureServiceV2;
+          const workerLayer = EffectWorker.layerWithOptions({
+            workerId: "legacy-capture-only",
+          }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+                Layer.mock(EffectWorker.OrchestrationEffectExecutorV2)({
+                  execute: (effect) =>
+                    effect.request.type === "checkpoint.capture"
+                      ? capture
+                          .execute({ threadId: effect.threadId, ...effect.request })
+                          .pipe(Effect.orDie)
+                      : Effect.die("Recovery must not invoke a provider"),
+                }),
+              ),
+            ),
+          );
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+            Effect.provide(workerLayer),
+          );
+          assert.equal(yield* worker.drain(2), 2);
+          assert.isFalse(yield* worker.runOnce);
+        }).pipe(Effect.provide(Layer.fresh(captureLayer)));
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.recoverDelegatedTasks;
+        const view = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(view.subagents.find((task) => task.id === child.taskId)?.status, "completed");
+        assert.lengthOf(
+          view.contextTransfers.filter(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === child.childThreadId,
+          ),
+          1,
+        );
+        assert.equal(captureCount, 2);
+        const queued = view.runs.find(
+          (run) => run.userMessageId === MessageId.make("legacy:followup"),
+        )!;
+        assert.equal(queued.status, "queued");
+        assert.isTrue(queued.queueHeld);
+        yield* orchestrator.dispatch({
+          type: "queue.resume",
+          commandId: CommandId.make("legacy:resume"),
+          threadId,
+        });
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.isFalse(resumed.runs.find((run) => run.id === queued.id)?.queueHeld);
+        assert.equal(resumed.runs.find((run) => run.id === queued.id)?.status, "starting");
       }),
   );
 });

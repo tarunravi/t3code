@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
+  CommandId,
   CheckpointRef,
   CheckpointScopeId,
   EventId,
@@ -12,14 +13,21 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
+  ProviderTurnId,
+  RunAttemptId,
   ProviderThreadId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -29,6 +37,17 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EffectWorker from "./EffectWorker.ts";
+import * as EventStore from "./EventStore.ts";
+import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as RunExecution from "./RunExecutionService.ts";
+import * as RunFinalization from "./RunFinalizationService.ts";
+import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as TurnItemPositions from "./TurnItemPositionStore.ts";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 const layerProjectionStoreTest = Layer.mergeAll(
@@ -52,10 +71,22 @@ const modelSelection = {
 } as const;
 
 it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
-  it.effect.each([false, true])(
-    "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
-    (refLookupFails) =>
+  it.effect.each([
+    "normal",
+    "lookup-failure",
+    "append-failure",
+    "all-appends-fail",
+    "legacy-exhausted",
+    "incomplete-target",
+  ] as const)(
+    "captures without decoding history or losing newer delegated completion, scenario=%s",
+    (scenario) =>
       Effect.gen(function* () {
+        const refLookupFails = scenario === "lookup-failure";
+        const retryCapture =
+          scenario === "append-failure" ||
+          scenario === "all-appends-fail" ||
+          scenario === "legacy-exhausted";
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
         const later = DateTime.add(now, { seconds: 1 });
@@ -265,6 +296,9 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
         );
 
         const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+        const realSink = yield* EventSink.EventSinkV2.pipe(
+          Effect.provide(EventSink.layer.pipe(Layer.provide(EventStore.layer))),
+        );
         const layerCapture = CheckpointCaptureService.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
@@ -297,19 +331,28 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                       Effect.die(
                         "baseline materialization must be skipped when ordinal 0 is ready",
                       ),
-                    capture: () => Effect.succeed(captured),
+                    capture: (input) => {
+                      assert.isTrue(input.keepExistingRef);
+                      if (scenario === "legacy-exhausted" && input.historicalRefOnly !== undefined)
+                        assert.isTrue(input.historicalRefOnly);
+                      return Effect.succeed(captured);
+                    },
                   }),
               Layer.mock(EventSink.EventSinkV2)({
                 commitCommand: (input) =>
-                  Ref.set(committed, input.events).pipe(
-                    Effect.as({
-                      commandId: input.commandId,
-                      committed: true,
-                      sequence: 1,
-                      events: input.events,
-                      effects: [],
-                    } as never),
-                  ),
+                  retryCapture
+                    ? realSink
+                        .commitCommand(input)
+                        .pipe(Effect.tap(() => Ref.set(committed, input.events)))
+                    : Ref.set(committed, input.events).pipe(
+                        Effect.as({
+                          commandId: input.commandId,
+                          committed: true,
+                          sequence: 1,
+                          events: input.events,
+                          effects: [],
+                        } as never),
+                      ),
               }),
             ),
           ),
@@ -321,7 +364,408 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             .execute({ threadId, runId, scopeId: CheckpointScopeId.make("missing-scope") })
             .pipe(Effect.flip);
           assert.instanceOf(incomplete, CheckpointCaptureService.CheckpointCaptureExecutionError);
-          yield* service.execute({ threadId, runId, scopeId });
+          assert.equal(incomplete.reason, "incomplete-target");
+          if (scenario === "incomplete-target") {
+            let cleanupCalls = 0;
+            const workerLayer = EffectWorker.layer.pipe(
+              Layer.provideMerge(
+                Layer.mergeAll(
+                  EffectOutbox.layer,
+                  Layer.mock(EffectWorker.OrchestrationEffectExecutorV2)({
+                    execute: (effect) =>
+                      effect.request.type === "checkpoint.capture"
+                        ? service
+                            .execute({ threadId, runId, scopeId: effect.request.scopeId })
+                            .pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new EffectWorker.OrchestrationEffectExecutionError({
+                                    effectId: effect.id,
+                                    effectType: effect.request.type,
+                                    cause: new RunFinalization.RunFinalizationError({
+                                      threadId,
+                                      runId,
+                                      scopeId: CheckpointScopeId.make("missing-scope"),
+                                      operation: "capture-checkpoint",
+                                      cause,
+                                    }),
+                                  }),
+                              ),
+                            )
+                        : Effect.sync(() => {
+                            assert.equal(effect.request.type, "terminal.cleanup");
+                            cleanupCalls++;
+                          }),
+                  }),
+                ),
+              ),
+            );
+            yield* Effect.gen(function* () {
+              const outbox = yield* EffectOutbox.EffectOutboxV2;
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              yield* outbox.enqueue([
+                {
+                  id: "incomplete-capture",
+                  threadId,
+                  commandId: CommandId.make("incomplete-capture"),
+                  request: {
+                    type: "checkpoint.capture",
+                    runId,
+                    scopeId: CheckpointScopeId.make("missing-scope"),
+                  },
+                },
+                {
+                  id: "later-cleanup",
+                  threadId,
+                  commandId: CommandId.make("later-cleanup"),
+                  request: { type: "terminal.cleanup" },
+                },
+              ]);
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                assert.isTrue(yield* worker.runOnce);
+                assert.equal(cleanupCalls, 0);
+                yield* TestClock.adjust("31 seconds");
+              }
+              const failed = Option.getOrThrow(yield* outbox.get("incomplete-capture"));
+              assert.equal(failed.status, "failed");
+              assert.equal(failed.attemptCount, 5);
+              assert.isTrue(yield* worker.runOnce);
+              assert.equal(cleanupCalls, 1);
+              assert.equal(
+                Option.getOrThrow(yield* outbox.get("later-cleanup")).status,
+                "succeeded",
+              );
+              assert.isFalse(yield* worker.runOnce);
+            }).pipe(Effect.provide(workerLayer));
+            return;
+          }
+          if (refLookupFails) {
+            const failure = yield* service.execute({ threadId, runId, scopeId }).pipe(Effect.flip);
+            assert.instanceOf(failure, CheckpointCaptureService.CheckpointCaptureExecutionError);
+            assert.deepEqual(yield* Ref.get(committed), []);
+            return;
+          }
+          if (retryCapture) {
+            const attemptId = RunAttemptId.make("attempt:checkpoint-recovery");
+            const providerTurnId = ProviderTurnId.make("turn:checkpoint-recovery");
+            const activeRun = {
+              ...staleRun,
+              status: "running" as const,
+              activeAttemptId: attemptId,
+            };
+            const activeNode = { ...rootNode, status: "running" as const, providerTurnId };
+            yield* realSink.write({
+              events: [
+                {
+                  id: EventId.make("event:recovery:running"),
+                  type: "run.updated",
+                  threadId,
+                  runId,
+                  nodeId: rootNodeId,
+                  occurredAt: now,
+                  payload: activeRun,
+                },
+                {
+                  id: EventId.make("event:recovery:node-running"),
+                  type: "node.updated",
+                  threadId,
+                  runId,
+                  nodeId: rootNodeId,
+                  occurredAt: now,
+                  payload: activeNode,
+                },
+              ],
+            });
+            const turnStarted = yield* Deferred.make<void>();
+            const ingestionDone = yield* Deferred.make<void>();
+            let originalProviderStarts = 0;
+            const executionLayer = RunExecution.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  IdAllocator.layer,
+                  ServerSettings.layerTest(),
+                  McpAppModelContext.layerEmpty,
+                  TurnItemPositions.layer,
+                  Layer.succeed(EventSink.EventSinkV2, realSink),
+                  Layer.mock(CheckpointService.CheckpointServiceV2)({
+                    captureBaseline: () => Effect.void,
+                  }),
+                  Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+                    ingestNormalized: () => Effect.succeed([]),
+                  }),
+                  Layer.mock(RunFinalization.RunFinalizationObserver)({
+                    refreshAfterTurn: () => Effect.void,
+                  }),
+                ),
+              ),
+            );
+            yield* Effect.gen(function* () {
+              const execution = yield* RunExecution.RunExecutionServiceV2;
+              yield* execution.startRootRun({
+                commandId: CommandId.make("command:provider-completion"),
+                appThread: yield* projectionStore.getThread(threadId),
+                providerSessionId: ProviderSessionId.make("session:checkpoint-recovery"),
+                session: {
+                  events: Stream.empty,
+                  subscribeEvents: Effect.succeed({
+                    events: Stream.fromEffect(Deferred.await(turnStarted)).pipe(
+                      Stream.map(() => ({
+                        type: "turn.terminal" as const,
+                        driver,
+                        providerThreadId,
+                        providerTurnId,
+                        runOrdinal: 1,
+                        status: "completed" as const,
+                        failure: null,
+                        threadDisposition: "reusable" as const,
+                      })),
+                    ),
+                    close: Deferred.succeed(ingestionDone, undefined),
+                  }),
+                  startTurn: () =>
+                    Effect.sync(() => {
+                      originalProviderStarts++;
+                    }).pipe(
+                      Effect.andThen(Deferred.succeed(turnStarted, undefined)),
+                      Effect.asVoid,
+                    ),
+                } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+                run: activeRun,
+                rootNode: activeNode,
+                checkpointScope: scope,
+                providerThread,
+                attempt: {
+                  id: attemptId,
+                  runId,
+                  attemptOrdinal: 1,
+                  rootNodeId,
+                  providerInstanceId,
+                  providerThreadId,
+                  providerTurnId,
+                  reason: "initial",
+                  status: "running",
+                  startedAt: now,
+                  completedAt: null,
+                },
+                attemptId,
+                providerTurnOrdinal: 1,
+                message: {
+                  messageId: staleRun.userMessageId,
+                  text: "Finish once",
+                  attachments: [],
+                  createdBy: "user",
+                  creationSource: "web",
+                },
+                modelSelection,
+                runtimePolicy: {
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: "/repo",
+                  approvalPolicy: "never",
+                  sandboxPolicy: {
+                    type: "readOnly",
+                    access: { type: "fullAccess" },
+                    networkAccess: false,
+                  },
+                },
+              });
+              yield* Deferred.await(ingestionDone);
+            }).pipe(Effect.provide(executionLayer));
+            assert.equal(originalProviderStarts, 1);
+            // Fail at the actual event INSERT, after Git capture but before the atomic
+            // checkpoint/run/node commit. Other writes remain available for the outbox.
+            yield* sql.unsafe(`CREATE TEMP TRIGGER checkpoint_append_unavailable
+              BEFORE INSERT ON orchestration_events
+              ${scenario === "append-failure" ? "WHEN NEW.event_type = 'checkpoint.captured'" : ""}
+              BEGIN SELECT RAISE(FAIL, 'injected checkpoint append failure'); END`);
+            let providerStarts = 0;
+            const workerLayer = EffectWorker.layer.pipe(
+              Layer.provideMerge(
+                Layer.mergeAll(
+                  EffectOutbox.layer,
+                  Layer.mock(EffectWorker.OrchestrationEffectExecutorV2)({
+                    execute: (effect) =>
+                      effect.request.type === "checkpoint.capture"
+                        ? service
+                            .execute({
+                              threadId,
+                              runId,
+                              scopeId,
+                              historicalRefOnly: effect.request.historicalRefOnly,
+                            })
+                            .pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new EffectWorker.OrchestrationEffectExecutionError({
+                                    effectId: effect.id,
+                                    effectType: effect.request.type,
+                                    cause,
+                                  }),
+                              ),
+                            )
+                        : Effect.sync(() => {
+                            providerStarts++;
+                          }),
+                  }),
+                ),
+              ),
+            );
+            yield* Effect.gen(function* () {
+              const outbox = yield* EffectOutbox.EffectOutboxV2;
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              for (let attempt = 1; attempt <= 6; attempt++) {
+                assert.isTrue(yield* worker.runOnce);
+                if (attempt === 1) {
+                  yield* outbox.enqueue([
+                    {
+                      id: "queued-followup",
+                      commandId: CommandId.make("queued-followup"),
+                      threadId,
+                      request: { type: "provider-turn.start", runId: RunId.make("next-run") },
+                    },
+                  ]);
+                }
+                const pending = Option.getOrThrow(
+                  yield* outbox.get(`effect:checkpoint.capture:${runId}`),
+                );
+                assert.equal(pending.status, "pending");
+                assert.equal(
+                  pending.attemptCount,
+                  scenario === "legacy-exhausted" && attempt === 6 ? 7 : attempt,
+                );
+                assert.include(pending.lastError ?? "", "injected checkpoint append failure");
+                assert.equal(providerStarts, 0);
+                assert.isFalse(yield* worker.runOnce);
+                const context = yield* projectionStore.getCheckpointCaptureContext(threadId, {
+                  runId,
+                  scopeId,
+                });
+                assert.equal(context.run?.status, "waiting");
+                assert.equal(context.run?.checkpointId, null);
+                assert.deepEqual(context.run?.delegatedCompletion, staleDelegatedCompletion);
+                yield* TestClock.adjust("30 seconds");
+                if (scenario === "legacy-exhausted" && attempt === 5) {
+                  // Seed the old server's exhausted state, not a new failure mode.
+                  yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'failed',
+                    completed_at = ${DateTime.formatIso(now)}
+                    WHERE effect_id = ${`effect:checkpoint.capture:${runId}`}`;
+                  yield* outbox.enqueue([
+                    {
+                      id: "unrelated-exhausted-cleanup",
+                      threadId,
+                      commandId: CommandId.make("unrelated-exhausted-cleanup"),
+                      request: { type: "terminal.cleanup" },
+                    },
+                  ]);
+                  yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'failed', attempt_count = 5 WHERE effect_id = 'unrelated-exhausted-cleanup'`;
+                  const unrelatedBefore = Option.getOrThrow(
+                    yield* outbox.get("unrelated-exhausted-cleanup"),
+                  );
+                  const identity = sql<{
+                    rowid: number;
+                    command_id: string;
+                  }>`SELECT rowid, command_id FROM orchestration_v2_effect_outbox WHERE effect_id = ${`effect:checkpoint.capture:${runId}`}`;
+                  const identityBefore = yield* identity;
+                  const recoveryLayer = ProviderRuntimeRecovery.layer.pipe(
+                    Layer.provide(
+                      Layer.mergeAll(
+                        Layer.succeed(ProjectionStore.ProjectionStoreV2, projectionStore),
+                        Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+                        Layer.succeed(EventSink.EventSinkV2, realSink),
+                        IdAllocator.layer,
+                        ServerSettings.layerTest(),
+                      ),
+                    ),
+                  );
+                  yield* Effect.gen(function* () {
+                    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+                    assert.equal((yield* recovery.recover).terminalizedRuns, 0);
+                    const recovered = Option.getOrThrow(
+                      yield* outbox.get(`effect:checkpoint.capture:${runId}`),
+                    );
+                    assert.deepEqual(yield* identity, identityBefore);
+                    assert.deepEqual(
+                      Option.getOrThrow(yield* outbox.get("unrelated-exhausted-cleanup")),
+                      unrelatedBefore,
+                    );
+                    assert.equal(recovered.status, "pending");
+                    assert.equal(recovered.attemptCount, 5);
+                    assert.isTrue(
+                      recovered.request.type === "checkpoint.capture" &&
+                        recovered.request.historicalRefOnly,
+                    );
+                    assert.equal((yield* recovery.recover).terminalizedRuns, 0);
+                    assert.isFalse(yield* outbox.recoverFailedCheckpoint(recovered));
+                    // Simulate process loss after requeue, before retry.
+                    const claimed = Option.getOrThrow(
+                      yield* outbox.claimNext({ workerId: "lost-worker", leaseDurationMs: 1000 }),
+                    );
+                    assert.equal(claimed.id, recovered.id);
+                    assert.equal((yield* recovery.recover).requeuedEffects, 1);
+                    const replay = Option.getOrThrow(yield* outbox.get(recovered.id));
+                    assert.isTrue(
+                      replay.request.type === "checkpoint.capture" &&
+                        replay.request.historicalRefOnly,
+                    );
+                  }).pipe(Effect.provide(recoveryLayer));
+                }
+              }
+              const notices = yield* sql<{
+                type: string;
+                payload_json: string;
+              }>`SELECT type, payload_json
+                FROM orchestration_v2_projection_turn_items WHERE type = 'system_notice'`;
+              assert.equal(notices.length, scenario === "append-failure" ? 1 : 0);
+              if (notices[0]) assert.include(notices[0].payload_json, "Queued messages are held");
+              yield* sql.unsafe("DROP TRIGGER checkpoint_append_unavailable");
+              // Only checkpoint finalization is retried after storage recovers.
+              assert.isTrue(yield* worker.runOnce);
+              assert.equal(providerStarts, 0);
+              const recovered = Option.getOrThrow(
+                yield* outbox.get(`effect:checkpoint.capture:${runId}`),
+              );
+              assert.equal(recovered.status, "succeeded");
+              assert.equal(recovered.attemptCount, scenario === "legacy-exhausted" ? 8 : 7);
+              const finalized = yield* projectionStore.getCheckpointCaptureContext(threadId, {
+                runId,
+                scopeId,
+              });
+              assert.equal(finalized.run?.status, "completed");
+              assert.equal(finalized.run?.checkpointId, captured.id);
+              assert.equal(finalized.rootNode?.status, "completed");
+              assert.deepEqual(finalized.run?.delegatedCompletion, staleDelegatedCompletion);
+              const queued = Option.getOrThrow(yield* outbox.get("queued-followup"));
+              assert.equal(
+                queued.status,
+                scenario === "legacy-exhausted" ? "cancelled" : "pending",
+              );
+              assert.equal(queued.attemptCount, 0);
+              const items = yield* sql<{
+                type: string;
+              }>`SELECT type FROM orchestration_v2_projection_turn_items
+                WHERE type IN ('checkpoint', 'system_notice')`;
+              assert.deepEqual(
+                items.map((item) => item.type),
+                ["checkpoint"],
+              );
+              if (scenario === "legacy-exhausted") {
+                // Startup retires process-bound starts. Recovery must not revive
+                // one: only a later legitimate queue resume may enqueue new work.
+                assert.isFalse(yield* worker.runOnce);
+                assert.equal(providerStarts, 0);
+              } else {
+                assert.isTrue(yield* worker.runOnce);
+                assert.equal(providerStarts, 1);
+              }
+              assert.equal(
+                originalProviderStarts,
+                1,
+                "recovery must never replay the completed provider turn",
+              );
+            }).pipe(Effect.provide(workerLayer));
+          } else {
+            yield* service.execute({ threadId, runId, scopeId });
+          }
 
           const events = yield* Ref.get(committed);
           const runUpdated = events.find((event) => event.type === "run.updated");
@@ -330,15 +774,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             return;
           }
           assert.equal(runUpdated.payload.status, "completed");
-          const capturedEvent = events.find((event) => event.type === "checkpoint.captured");
-          assert.equal(
-            runUpdated.payload.checkpointId,
-            refLookupFails ? capturedEvent?.payload.id : captured.id,
-          );
-          if (refLookupFails && capturedEvent?.type === "checkpoint.captured") {
-            assert.equal(capturedEvent.payload.status, "ready");
-            assert.deepEqual(capturedEvent.payload.files, []);
-          }
+          assert.equal(runUpdated.payload.checkpointId, captured.id);
           assert.isUndefined(
             runUpdated.payload.delegatedCompletion,
             "checkpoint capture must omit delegatedCompletion so ProjectionStore can keep a newer cohort",
@@ -374,7 +810,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           yield* service.execute({ threadId, runId, scopeId });
           assert.deepEqual(yield* Ref.get(committed), []);
         }).pipe(Effect.provide(layerCapture));
-      }),
+      }).pipe(Effect.provide(Layer.fresh(layerProjectionStoreTest))),
   );
 
   it.effect("does not capture a stopped run that a rollback already discarded", () =>
@@ -804,7 +1240,7 @@ it.effect(
   },
 );
 
-it.effect.each(["interrupted", "failed"] as const)(
+it.effect.each(["interrupted", "failed", "cancelled"] as const)(
   "checkpoints a %s turn without changing its terminal status",
   (status) => {
     const terminalRunId = RunId.make(`run:capture-${status}:1`);
@@ -886,6 +1322,15 @@ it.effect.each(["interrupted", "failed"] as const)(
     );
     return Effect.gen(function* () {
       const service = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
+      yield* service.execute({
+        threadId,
+        runId: terminalRunId,
+        scopeId: terminalScopeId,
+        historicalRefOnly: true,
+      });
+      assert.deepEqual(captureInputs, []);
+      assert.deepEqual(baselineCaptures, []);
+      assert.deepEqual(committed, []);
       yield* service.execute({ threadId, runId: terminalRunId, scopeId: terminalScopeId });
 
       // The rewrite target (the thread start) exists even if the stop beat the run's baseline.

@@ -144,6 +144,7 @@ export interface CheckpointServiceV2Shape {
     readonly capturedAt: DateTime.Utc;
     /** Reuse the ordinal's ref when one was already captured instead of overwriting it. */
     readonly keepExistingRef?: boolean;
+    readonly historicalRefOnly?: boolean | undefined;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   readonly restore: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -384,7 +385,13 @@ export const layer: Layer.Layer<
             ordinalWithinScope: Math.max(0, input.ordinalWithinScope - 1),
           });
 
-          if (!(yield* isGitCheckpointable(input.scope.cwd))) {
+          const checkpointable = yield* isGitCheckpointable(input.scope.cwd);
+          if (!checkpointable && input.historicalRefOnly) {
+            return yield* Effect.fail(
+              "Historical checkpoint unavailable: original Git repository is required. Queue remains held; no new snapshot captured.",
+            );
+          }
+          if (!checkpointable) {
             return makeCheckpoint({
               id: checkpointId,
               scope: input.scope,
@@ -400,21 +407,31 @@ export const layer: Layer.Layer<
             });
           }
 
-          const reuseExistingRef = input.keepExistingRef === true && (yield* checkpointStore.hasCheckpointRef({cwd:input.scope.cwd,checkpointRef}).pipe(Effect.orElseSucceed(()=>false)));
-          const captureStatus = yield* (reuseExistingRef ? Effect.void : checkpointStore.captureCheckpoint({cwd:input.scope.cwd,checkpointRef}))
-            .pipe(
-              Effect.as("ready" as const),
-              Effect.catchTags({
-                VcsUnsupportedOperationError: () => Effect.succeed("missing" as const),
-              }),
-              Effect.catch((cause) =>
-                Effect.logWarning("orchestration V2 checkpoint capture failed", {
-                  scopeId: input.scope.id,
-                  checkpointRef,
-                  cause: String(cause),
-                }).pipe(Effect.as("error" as const)),
-              ),
+          const reuseExistingRef =
+            (input.keepExistingRef === true || input.historicalRefOnly === true) &&
+            (yield* checkpointStore.hasCheckpointRef({ cwd: input.scope.cwd, checkpointRef }));
+          if (input.historicalRefOnly && !reuseExistingRef) {
+            return yield* Effect.fail(
+              "Historical checkpoint unavailable: original Git ref is missing. Queue remains held; no new snapshot captured.",
             );
+          }
+          const captureStatus = yield* (
+            reuseExistingRef
+              ? Effect.void
+              : checkpointStore.captureCheckpoint({ cwd: input.scope.cwd, checkpointRef })
+          ).pipe(
+            Effect.as("ready" as const),
+            Effect.catchTags({
+              VcsUnsupportedOperationError: () => Effect.succeed("missing" as const),
+            }),
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration V2 checkpoint capture failed", {
+                scopeId: input.scope.id,
+                checkpointRef,
+                cause: String(cause),
+              }).pipe(Effect.as("error" as const)),
+            ),
+          );
 
           if (captureStatus !== "ready") {
             return makeCheckpoint({

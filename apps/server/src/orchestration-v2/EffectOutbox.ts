@@ -94,6 +94,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("checkpoint.capture"),
     runId: RunId,
     scopeId: CheckpointScopeId,
+    historicalRefOnly: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("scheduled-tasks.cleanup"),
@@ -208,6 +209,9 @@ export interface EffectOutboxV2Shape {
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly recoverFailedCheckpoint: (
+    effect: OrchestrationEffectV2,
+  ) => Effect.Effect<boolean, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -440,6 +444,50 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               : new EffectOutboxError({ operation: "list", cause }),
           ),
         ),
+      recoverFailedCheckpoint: Effect.fn("EffectOutbox.recoverFailedCheckpoint")(
+        function* (effect) {
+          if (
+            effect.request.type !== "checkpoint.capture" ||
+            effect.status !== "failed" ||
+            effect.attemptCount < 5
+          )
+            return false;
+          const now = DateTime.formatIso(yield* DateTime.now);
+          // Persist the historical-only constraint with the existing effect: every
+          // retry, including a restart between requeue and capture, must obey it.
+          const rows = yield* sql<{ readonly effect_id: string }>`
+            UPDATE orchestration_v2_effect_outbox
+            SET status = 'pending', payload_json = ${encodeRequest({ ...effect.request, historicalRefOnly: true })},
+              available_at = ${now}, updated_at = ${now}, completed_at = NULL,
+              lease_owner = NULL, lease_expires_at = NULL,
+              last_error = 'Recovering exhausted checkpoint only; original Git ref required. Queue remains held.'
+            WHERE effect_id = ${effect.id} AND thread_id = ${effect.threadId}
+              AND command_id = ${effect.commandId} AND effect_type = 'checkpoint.capture'
+              AND status = 'failed' AND attempt_count = ${effect.attemptCount}
+              AND updated_at = ${effect.updatedAt}
+              AND json_extract(payload_json, '$.runId') = ${effect.request.runId}
+              AND json_extract(payload_json, '$.scopeId') = ${effect.request.scopeId}
+            RETURNING effect_id
+          `;
+          if (rows.length === 1) {
+            cancellationSignals.delete(effect.id);
+            settledSignals.delete(effect.id);
+            yield* notifyAvailable();
+          }
+          return rows.length === 1;
+        },
+        (operation, effect) =>
+          operation.pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "recover-failed-checkpoint",
+                  effectId: effect.id,
+                  cause,
+                }),
+            ),
+          ),
+      ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(
         function* ({ threadId, effectTypes, reason }) {
           if (effectTypes.length === 0) return [];
