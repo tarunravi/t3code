@@ -23,18 +23,6 @@ export interface TokenRateProjectionSource {
   readonly projection: Projection | null | undefined;
 }
 
-function collectLiveSources(sources: readonly TokenRateProjectionSource[]) {
-  const seen = new Set<string>();
-  return sources.flatMap(({ key, projection }) => {
-    if (seen.has(key)) return [];
-    seen.add(key);
-    const source = liveTokenRateSource(projection);
-    return source === null
-      ? []
-      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
-  });
-}
-
 /**
  * Live rolling estimate while a run is active; otherwise the latest completed-turn
  * average. Samples are keyed by run so history never leaks into the next run.
@@ -52,37 +40,56 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   readonly rate: number | null;
   readonly text: string | null;
 } {
-  const liveSources = collectLiveSources(sources);
-  const [history, setHistory] = useState<ReadonlyMap<string, readonly TokenRateSample[]>>(
-    () => new Map(),
-  );
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const seen = new Set<string>();
+  const liveSources = sources.flatMap(({ key, projection }) => {
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const source = liveTokenRateSource(projection);
+    return source === null
+      ? []
+      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+  });
+  const [{ history, nowMs }, setSampling] = useState(() => ({
+    history: new Map<string, readonly TokenRateSample[]>(),
+    nowMs: Date.now(),
+  }));
+  const live = liveSources.length > 0;
 
   useEffect(() => {
     if (liveSources.length === 0) return;
     const atMs = Date.now();
     // oxlint-disable-next-line react/set-state-in-effect -- Each token update is a timestamped sample, and render must not read the clock.
-    setNowMs(atMs);
-    setHistory((previous) => {
+    setSampling((previous) => {
+      // Equivalent projections and timer renders must not create another sampling update.
+      if (
+        previous.history.size === liveSources.length &&
+        liveSources.every(
+          (source) => previous.history.get(source.key)?.at(-1)?.tokens === source.estimatedTokens,
+        )
+      )
+        return previous;
       const next = new Map<string, readonly TokenRateSample[]>();
       for (const source of liveSources) {
         next.set(
           source.key,
-          appendTokenRateSample(previous.get(source.key) ?? [], {
+          appendTokenRateSample(previous.history.get(source.key) ?? [], {
             tokens: source.estimatedTokens,
             atMs,
           }),
         );
       }
-      return next;
+      return { history: next, nowMs: atMs };
     });
   }, [liveSources]);
 
   useEffect(() => {
-    if (liveSources.length === 0) return;
-    const id = setInterval(() => setNowMs(Date.now()), LIVE_REFRESH_INTERVAL_MS);
+    if (!live) return;
+    const id = setInterval(
+      () => setSampling((previous) => ({ ...previous, nowMs: Date.now() })),
+      LIVE_REFRESH_INTERVAL_MS,
+    );
     return () => clearInterval(id);
-  }, [liveSources]);
+  }, [live]);
 
   if (liveSources.length > 0) {
     const rates = liveSources.map((source) =>
