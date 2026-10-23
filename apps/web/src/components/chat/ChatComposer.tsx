@@ -353,6 +353,7 @@ import { resizeSnapShotSource } from "../../lib/snapShotSource";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, isMacPlatform, randomUUID } from "~/lib/utils";
 import {
+  createVoiceDraftSubmitter,
   getComposerPromptLengthValidationMessage,
   getComposerSubmissionValidationMessage,
   submitComposerDraft,
@@ -4142,23 +4143,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     return showPlanFollowUpPrompt || composerSendState.hasSendableContent;
   };
 
-  const submitComposer = (
+  const submitReadyComposer = (
     event?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
     submissionIntent?: ComposerSubmissionIntent,
   ) => {
-    // Send while recording: stop, wait for the transcript to commit to the
-    // draft, then send the combined text. While a transcription is already
-    // in flight the send button is disabled, so only "recording" is here.
-    if (voiceInput.state.phase === "recording") {
-      event?.preventDefault();
-      void (async () => {
-        const committed = await voiceInput.stopAndAwaitTranscript();
-        if (!committed) return;
-        submitComposer(event, dispatchMode, submissionIntent);
-      })();
-      return;
-    }
     if (
       noProviderAvailable ||
       isSendDisabled ||
@@ -4214,6 +4203,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (shouldBlurMobileComposerOnSubmit()) {
       blurMobileComposerAfterSend();
     }
+  };
+  const submitReadyComposerStable = useStableCallback(submitReadyComposer);
+  const [submitVoiceDraft] = useState(createVoiceDraftSubmitter);
+  const submitComposer = (
+    event?: { preventDefault: () => void },
+    dispatchMode?: ComposerDispatchMode,
+    submissionIntent?: ComposerSubmissionIntent,
+  ) => {
+    if (voiceInput.state.phase === "recording") {
+      event?.preventDefault();
+      void submitVoiceDraft({
+        stopAndAwaitTranscript: voiceInput.stopAndAwaitTranscript,
+        isCurrentDraft: () => composerDraftTargetKeyRef.current === composerDraftTargetKey,
+        // Re-read send guards after transcription without re-entering the recording path.
+        submit: () => submitReadyComposerStable(event, dispatchMode, submissionIntent),
+      });
+      return;
+    }
+    if (voiceInput.blocksSubmission) {
+      event?.preventDefault();
+      return;
+    }
+    submitReadyComposer(event, dispatchMode, submissionIntent);
   };
   const submitComposerStable = useStableCallback(submitComposer);
   const handleSubmitMessage = (event: React.MouseEvent<HTMLButtonElement>) => {

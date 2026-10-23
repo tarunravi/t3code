@@ -9,9 +9,10 @@ import {
   expandAssistantCitationsForProvider,
   serializeAssistantCitation,
 } from "@t3tools/shared/assistantCitations";
+import { VoiceInputController } from "@t3tools/client-runtime/voice-input";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { submitComposerDraft } from "./composerSubmission";
+import { createVoiceDraftSubmitter, submitComposerDraft } from "./composerSubmission";
 
 const assistantCitation = {
   version: 1 as const,
@@ -290,5 +291,111 @@ describe("submitComposerDraft", () => {
 
     expect(result).toEqual({ validationMessage: null, didDispatch: true });
     expect(onSend).toHaveBeenCalledOnce();
+  });
+});
+
+describe("send while recording", () => {
+  it("stops once, submits the current combined draft once, and leaves timers runnable", async () => {
+    const submitVoiceDraft = createVoiceDraftSubmitter();
+    const transcript = Promise.withResolvers<boolean>();
+    let draft = "Original draft";
+    const sent: string[] = [];
+    const stopAndAwaitTranscript = vi.fn(async () => {
+      const committed = await transcript.promise;
+      draft += " dictated text";
+      return committed;
+    });
+    const options = {
+      stopAndAwaitTranscript,
+      isCurrentDraft: () => true,
+      submit: () => {
+        submitComposerDraft({
+          prompt: draft,
+          submissionTarget: "provider-turn",
+          event: undefined,
+          onSend: () => {
+            sent.push(draft);
+          },
+        });
+      },
+    };
+    const sending = submitVoiceDraft(options);
+    await submitVoiceDraft(options);
+    expect(sent).toEqual([]);
+    draft = "Edited draft";
+    transcript.resolve(true);
+    await sending;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(stopAndAwaitTranscript).toHaveBeenCalledOnce();
+    expect(sent).toEqual(["Edited draft dictated text"]);
+  });
+
+  it.each(["failed", "empty"])(
+    "does not send a %s transcript and allows another recording",
+    async (failure) => {
+      const submitVoiceDraft = createVoiceDraftSubmitter();
+      const submit = vi.fn();
+      const commitDraft = vi.fn();
+      const controller = new VoiceInputController({
+        recorder: {
+          uri: "file:///dictation.webm",
+          prepareToRecordAsync: async () => {},
+          record: () => {},
+          stop: async () => {},
+        },
+        getTranscriber: () => ({
+          prepare: async () => ({
+            locale: "en-US",
+            transcribe: async () => {
+              if (failure === "failed") throw new Error("Transcription failed");
+              return "   ";
+            },
+          }),
+        }),
+        requestPermission: async () => ({ granted: true, canAskAgain: true }),
+        configureRecording: async () => {},
+        releaseRecording: async () => {},
+        deleteRecording: () => {},
+        readDraft: () => ({
+          ownerKey: "thread-a",
+          text: "Existing draft",
+          selection: { start: 14, end: 14 },
+          revision: 0,
+        }),
+        commitDraft,
+        onStateChange: () => {},
+      });
+      await controller.start();
+      const options = {
+        stopAndAwaitTranscript: async () => {
+          await controller.stop();
+          return controller.currentState.phase === "idle";
+        },
+        isCurrentDraft: () => true,
+        submit,
+      };
+      await submitVoiceDraft(options);
+      expect(controller.currentState.phase).toBe("error");
+      expect(commitDraft).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+      await submitVoiceDraft({ ...options, stopAndAwaitTranscript: async () => true });
+      expect(submit).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not submit another thread's draft after switching during transcription", async () => {
+    const submitVoiceDraft = createVoiceDraftSubmitter();
+    const transcript = Promise.withResolvers<boolean>();
+    let owner = "thread-a";
+    const submit = vi.fn();
+    const sending = submitVoiceDraft({
+      stopAndAwaitTranscript: () => transcript.promise,
+      isCurrentDraft: () => owner === "thread-a",
+      submit,
+    });
+    owner = "thread-b";
+    transcript.resolve(true);
+    await sending;
+    expect(submit).not.toHaveBeenCalled();
   });
 });
