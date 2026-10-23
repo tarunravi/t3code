@@ -25,9 +25,10 @@ const state = vi.hoisted(() => {
     },
   };
 });
-vi.mock("@effect/atom-react", async () => {
+vi.mock("@effect/atom-react", async (importOriginal) => {
   const { useSyncExternalStore } = await import("react");
   return {
+    ...(await importOriginal<typeof import("@effect/atom-react")>()),
     useAtomValue: (atom: unknown) => {
       useSyncExternalStore(state.subscribe, () => state.version);
       return atom === "config" ? null : state.targets;
