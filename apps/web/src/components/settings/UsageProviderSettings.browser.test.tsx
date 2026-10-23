@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act, render as mount, type Screen } from "../../../test/render";
 import { EnvironmentId, UsageDay, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import type { ReactNode } from "react";
+import { expect, it, vi } from "vite-plus/test";
 
 import type { UsagePriceTarget } from "../usage/usagePriceTargets";
 import type { EnvironmentUsageStatus } from "../../state/usage";
@@ -121,11 +120,13 @@ const usage = [
     },
   },
 ] satisfies EnvironmentUsageStatus[];
-let renderer: Root;
-let container: HTMLDivElement;
+let renderer: Screen;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.unstubAllGlobals();
+  });
   state.write.mockClear();
   state.useUsage.mockReset();
   state.useUsage.mockReturnValue({ environments: usage });
@@ -136,27 +137,19 @@ beforeEach(() => {
     aliases: null,
     unavailable: null,
   }));
-  container = document.createElement("div");
-  document.body.append(container);
-  renderer = createRoot(container);
-});
-afterEach(async () => {
-  await act(() => renderer.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  renderer = stack.use(await mount(null, { router: false }));
+  return stack.move();
+}
 
 async function render(readOnly = false) {
-  await act(() =>
-    renderer.render(
-      <UsageProviderSettings
-        environmentId={environmentId}
-        environmentLabel="ZCode device"
-        sources={{}}
-        cursorKeychainUsageEnabled={false}
-        readOnly={readOnly}
-      />,
-    ),
+  await renderer.rerender(
+    <UsageProviderSettings
+      environmentId={environmentId}
+      environmentLabel="ZCode device"
+      sources={{}}
+      cursorKeychainUsageEnabled={false}
+      readOnly={readOnly}
+    />,
   );
 }
 
@@ -183,6 +176,7 @@ async function enterPrice(field: string, value: string) {
 }
 
 it("opens the shared editor on the selected device and saves observed model rates", async () => {
+  await using _fixture = await setup();
   await render();
   expect(state.useUsage).not.toHaveBeenCalled();
   await act(() => button("Edit model prices").click());
@@ -219,6 +213,7 @@ it("opens the shared editor on the selected device and saves observed model rate
 });
 
 it("allows opening before usage arrives and lists real models when it arrives", async () => {
+  await using _fixture = await setup();
   state.useUsage.mockReturnValue({ environments: [{ ...usage[0], summary: null }] });
   await render();
   await act(() => button("Edit model prices").click());
@@ -230,6 +225,7 @@ it("allows opening before usage arrives and lists real models when it arrives", 
 });
 
 it.each(["Input", "Output"])("requires %s before saving an unpriced model", async (missing) => {
+  await using _fixture = await setup();
   await render();
   await act(() => button("Edit model prices").click());
   await enterPrice(missing === "Input" ? "Output" : "Input", "2");
@@ -242,6 +238,7 @@ it.each(["Input", "Output"])("requires %s before saving an unpriced model", asyn
 });
 
 it("leaves blank cache rates unset so they fall back to the input rate", async () => {
+  await using _fixture = await setup();
   await render();
   await act(() => button("Edit model prices").click());
   await enterPrice("Input", "1.5");
@@ -267,6 +264,7 @@ it("leaves blank cache rates unset so they fall back to the input rate", async (
 });
 
 it("can undo or save a reset, leaving the observed model unpriced with no override", async () => {
+  await using _fixture = await setup();
   state.targets[0] = {
     ...state.targets[0]!,
     prices: {
@@ -302,6 +300,7 @@ it("can undo or save a reset, leaving the observed model unpriced with no overri
 });
 
 it("keeps pricing unavailable to read-only settings sessions", async () => {
+  await using _fixture = await setup();
   await render(true);
   expect(button("Edit model prices").disabled).toBe(true);
   await act(() => button("Edit model prices").click());

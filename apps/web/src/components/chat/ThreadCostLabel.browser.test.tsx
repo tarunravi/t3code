@@ -1,9 +1,6 @@
-// @vitest-environment jsdom
-
+import { act, fakeTimers, render as mount, type Screen } from "../../../test/render";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ThreadCostEstimate } from "../../lib/threadCost";
 import { ThreadCostLabel } from "./ThreadCostLabel";
@@ -13,21 +10,18 @@ vi.mock("../../state/threadCost", () => ({ useThreadCostEstimate: () => estimate
 
 const THREAD_REF = { environmentId: "env", threadId: "thread" } as unknown as ScopedThreadRef;
 
-let root: Root;
-let container: HTMLDivElement;
+let root: Screen;
+let container: HTMLElement;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.unstubAllGlobals();
+  });
+  root = stack.use(await mount(null, { router: false }));
+  container = root.container;
+  return stack.move();
+}
 
 const row = (
   threadId: string,
@@ -46,7 +40,7 @@ const row = (
 
 async function renderLabel(value: ThreadCostEstimate) {
   estimate.current = value;
-  await act(async () => root.render(<ThreadCostLabel threadRef={THREAD_REF} />));
+  await root.rerender(<ThreadCostLabel threadRef={THREAD_REF} />);
   const trigger = container.querySelector<HTMLElement>('[data-slot="tooltip-trigger"]');
   if (!trigger) throw new Error("cost label did not render");
   return trigger;
@@ -56,6 +50,7 @@ const popupText = () => document.querySelector('[data-slot="tooltip-popup"]')?.t
 
 describe("ThreadCostLabel", () => {
   it("opens on focus with the parent and subagent split", async () => {
+    await using _fixture = await setup();
     const trigger = await renderLabel({
       totalUsd: 3.6,
       partial: true,
@@ -84,6 +79,7 @@ describe("ThreadCostLabel", () => {
   it.each(["unpriced", "missing usage", "loading"])(
     "never presents %s as a zero-dollar total",
     async (kind) => {
+      await using _fixture = await setup();
       const unknown = {
         ...row("This thread", 0, "custom", null),
         model: kind === "unpriced" ? "custom" : null,
@@ -104,6 +100,7 @@ describe("ThreadCostLabel", () => {
   );
 
   it("shows a known child cost even if the parent has no measured usage", async () => {
+    await using _fixture = await setup();
     const trigger = await renderLabel({
       totalUsd: 2,
       partial: true,
@@ -118,8 +115,9 @@ describe("ThreadCostLabel", () => {
   });
 
   it("opens on hover and reports no subagents for a parent-only thread", async () => {
-    vi.useFakeTimers();
-    try {
+    await using _fixture = await setup();
+    {
+      using _timers = fakeTimers();
       const trigger = await renderLabel({
         totalUsd: 1,
         partial: false,
@@ -136,8 +134,6 @@ describe("ThreadCostLabel", () => {
       });
       expect(popupText()).toContain("Parent agent$1.00");
       expect(popupText()).toContain("Subagentsnone");
-    } finally {
-      vi.useRealTimers();
     }
   });
 });

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { act, fakeTimers, render as mount, type Screen } from "../../../test/render";
 import {
   NodeId,
   ThreadId,
@@ -9,12 +9,10 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { TokenRateLabel } from "./TokenRateLabel";
-let root: Root;
-let container: HTMLDivElement;
+let root: Screen;
+let container: HTMLElement;
 const completed = {
   id: "turn:one",
   status: "completed",
@@ -28,17 +26,16 @@ const completed = {
     hasSubagents: false,
   },
 } as OrchestrationV2ProviderTurn;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.unstubAllGlobals();
+  });
+  root = stack.use(await mount(null, { router: false }));
+  container = root.container;
+  return stack.move();
+}
+
 type Projection = Pick<
   OrchestrationV2ThreadProjection,
   "runs" | "attempts" | "providerTurns" | "turnItems" | "nodes"
@@ -119,16 +116,17 @@ function streaming(text: string, reasoning = ""): Projection {
   };
 }
 async function renderProjection(projection: Projection | null) {
-  await act(async () => root.render(<TokenRateLabel projection={projection} />));
+  await root.rerender(<TokenRateLabel projection={projection} />);
 }
 async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
   await renderProjection(projectionFor(providerTurn));
 }
 describe("TokenRateLabel", () => {
   it("measures live assistant and reasoning item nodes beneath the root, then shows the turn average", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
+    await using _fixture = await setup();
+    {
+      using _timers = fakeTimers();
+      vi.setSystemTime(0);
       await renderProjection(streaming(""));
       expect(container.textContent).toBe("tok/s —");
       expect(container.querySelector("span")?.getAttribute("aria-label")).toBe(
@@ -144,14 +142,13 @@ describe("TokenRateLabel", () => {
       expect(container.textContent).toBe("~25 tok/s");
       await render(completed);
       expect(container.textContent).toBe("100 tok/s (turn avg)");
-    } finally {
-      vi.useRealTimers();
     }
   });
   it("aggregates unique live descendant rates while the parent waits or has completed", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
+    await using _fixture = await setup();
+    {
+      using _timers = fakeTimers();
+      vi.setSystemTime(0);
       const parent = streaming("");
       const child = streaming("");
       const sources = (
@@ -204,31 +201,26 @@ describe("TokenRateLabel", () => {
         },
       ];
 
-      await act(async () => root.render(<TokenRateLabel sources={sources("")} />));
+      await root.rerender(<TokenRateLabel sources={sources("")} />);
       vi.setSystemTime(2000);
-      await act(async () =>
-        root.render(<TokenRateLabel sources={sources("x".repeat(400), "x".repeat(200))} />),
-      );
+      await root.rerender(<TokenRateLabel sources={sources("x".repeat(400), "x".repeat(200))} />);
       expect(container.textContent).toBe("~75 tok/s");
 
       const completedParent = projectionFor(completed)!;
-      await act(async () =>
-        root.render(
-          <TokenRateLabel
-            sources={[
-              { key: "thread:parent", projection: completedParent },
-              ...sources("x".repeat(400)).slice(1),
-              ...sources("x".repeat(400)).slice(1),
-            ]}
-          />,
-        ),
+      await root.rerender(
+        <TokenRateLabel
+          sources={[
+            { key: "thread:parent", projection: completedParent },
+            ...sources("x".repeat(400)).slice(1),
+            ...sources("x".repeat(400)).slice(1),
+          ]}
+        />,
       );
       expect(container.textContent).toBe("~50 tok/s");
-    } finally {
-      vi.useRealTimers();
     }
   });
   it("hides unsupported telemetry without claiming context growth as speed", async () => {
+    await using _fixture = await setup();
     await render({
       ...completed,
       turnTokenUsage: undefined,
@@ -237,6 +229,7 @@ describe("TokenRateLabel", () => {
     expect(container.textContent).toBe("tok/s —");
   });
   it("makes unavailable explanations keyboard-accessible", async () => {
+    await using _fixture = await setup();
     await render(null);
     const label = container.querySelector("span");
     await act(async () => {
@@ -255,6 +248,7 @@ describe("TokenRateLabel", () => {
     );
   });
   it("labels a completed-turn average and explains its denominator", async () => {
+    await using _fixture = await setup();
     await render(completed);
     expect(container.textContent).toBe("100 tok/s (turn avg)");
     expect(container.querySelector("span")?.getAttribute("aria-label")).toContain("completed turn");
@@ -263,6 +257,7 @@ describe("TokenRateLabel", () => {
     );
   });
   it("resets immediately for a new turn, missing data, or thread switch", async () => {
+    await using _fixture = await setup();
     await render(completed);
     await render({
       ...completed,
