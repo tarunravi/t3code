@@ -48,3 +48,21 @@ export function submitComposerDraft(
   }
   return { validationMessage: null, didDispatch: true };
 }
+
+export function createVoiceDraftSubmitter() {
+  let pending = false;
+  return async (options: {
+    stopAndAwaitTranscript: () => Promise<boolean>;
+    isCurrentDraft: () => boolean;
+    submit: () => void;
+  }): Promise<void> => {
+    if (pending) return;
+    pending = true;
+    try {
+      const committed = await options.stopAndAwaitTranscript();
+      if (committed && options.isCurrentDraft()) options.submit();
+    } finally {
+      pending = false;
+    }
+  };
+}
