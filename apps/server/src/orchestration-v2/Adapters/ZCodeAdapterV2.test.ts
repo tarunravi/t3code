@@ -536,9 +536,7 @@ describe("ZCodeAdapterV2", () => {
             iteration: 0,
           });
         const started = event("turn.started", { input: "test", turnNumber: 0 });
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
         const child = JSON.stringify({
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           ...JSON.parse(request("child-model")),
           sessionId: "child",
           turnId: "child-turn",
@@ -755,7 +753,6 @@ describe("ZCodeAdapterV2", () => {
       );
       assert.isTrue(firstArgs?.[0]?.includes("delegate_task"));
       assert.equal(secondArgs?.[0], "--prompt=Again");
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
       assert.notInclude(JSON.stringify(fake.spawned), "secret-zcode-mcp-token");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

@@ -11,11 +11,11 @@
 // (`auth session issue --token-only`) and never printed. The port comes from
 // <home>/userdata/server-runtime.json. Reads use the HTTP API with the v2
 // protocol header; writes go over the WS RPC (orchestrationProtocol=2).
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
 const ACTIVE_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 const DEFAULT_RESUME_TEXT =
@@ -46,8 +46,8 @@ function required(flags, key) {
 }
 
 function runtimeOrigin(baseDir) {
-  const file = path.join(baseDir, "userdata", "server-runtime.json");
-  const runtime = JSON.parse(readFileSync(file, "utf8"));
+  const file = NodePath.join(baseDir, "userdata", "server-runtime.json");
+  const runtime = JSON.parse(NodeFS.readFileSync(file, "utf8"));
   return {
     origin: runtime.origin ?? `http://${runtime.host}:${runtime.port}`,
     pid: runtime.pid,
@@ -56,17 +56,17 @@ function runtimeOrigin(baseDir) {
 }
 
 function mintToken(app, baseDir) {
-  const executable = execFileSync(
+  const executable = NodeChildProcess.execFileSync(
     "defaults",
-    ["read", path.join(app, "Contents", "Info"), "CFBundleExecutable"],
+    ["read", NodePath.join(app, "Contents", "Info"), "CFBundleExecutable"],
     {
       encoding: "utf8",
     },
   ).trim();
-  const out = execFileSync(
-    path.join(app, "Contents", "MacOS", executable),
+  const out = NodeChildProcess.execFileSync(
+    NodePath.join(app, "Contents", "MacOS", executable),
     [
-      path.join(app, "Contents", "Resources", "app.asar", "apps", "server", "dist", "bin.mjs"),
+      NodePath.join(app, "Contents", "Resources", "app.asar", "apps", "server", "dist", "bin.mjs"),
       "auth",
       "session",
       "issue",
@@ -180,10 +180,10 @@ function resumeTargets(state, includeSubagents) {
 }
 
 function projectFor(shell, root) {
-  const wanted = path.resolve(root);
+  const wanted = NodePath.resolve(root);
   const project =
-    shell.projects.find((p) => path.resolve(p.workspaceRoot) === wanted) ??
-    shell.projects.find((p) => wanted.startsWith(path.resolve(p.workspaceRoot) + path.sep));
+    shell.projects.find((p) => NodePath.resolve(p.workspaceRoot) === wanted) ??
+    shell.projects.find((p) => wanted.startsWith(NodePath.resolve(p.workspaceRoot) + NodePath.sep));
   if (!project) throw new Error(`no T3 project contains ${wanted}`);
   return project;
 }
@@ -220,7 +220,7 @@ async function main() {
       threads: activeThreads(shell, exclude),
     };
     if (typeof flags.out === "string")
-      writeFileSync(flags.out, JSON.stringify(state, null, 2) + "\n");
+      NodeFS.writeFileSync(flags.out, JSON.stringify(state, null, 2) + "\n");
     for (const thread of state.threads)
       console.log(
         `${thread.status.padEnd(9)} ${(thread.relationship ?? "root").padEnd(8)} ${thread.id}  ${thread.title}`,
@@ -235,9 +235,9 @@ async function main() {
     const conn = await connect(flags);
     const shell = await getShell(conn);
     const project = projectFor(shell, required(flags, "project-root"));
-    const text = readFileSync(required(flags, "message-file"), "utf8");
+    const text = NodeFS.readFileSync(required(flags, "message-file"), "utf8");
     const payload = {
-      commandId: `t3-reinstall:launch:${randomUUID()}`,
+      commandId: `t3-reinstall:launch:${NodeCrypto.randomUUID()}`,
       projectId: project.id,
       title: required(flags, "title"),
       modelSelection: resolveLaunchModelSelection(flags),
@@ -260,8 +260,8 @@ async function main() {
 
   if (command === "resume") {
     const statePath = required(flags, "state");
-    if (!existsSync(statePath)) throw new Error(`${statePath} not found`);
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    if (!NodeFS.existsSync(statePath)) throw new Error(`${statePath} not found`);
+    const state = JSON.parse(NodeFS.readFileSync(statePath, "utf8"));
     const text = typeof flags.text === "string" ? flags.text : DEFAULT_RESUME_TEXT;
     const targets = resumeTargets(state, flags["include-subagents"] === true);
     const conn = dryRun ? null : await connect(flags);
@@ -276,9 +276,9 @@ async function main() {
           type: "message.dispatch",
           createdBy: "user",
           creationSource: "web",
-          commandId: `t3-reinstall:resume:${randomUUID()}`,
+          commandId: `t3-reinstall:resume:${NodeCrypto.randomUUID()}`,
           threadId: id,
-          messageId: randomUUID(),
+          messageId: NodeCrypto.randomUUID(),
           text,
           attachments: [],
           dispatchMode: { type: "start_immediately" },
@@ -299,11 +299,14 @@ async function main() {
   }
 
   throw new Error(
-    `unknown command: ${command ?? "(none)"}; see the header of ${path.basename(process.argv[1])}`,
+    `unknown command: ${command ?? "(none)"}; see the header of ${NodePath.basename(process.argv[1])}`,
   );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href
+) {
   main().catch((error) => {
     console.error(`t3-rpc: ${error.message}`);
     process.exit(1);
