@@ -1,8 +1,7 @@
+import { render as mount, type Screen } from "../../../test/render";
 import { EnvironmentId, UsageDay, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -52,41 +51,35 @@ const environments = [
   },
 ] satisfies readonly EnvironmentUsageStatus[];
 
-beforeEach(() => {
-  testState.useUsage.mockReturnValue({
-    merged: mergeUsage([], USAGE_CONTRACT_VERSION),
-    environments,
-    selectedEnvironments: environments,
-    isPending: false,
-    isConnected: true,
-    shown: null,
-    isPartial: false,
-    refresh: vi.fn(),
-  });
-});
-
 describe("UsagePage", () => {
-  let renderer: Root;
-  let container: HTMLDivElement;
+  let renderer: Screen;
+  let container: HTMLElement;
   let back: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(async () => {
+  async function setup() {
+    await using stack = new AsyncDisposableStack();
+    stack.defer(() => {
+      back.mockRestore();
+    });
+    testState.useUsage.mockReturnValue({
+      merged: mergeUsage([], USAGE_CONTRACT_VERSION),
+      environments,
+      selectedEnvironments: environments,
+      isPending: false,
+      isConnected: true,
+      shown: null,
+      isPartial: false,
+      refresh: vi.fn(),
+    });
+
     back = vi.spyOn(window.history, "back").mockImplementation(() => {});
     testState.navigate.mockClear();
     testState.canGoBack = true;
-    container = document.createElement("div");
-    document.body.append(container);
-    renderer = createRoot(container);
-    await act(() => {
-      renderer.render(<UsagePage />);
-    });
-  });
-
-  afterEach(async () => {
-    await act(() => renderer.unmount());
-    container.remove();
-    back.mockRestore();
-  });
+    renderer = stack.use(await mount(null, { router: false }));
+    container = renderer.container;
+    await renderer.rerender(<UsagePage />);
+    return stack.move();
+  }
 
   // Playwright cannot press a repeating or composing key, so those cases dispatch the event.
   function escape(properties: { repeat?: boolean; isComposing?: boolean } = {}) {
@@ -99,14 +92,16 @@ describe("UsagePage", () => {
   }
 
   it("returns to the previous page on Escape", async () => {
+    await using _fixture = await setup();
     await userEvent.keyboard("{Escape}");
     expect(back).toHaveBeenCalledOnce();
     expect(testState.navigate).not.toHaveBeenCalled();
   });
 
   it("returns home when there is no previous app page", async () => {
+    await using _fixture = await setup();
     testState.canGoBack = false;
-    await act(() => renderer.render(<UsagePage />));
+    await renderer.rerender(<UsagePage />);
 
     await userEvent.keyboard("{Escape}");
     expect(testState.navigate).toHaveBeenCalledWith({ to: "/" });
@@ -114,6 +109,7 @@ describe("UsagePage", () => {
   });
 
   it("closes the environment menu before Escape navigates back", async () => {
+    await using _fixture = await setup();
     const trigger = container.querySelector<HTMLButtonElement>('[data-slot="menu-trigger"]')!;
     await userEvent.click(trigger);
     await expect.element(page.getByRole("menu")).toBeVisible();
@@ -127,13 +123,18 @@ describe("UsagePage", () => {
     expect(back).toHaveBeenCalledOnce();
   });
 
-  it.each([{ repeat: true }, { isComposing: true }])("ignores Escape with %j", (properties) => {
-    document.body.dispatchEvent(escape(properties));
-    expect(back).not.toHaveBeenCalled();
-    expect(testState.navigate).not.toHaveBeenCalled();
-  });
+  it.each([{ repeat: true }, { isComposing: true }])(
+    "ignores Escape with %j",
+    async (properties) => {
+      await using _fixture = await setup();
+      document.body.dispatchEvent(escape(properties));
+      expect(back).not.toHaveBeenCalled();
+      expect(testState.navigate).not.toHaveBeenCalled();
+    },
+  );
 
   it("renders while summaries are missing and after a failed environment recovers", async () => {
+    await using _fixture = await setup();
     for (const status of [
       { summary: null, error: null, isPending: true },
       { summary: null, error: "Unavailable", isPending: false },
@@ -154,7 +155,7 @@ describe("UsagePage", () => {
         shown: null,
         refresh: vi.fn(),
       });
-      await act(() => renderer.render(<UsagePage />));
+      await renderer.rerender(<UsagePage />);
       expect(container.textContent).toContain("All environments");
       expect(
         container.querySelector('[aria-label="Some environments could not report usage"]') !== null,

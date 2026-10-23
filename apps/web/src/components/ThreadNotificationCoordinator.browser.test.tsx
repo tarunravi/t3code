@@ -1,9 +1,8 @@
+import { render as mount, type Screen } from "../../test/render";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   mode: "off" as ClientSettings["notificationMode"],
@@ -150,10 +149,10 @@ vi.mock(import("./ui/toast"), async (original) => {
 
 import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
-let root: Root;
+let root: Screen;
 
 async function render() {
-  await act(() => root.render(<ThreadNotificationCoordinator />));
+  await root.rerender(<ThreadNotificationCoordinator />);
 }
 
 async function complete() {
@@ -161,7 +160,12 @@ async function complete() {
   await render();
 }
 
-beforeEach(() => {
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
   vi.clearAllMocks();
   Object.assign(state, {
     mode: "off",
@@ -182,20 +186,15 @@ beforeEach(() => {
     delegatedChild: null,
   });
   stableParent = null;
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
   vi.spyOn(document, "visibilityState", "get").mockImplementation(
     () => state.visible as DocumentVisibilityState,
   );
   vi.spyOn(document, "hasFocus").mockImplementation(() => state.focused);
   vi.stubGlobal("Notification", Object.assign(state.notification, { permission: "granted" }));
-  root = createRoot(document.createElement("div"));
-});
-
-afterEach(async () => {
-  await act(() => root.unmount());
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+  root = stack.use(await mount(null, { router: false }));
+  return stack.move();
+}
 
 describe("thread notifications", () => {
   it.each([
@@ -206,6 +205,7 @@ describe("thread notifications", () => {
   ] as const)(
     "uses %s for subagent completion with in-app notifications disabled",
     async (mode, desktop, sound) => {
+      await using _fixture = await setup();
       state.relationshipToParent = "subagent";
       state.focused = false;
       state.inApp = false;
@@ -232,6 +232,7 @@ describe("thread notifications", () => {
   it.each([true, false])(
     "respects the in-app toggle for subagent completion: %s",
     async (inApp) => {
+      await using _fixture = await setup();
       state.relationshipToParent = "subagent";
       state.inApp = inApp;
       state.mode = "notifications-and-sound";
@@ -247,6 +248,7 @@ describe("thread notifications", () => {
   it.each(["input", "approval", "sessionError", "turnError", "limited"] as const)(
     "keeps subagent %s silent",
     async (event) => {
+      await using _fixture = await setup();
       state.relationshipToParent = "subagent";
       state.mode = "notifications-and-sound";
       await render();
@@ -264,6 +266,7 @@ describe("thread notifications", () => {
   );
 
   it.each(["side", "fork"] as const)("keeps %s threads silent", async (relationship) => {
+    await using _fixture = await setup();
     state.relationshipToParent = relationship;
     state.mode = "notifications-and-sound";
     await render();
@@ -277,6 +280,7 @@ describe("thread notifications", () => {
   });
 
   it("alerts on the parent when its delegated subagent asks for approval", async () => {
+    await using _fixture = await setup();
     state.mode = "notifications-and-sound";
     state.delegatedChild = "running";
     await render();
@@ -290,6 +294,7 @@ describe("thread notifications", () => {
   });
 
   it("alerts once with system alerts off and opens the completed thread", async () => {
+    await using _fixture = await setup();
     await render();
     await complete();
     await render();
@@ -309,6 +314,7 @@ describe("thread notifications", () => {
   it.each(["active", "blurred", "hidden", "archived", "disabled"])(
     "does not show a completion toast for %s threads",
     async (condition) => {
+      await using _fixture = await setup();
       await render();
       if (condition === "active") state.active.threadId = "thread-1";
       if (condition === "blurred") state.focused = false;
@@ -327,6 +333,7 @@ describe("thread notifications", () => {
     ["turnError", "Thread failed"],
     ["limited", "Usage limit reached"],
   ] as const)("uses the same %s event for in-app and desktop alerts", async (event, title) => {
+    await using _fixture = await setup();
     state.mode = "notifications-and-sound";
     await render();
     state[event] = true;
@@ -353,6 +360,7 @@ describe("thread notifications", () => {
   });
 
   it("alerts when only a dev server is left running, not while a monitor can wake the agent", async () => {
+    await using _fixture = await setup();
     await render();
     state.background = [{ taskId: "watch", kind: "monitor" }];
     await complete();
@@ -366,6 +374,7 @@ describe("thread notifications", () => {
   });
 
   it("keeps background desktop alerts when in-app notifications are disabled", async () => {
+    await using _fixture = await setup();
     state.focused = false;
     state.inApp = false;
     state.mode = "notifications";
@@ -379,6 +388,7 @@ describe("thread notifications", () => {
   });
 
   it("does not replay a completion when opting in from all alerts off", async () => {
+    await using _fixture = await setup();
     state.inApp = false;
     await render();
     await complete();
@@ -388,6 +398,7 @@ describe("thread notifications", () => {
   });
 
   it("compares the environment as well as the thread", async () => {
+    await using _fixture = await setup();
     state.active = { environmentId: "env-2", threadId: "thread-1" };
     await render();
     await complete();
@@ -397,6 +408,7 @@ describe("thread notifications", () => {
   it.each([null, "subagent"] as const)(
     "does not replay %s completions on first load or reconnect",
     async (relationship) => {
+      await using _fixture = await setup();
       state.relationshipToParent = relationship;
       await complete();
       state.live = false;
@@ -408,6 +420,7 @@ describe("thread notifications", () => {
   );
 
   it("keeps sound but replaces the system popup when showing a toast", async () => {
+    await using _fixture = await setup();
     state.mode = "notifications-and-sound";
     await render();
     await complete();
@@ -417,6 +430,7 @@ describe("thread notifications", () => {
   });
 
   it("keeps system alerts when the app is in the background", async () => {
+    await using _fixture = await setup();
     state.mode = "notifications";
     state.focused = false;
     await render();

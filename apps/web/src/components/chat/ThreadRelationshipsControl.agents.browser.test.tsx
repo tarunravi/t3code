@@ -1,5 +1,5 @@
-import { act, cloneElement, type ReactElement, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { act, render as mount, type Screen } from "../../../test/render";
+import { cloneElement, type ReactElement, type ReactNode } from "react";
 import {
   EnvironmentId,
   ThreadId,
@@ -8,7 +8,7 @@ import {
   type OrchestrationV2ContextTransfer,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
@@ -105,16 +105,16 @@ vi.mock(import("./AgentElapsed"), async (original) => {
 
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
-let root: Root;
-let container: HTMLDivElement;
+let root: Screen;
+let container: HTMLElement;
 let current: ReactElement;
 
 async function render(element: ReactElement) {
   current = element;
-  await act(async () => root.render(element));
+  await root.rerender(element);
 }
 // The mocked hooks read `state` while rendering, so a new element picks up changes.
-const update = () => act(async () => root.render(cloneElement(current)));
+const update = () => root.rerender(cloneElement(current));
 const click = (element: HTMLElement) => act(async () => element.click());
 const buttons = () => [...container.querySelectorAll("button")];
 const allByLabel = (label: string) =>
@@ -150,29 +150,27 @@ function textNodes(separator: string, visibleOnly = false) {
   return parts.join(separator);
 }
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-  state.shells = [];
-  state.projects = [];
-  state.configs.clear();
-  state.showTooltips = false;
-  state.navigate.mockClear();
-  state.command.mockClear();
-  state.workflowCommand.mockReset().mockResolvedValue({ _tag: "Success" });
-  state.toast.mockClear();
-  state.projection = null;
-});
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.unstubAllGlobals();
+    state.shells = [];
+    state.projects = [];
+    state.configs.clear();
+    state.showTooltips = false;
+    state.navigate.mockClear();
+    state.command.mockClear();
+    state.workflowCommand.mockReset().mockResolvedValue({ _tag: "Success" });
+    state.toast.mockClear();
+    state.projection = null;
+  });
+  root = stack.use(await mount(null, { router: false }));
+  container = root.container;
+  return stack.move();
+}
 
 it("stops the entire native workflow through its parent without changing state before acknowledgement", async () => {
+  await using _fixture = await setup();
   const coordinator = {
     id: "workflow",
     origin: "provider_native",
@@ -270,6 +268,7 @@ it.each([
   ["codex", "provider_native", "running"],
   ["claudeAgent", "app_owned", "running"],
 ])("does not offer workflow stop for %s %s %s", async (driver, origin, status) => {
+  await using _fixture = await setup();
   state.projection = {
     thread: { id: "parent", lineage: { relationshipToParent: null } },
     runs: [],
@@ -306,6 +305,7 @@ it.each([
 });
 
 it("opens the correct chat for every workflow phase and unphased member", async () => {
+  await using _fixture = await setup();
   state.showTooltips = true;
   state.configs.set("remote", {
     providers: [
@@ -439,6 +439,7 @@ it("opens the correct chat for every workflow phase and unphased member", async 
 });
 
 it("groups and counts a workflow by its run status instead of its coordinator chat", async () => {
+  await using _fixture = await setup();
   state.showTooltips = true;
   const coordinator = {
     id: "workflow",
@@ -518,6 +519,7 @@ it.each([
 ])(
   "offers individual Stop for supported $origin $driver subagents with run $runId",
   async ({ driver, origin, runId, canStop }) => {
+    await using _fixture = await setup();
     const parent = {
       id: "parent",
       lineage: { relationshipToParent: null },
@@ -629,6 +631,7 @@ it.each([
 );
 
 it("shows the matching child agent details and refreshes them when the agent settles", async () => {
+  await using _fixture = await setup();
   const agent = {
     id: "agent-1",
     driver: "codex",
@@ -746,6 +749,7 @@ it("shows the matching child agent details and refreshes them when the agent set
 });
 
 it("keeps a settled agent in current work while a follow-up run is active on its thread", async () => {
+  await using _fixture = await setup();
   const childShell = {
     id: "child-1",
     title: "Checker",
@@ -823,6 +827,7 @@ it("keeps a settled agent in current work while a follow-up run is active on its
 });
 
 it("keeps Stop in the child header while expanding and navigating a four-level subagent tree", async () => {
+  await using _fixture = await setup();
   const environmentId = EnvironmentId.make("test");
   const threadShell = (
     id: string,
@@ -947,6 +952,7 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
 });
 
 it("shows readable models and only differing workspace details in agent tooltips", async () => {
+  await using _fixture = await setup();
   state.showTooltips = true;
   const parent = {
     id: "parent",
@@ -1363,6 +1369,7 @@ it("shows readable models and only differing workspace details in agent tooltips
 });
 
 it("shows the parent's own visible status as parent and child activity change", async () => {
+  await using _fixture = await setup();
   const environmentId = EnvironmentId.make("test");
   const parent = {
     id: "parent",
@@ -1409,6 +1416,7 @@ it("shows the parent's own visible status as parent and child activity change", 
 it.each(["source", "target"])(
   "shows transfer lifecycle states when viewing the %s thread",
   async (currentThreadId) => {
+    await using _fixture = await setup();
     const environmentId = EnvironmentId.make("test");
     const threads = ["source", "target"].map((id) => ({
       id,

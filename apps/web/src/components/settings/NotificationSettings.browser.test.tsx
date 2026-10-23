@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act, render as mount, type Screen } from "../../../test/render";
 import type { ClientSettings } from "@t3tools/contracts/settings";
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import type { ReactNode } from "react";
+import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   mode: "notifications-and-sound" as ClientSettings["notificationMode"],
@@ -40,28 +39,27 @@ vi.mock("./settingsLayout", () => ({
 
 import { NotificationSettings } from "./NotificationSettings";
 
-let renderer: Root;
-let container: HTMLDivElement;
+let renderer: Screen;
+let container: HTMLElement;
 
-beforeEach(() => {
+async function setup() {
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => {
+    vi.unstubAllGlobals();
+  });
   vi.clearAllMocks();
   state.mode = "notifications-and-sound";
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
   vi.stubGlobal("Notification", { requestPermission: state.requestPermission });
   vi.stubGlobal("isSecureContext", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  renderer = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(() => renderer.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  renderer = stack.use(await mount(null, { router: false }));
+  container = renderer.container;
+  return stack.move();
+}
 
 it("labels the current preference as System notifications without changing it", async () => {
-  await act(() => renderer.render(<NotificationSettings />));
+  await using _fixture = await setup();
+  await renderer.rerender(<NotificationSettings />);
   expect(container.querySelector("h3")?.textContent).toBe("System notifications");
   expect(
     container.querySelector('[role="combobox"][aria-label="System notifications"]')?.textContent,
@@ -71,8 +69,9 @@ it("labels the current preference as System notifications without changing it", 
 });
 
 it("changes the existing notificationMode through the System notifications control", async () => {
+  await using _fixture = await setup();
   state.mode = "off";
-  await act(() => renderer.render(<NotificationSettings />));
+  await renderer.rerender(<NotificationSettings />);
   const trigger = container.querySelector<HTMLButtonElement>(
     '[role="combobox"][aria-label="System notifications"]',
   );

@@ -1,6 +1,5 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as mount } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
@@ -18,33 +17,21 @@ const entries = [
   },
 ];
 
-const roots: Root[] = [];
-
-afterEach(async () => {
-  for (const root of roots.splice(0)) await act(async () => root.unmount());
-  document.body.replaceChildren();
-  vi.unstubAllGlobals();
-});
-
 describe("BackgroundTaskList", () => {
   it("selects an inspectable row and gives only those rows actions", async () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const onSelect = vi.fn();
-    const container = document.body.appendChild(document.createElement("div"));
-    const root = createRoot(container);
-    roots.push(root);
-    await act(async () =>
-      root.render(
-        <BackgroundTaskList
-          entries={entries}
-          selectedTaskId="b1"
-          onSelect={onSelect}
-          renderActions={(entry) =>
-            entry.inspectable ? <span data-action>stop {entry.task.taskId}</span> : null
-          }
-        />,
-      ),
+    await using screen = await mount(
+      <BackgroundTaskList
+        entries={entries}
+        selectedTaskId="b1"
+        onSelect={onSelect}
+        renderActions={(entry) =>
+          entry.inspectable ? <span data-action>stop {entry.task.taskId}</span> : null
+        }
+      />,
+      { router: false },
     );
+    const { container } = screen;
     const rows = [...container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
     expect(rows.map((row) => row.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
     expect(rows[2]!.disabled).toBe(true);
