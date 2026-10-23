@@ -23,12 +23,12 @@ export function TokenRateLabel(props: {
   readonly className?: string | undefined;
 }) {
   const sources = props.sources ?? [{ key: "thread", projection: props.projection }];
-  const { live, text } = useTokenRateSources(sources);
+  const { live, rate, text } = useTokenRateSources(sources);
   const rootProjection = sources[0]?.projection;
   const explanation = live
     ? props.sources === undefined
       ? LIVE_TOKEN_RATE_EXPLANATION
-      : "Live estimated output speed summed across this thread and its delegated agents."
+      : `Estimated visible output speed summed across this thread and its delegated agents. ${LIVE_TOKEN_RATE_EXPLANATION}`
     : tokenRateExplanation(latestTokenRateTurn(rootProjection));
   return (
     <Tooltip>
@@ -43,7 +43,9 @@ export function TokenRateLabel(props: {
           text === null
             ? "Output token rate unavailable"
             : live
-              ? "Estimated live output tokens per second"
+              ? rate === null
+                ? text
+                : "Estimated live output tokens per second"
               : "Average output tokens per second over completed turn"
         }
         aria-description={explanation}

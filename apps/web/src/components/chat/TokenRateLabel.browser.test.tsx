@@ -122,11 +122,91 @@ async function render(providerTurn: OrchestrationV2ProviderTurn | null) {
   await renderProjection(projectionFor(providerTurn));
 }
 describe("TokenRateLabel", () => {
+  it.each(["pre-token", "tool-only", "unexposed reasoning", "reconnect"])(
+    "does not claim zero or idle for %s without observed text growth",
+    async (scenario) => {
+      await using _fixture = await setup();
+      using _timers = fakeTimers();
+      vi.setSystemTime(0);
+      const baseline = streaming(scenario === "reconnect" ? "x".repeat(226) : "");
+      const projection: Projection = {
+        ...baseline,
+        turnItems:
+          scenario === "tool-only"
+            ? [
+                {
+                  ...baseline.turnItems[0]!,
+                  type: "command_execution",
+                  text: "tool",
+                } as unknown as OrchestrationV2TurnItem,
+              ]
+            : baseline.turnItems,
+        providerTurns:
+          scenario === "unexposed reasoning"
+            ? [
+                {
+                  ...completed,
+                  status: "running",
+                  completedAt: null,
+                  tokenUsage: {
+                    usedTokens: 10000,
+                    outputTokens: 670,
+                    reasoningOutputTokens: 133,
+                    updatedAt: "2026-10-23T00:00:00Z",
+                  },
+                },
+              ]
+            : baseline.providerTurns,
+      };
+      await renderProjection(projection);
+      expect(container.textContent).toBe("Measuring…");
+      await act(() => vi.advanceTimersByTime(5000));
+      expect(container.textContent).toBe("No recent visible output");
+      expect(container.querySelector("span")?.getAttribute("aria-label")).toBe(
+        "No recent visible output",
+      );
+      expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
+        "does not mean the provider is idle",
+      );
+    },
+  );
+  it("suppresses a sparse burst, measures subsequent growth, then uses actual completed totals", async () => {
+    await using _fixture = await setup();
+    using _timers = fakeTimers();
+    vi.setSystemTime(0);
+    await renderProjection(streaming("x".repeat(226)));
+    await act(() => vi.advanceTimersByTime(276617));
+    await renderProjection(streaming("x".repeat(548)));
+    expect(container.textContent).toBe("Measuring…");
+    vi.setSystemTime(278617);
+    await renderProjection(streaming("x".repeat(552)));
+    expect(container.textContent).toBe("~<1 tok/s");
+    await render({
+      ...completed,
+      completedAt: DateTime.makeUnsafe(463407),
+      turnTokenUsage: { ...completed.turnTokenUsage!, outputTokens: 19210, reasoningTokens: 9370 },
+    });
+    expect(container.textContent).toBe("41 tok/s (turn avg)");
+  });
+  it.each([0, 0.49])("preserves completed measured rate %s", async (rate) => {
+    await using _fixture = await setup();
+    await render({
+      ...completed,
+      completedAt: DateTime.makeUnsafe(100000),
+      turnTokenUsage: { ...completed.turnTokenUsage!, outputTokens: rate * 100 },
+    });
+    expect(container.textContent).toBe(`${rate === 0 ? "0" : "<1"} tok/s (turn avg)`);
+  });
+  it("marks missing completed timing unavailable", async () => {
+    await using _fixture = await setup();
+    await render({ ...completed, startedAt: null });
+    expect(container.textContent).toBe("tok/s N/A");
+  });
   it("settles a live projection with real timers across parent rerenders", async () => {
     await using _fixture = await setup();
     const projection = streaming("live output");
     await root.rerender(<TokenRateLabel projection={projection} />);
-    expect(container.textContent).toBe("tok/s N/A");
+    expect(container.textContent).toBe("Measuring…");
     await root.rerender(<TokenRateLabel projection={projection} className="ml-1" />);
     expect(container.querySelector("span")?.classList.contains("ml-1")).toBe(true);
     await render(completed);
@@ -138,10 +218,8 @@ describe("TokenRateLabel", () => {
       using _timers = fakeTimers();
       vi.setSystemTime(0);
       await renderProjection(streaming(""));
-      expect(container.textContent).toBe("tok/s N/A");
-      expect(container.querySelector("span")?.getAttribute("aria-label")).toBe(
-        "Output token rate unavailable",
-      );
+      expect(container.textContent).toBe("Measuring…");
+      expect(container.querySelector("span")?.getAttribute("aria-label")).toBe("Measuring…");
       vi.setSystemTime(2000);
       await renderProjection(streaming("x".repeat(200), "y".repeat(200)));
       expect(container.textContent).toBe("~50 tok/s");
@@ -165,6 +243,7 @@ describe("TokenRateLabel", () => {
     vi.setSystemTime(2000);
     await renderProjection(streaming("x".repeat(400)));
     expect(container.textContent).toBe("~50 tok/s");
+    for (let index = 0; index < 10; index += 1) await renderProjection(streaming("x".repeat(400)));
     expect(interval).toHaveBeenCalledOnce();
     await act(() => vi.advanceTimersByTime(2000));
     expect(container.textContent).toBe("~25 tok/s");

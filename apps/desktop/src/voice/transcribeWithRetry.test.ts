@@ -49,6 +49,41 @@ describe("transcribeWithRetry", () => {
     expect(deps.sleeps).toEqual([]);
   });
 
+  it.each([{}, null, { text: 42 }, { text: "" }, { text: "   " }])(
+    "rejects a successful response without a usable transcript: %j",
+    async (payload) => {
+      const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(200, payload)));
+      const deps = depsWith(fetchImpl);
+
+      await expect(transcribeWithRetry(INPUT, deps)).resolves.toEqual({
+        ok: false,
+        error: new Error("Transcription returned no text. Try recording again."),
+        attempts: 1,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(deps.sleeps).toEqual([]);
+    },
+  );
+
+  it("returns a failed outcome when the response body cannot be decoded", async () => {
+    const error = new SyntaxError("Invalid JSON");
+    const deps = depsWith(
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw error;
+        },
+      })),
+    );
+
+    await expect(transcribeWithRetry(INPUT, deps)).resolves.toEqual({
+      ok: false,
+      error,
+      attempts: 1,
+    });
+  });
+
   it.each([403, 429, 500, 503])("retries a %i then succeeds", async (status) => {
     const fetchImpl = vi
       .fn()

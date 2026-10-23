@@ -164,12 +164,23 @@ export async function transcribeWithRetry(
       return { ok: false, error: lastError, attempts: attempt };
     }
     if (response.ok) {
-      const payload = (await response.json()) as { text?: string };
-      return {
-        ok: true,
-        text: typeof payload.text === "string" ? payload.text : "",
-        attempts: attempt,
-      };
+      try {
+        const payload = (await response.json()) as { text?: unknown } | null;
+        if (typeof payload?.text !== "string" || payload.text.trim().length === 0) {
+          return {
+            ok: false,
+            error: new Error("Transcription returned no text. Try recording again."),
+            attempts: attempt,
+          };
+        }
+        return { ok: true, text: payload.text, attempts: attempt };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error : new Error(String(error)),
+          attempts: attempt,
+        };
+      }
     }
     lastError = transcriptionHttpError(response.status);
     if (response.status === 401) {

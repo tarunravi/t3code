@@ -49,6 +49,16 @@ function turn(overrides: Partial<OrchestrationV2ProviderTurn> = {}): Orchestrati
 }
 
 describe("completedTurnTokenRate", () => {
+  it("uses the known completed output total, not its reasoning subset or context", () => {
+    const rate = completedTurnTokenRate(
+      turn({
+        completedAt: DateTime.makeUnsafe(463407),
+        turnTokenUsage: { ...turn().turnTokenUsage!, outputTokens: 19210, reasoningTokens: 9370 },
+      }),
+    );
+    expect(rate).toBeCloseTo(41.45384079221937, 12);
+    expect(formatTokenRate(rate)).toBe("41 tok/s (turn avg)");
+  });
   it("uses complete output totals and provider time, without double-counting reasoning", () => {
     expect(completedTurnTokenRate(turn())).toBe(100);
   });
@@ -337,6 +347,19 @@ describe("latestTokenRateTurn", () => {
 });
 
 describe("rollingTokenRate", () => {
+  it("never treats a lone pre-token or reconnect baseline as measured zero", () => {
+    for (const tokens of [0, 56.5])
+      for (const now of [0, 1000, 5000, 276617])
+        expect(rollingTokenRate([{ tokens, atMs: 0 }], now)).toBeNull();
+  });
+  it("does not divide a fresh sparse burst over minutes", () => {
+    const samples = appendTokenRateSample([{ tokens: 56.5, atMs: 0 }], {
+      tokens: 137,
+      atMs: 276617,
+    });
+    expect(rollingTokenRate(samples, 276617)).toBeNull();
+    expect(rollingTokenRate(samples, 277617)).toBeNull();
+  });
   it("measures the token delta across the window and fluctuates with the stream", () => {
     let samples = appendTokenRateSample([], { tokens: 0, atMs: 0 });
     expect(rollingTokenRate(samples, 500)).toBeNull();
@@ -345,14 +368,16 @@ describe("rollingTokenRate", () => {
     samples = appendTokenRateSample(samples, { tokens: 400, atMs: 2000 });
     expect(rollingTokenRate(samples, 2000)).toBe(200);
   });
-  it("decays to zero while the stream stalls and drops samples older than the window", () => {
+  it("suppresses stale windows and restarts after a long silence", () => {
     let samples = appendTokenRateSample([], { tokens: 0, atMs: 0 });
     samples = appendTokenRateSample(samples, { tokens: 500, atMs: 1000 });
     expect(rollingTokenRate(samples, 5000)).toBe(100);
-    expect(rollingTokenRate(samples, 7000)).toBe(0);
+    expect(rollingTokenRate(samples, 7000)).toBeNull();
     samples = appendTokenRateSample(samples, { tokens: 900, atMs: 8000 });
-    expect(samples.map((sample) => sample.atMs)).toEqual([1000, 8000]);
-    expect(rollingTokenRate(samples, 8000)).toBe((400 / 7000) * 1000);
+    expect(samples.map((sample) => sample.atMs)).toEqual([8000]);
+    expect(rollingTokenRate(samples, 8000)).toBeNull();
+    samples = appendTokenRateSample(samples, { tokens: 1000, atMs: 9000 });
+    expect(rollingTokenRate(samples, 9000)).toBe(100);
   });
   it("ignores repeated counts and never reports negative speed", () => {
     const samples = appendTokenRateSample([{ tokens: 10, atMs: 0 }], { tokens: 10, atMs: 900 });
@@ -365,12 +390,18 @@ describe("rollingTokenRate", () => {
         ],
         2000,
       ),
-    ).toBe(0);
+    ).toBeNull();
     expect(rollingTokenRate([], 1000)).toBeNull();
   });
   it("formats the estimate distinctly from the completed-turn average", () => {
     expect(formatLiveTokenRate(41.6)).toBe("~42 tok/s");
     expect(formatLiveTokenRate(null)).toBeNull();
+    expect(formatLiveTokenRate(0)).toBeNull();
+    for (const rate of [0.49, 0.001]) {
+      expect(formatLiveTokenRate(rate)).toBe("~<1 tok/s");
+      expect(formatTokenRate(rate)).toBe("<1 tok/s (turn avg)");
+    }
+    expect(formatTokenRate(0)).toBe("0 tok/s (turn avg)");
   });
 });
 

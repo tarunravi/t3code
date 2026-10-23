@@ -327,6 +327,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         }
         AND candidate.status = 'pending'
         AND NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_threads AS frozen
+          WHERE frozen.thread_id = candidate.thread_id
+            AND json_extract(frozen.payload_json, '$.preservationOnly') = 1
+        )
+        AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
           WHERE active.thread_id = candidate.thread_id
@@ -555,6 +560,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             updated_at = ${now},
             last_error = 'Requeued after the previous server process ended.'
           WHERE status = 'running'
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_threads AS frozen
+              WHERE frozen.thread_id = orchestration_v2_effect_outbox.thread_id
+                AND json_extract(frozen.payload_json, '$.preservationOnly') = 1
+            )
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
           RETURNING effect_id
         `;
