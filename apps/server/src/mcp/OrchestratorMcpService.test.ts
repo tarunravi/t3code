@@ -1445,10 +1445,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                     { provider: opencodeInstanceId, model: "oc/m10" },
                   ],
                   subagentModelPreferences: {
-                    [opencodeInstanceId]: { hiddenModels: ["oc-subagent-hidden"] },
+                    [opencodeInstanceId]: { hiddenModels: ["oc-subagent-hidden", "oc/m02"] },
                   },
                   providerModelPreferences: {
-                    [opencodeInstanceId]: { hiddenModels: ["oc/m02"], modelOrder: ["oc/m12"] },
+                    [opencodeInstanceId]: { hiddenModels: [], modelOrder: ["oc/m12"] },
                   },
                 }),
                 providerRegistryLayer(catalog),
@@ -1523,6 +1523,14 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    it.effect("never lists subagent-hidden models even when searched directly", () =>
+      Effect.gen(function* () {
+        for (const search of ["oc-subagent-hidden", "oc/m02"]) {
+          assert.deepEqual((yield* capabilitiesWith(search)).providers[1]?.models, []);
+        }
+      }),
+    );
+
     it.effect("describes models by id, distinct label, and option values", () =>
       Effect.gen(function* () {
         const codex = (yield* capabilitiesWith()).providers[0];
@@ -1544,7 +1552,10 @@ describe("OrchestratorMcpService provider resolution", () => {
     );
   });
 
-  const delegationLayer = (dispatched: Ref.Ref<ReadonlyArray<unknown>>) => {
+  const delegationLayer = (
+    dispatched: Ref.Ref<ReadonlyArray<unknown>>,
+    settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
+  ) => {
     const task = {
       id: taskId,
       threadId: parentThreadId,
@@ -1567,7 +1578,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     };
     let delegated = false;
     const dependencies = Layer.mergeAll(
-      ServerSettings.layerTest(),
+      ServerSettings.layerTest(settings),
       NodeServices.layer,
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         hasReceipt: () => Effect.succeed(false),
@@ -1650,6 +1661,31 @@ describe("OrchestratorMcpService provider resolution", () => {
         const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{ task: string }>;
         assert.equal(request?.task, "Summarize the diff.");
       }).pipe(Effect.provide(delegationLayer(dispatched)));
+    }),
+  );
+
+  it.effect("accepts composer-hidden models for delegation", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" },
+          mode: "async",
+          clientRequestId: "delegate-composer-hidden",
+        });
+        assert.equal(result.status, "running");
+        assert.lengthOf(yield* Ref.get(dispatched), 1);
+      }).pipe(
+        Effect.provide(
+          delegationLayer(dispatched, {
+            providerModelPreferences: {
+              [codexInstanceId]: { hiddenModels: ["gpt-5.4"], modelOrder: [] },
+            },
+          }),
+        ),
+      );
     }),
   );
 

@@ -50,6 +50,15 @@ function catalogWithInspection(
 }
 
 describe("acpRegistrySnapshotReadiness", () => {
+  it("exposes failed inspection readiness to callers", () => {
+    expect(acpRegistrySnapshotReadiness({ status: "failed", message: "Probe failed." })).toEqual({
+      installed: false,
+      version: null,
+      status: "error",
+      message: "Probe failed.",
+    });
+  });
+
   it("treats a live empty command advertisement as an authoritative replacement", () => {
     const provider = buildCheckedAcpRegistrySnapshot({
       ...identity,
