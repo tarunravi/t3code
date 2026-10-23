@@ -128,7 +128,7 @@ describe("TokenRateLabel", () => {
       using _timers = fakeTimers();
       vi.setSystemTime(0);
       await renderProjection(streaming(""));
-      expect(container.textContent).toBe("tok/s —");
+      expect(container.textContent).toBe("tok/s N/A");
       expect(container.querySelector("span")?.getAttribute("aria-label")).toBe(
         "Output token rate unavailable",
       );
@@ -226,7 +226,7 @@ describe("TokenRateLabel", () => {
       turnTokenUsage: undefined,
       tokenUsage: { usedTokens: 10100, outputTokens: 100, updatedAt: "2026-10-03T10:00:00Z" },
     });
-    expect(container.textContent).toBe("tok/s —");
+    expect(container.textContent).toBe("tok/s N/A");
   });
   it("makes unavailable explanations keyboard-accessible", async () => {
     await using _fixture = await setup();
@@ -265,10 +265,10 @@ describe("TokenRateLabel", () => {
       status: "pending",
       turnTokenUsage: undefined,
     });
-    expect(container.textContent).toBe("tok/s —");
+    expect(container.textContent).toBe("tok/s N/A");
     await render(completed);
     await render(null);
-    expect(container.textContent).toBe("tok/s —");
+    expect(container.textContent).toBe("tok/s N/A");
     await render({
       ...completed,
       id: "turn:three" as never,
