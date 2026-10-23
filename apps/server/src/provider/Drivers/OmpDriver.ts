@@ -47,8 +47,8 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
   },
   configSchema: OmpSettings,
   defaultConfig: (): OmpSettings => decodeOmpSettings({}),
-  create: (input) =>
-    Effect.gen(function* () {
+  create: (input) => {
+    const operation = Effect.fn("OmpDriver.create")(function* () {
       const settings = { ...input.config, enabled: input.enabled } satisfies OmpSettings;
       const textGeneration = yield* makeOmpTextGeneration(
         settings,
@@ -78,5 +78,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
         ),
       );
       return { ...instance, orchestrationAdapter };
-    }),
+    });
+    return operation();
+  },
 };

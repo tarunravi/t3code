@@ -76,8 +76,8 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
   },
   configSchema: ZCodeSettings,
   defaultConfig: (): ZCodeSettings => decodeZCodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
+  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) => {
+    const operation = Effect.fn("ZCodeDriver.create")(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fs = yield* FileSystem.FileSystem;
       const processEnv = yield* mergeProviderInstanceEnvironment(
@@ -152,5 +152,7 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettings, ZCodeDriverEnv> = {
         orchestrationAdapter,
         textGeneration: unsupportedTextGeneration,
       } satisfies ProviderInstance;
-    }),
+    });
+    return operation();
+  },
 };

@@ -258,7 +258,7 @@ export function BackgroundTaskList(props: {
                     aria-pressed={selected}
                     disabled={!entry.inspectable}
                     onClick={() => props.onSelect(entry.task.taskId)}
-                    className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md ps-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+                    className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md ps-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default"
                   />
                 }
               >
@@ -317,7 +317,7 @@ export function BackgroundTasksBannerPopover(props: {
             ref={triggerRef}
             type="button"
             aria-label={`${title.full}: ${summary}. Show background tasks`}
-            className="flex w-full min-w-0 cursor-pointer items-baseline gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex w-full min-w-0 cursor-pointer items-baseline gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             data-background-tasks-banner-trigger
           />
         }

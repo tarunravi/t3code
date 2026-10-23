@@ -820,8 +820,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
             threadInput.threadId ?? threadInput.providerThread.appThreadId,
             threadInput.providerThread,
           ),
-        startTurn: (turnInput) =>
-          Effect.gen(function* () {
+        startTurn: (turnInput) => {
+          const operation = Effect.fn("ZCodeAdapterV2.startTurn")(function* () {
             if (turnInput.modelSelection.model !== "default")
               return yield* protocolError(MODEL_SELECTION_MESSAGE);
             if (activeTurn !== null) {
@@ -893,7 +893,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
             sessionEntity = { ...sessionEntity, model: null };
             yield* updateProviderSession("running", null);
             yield* runTurnProcess(turn, promptArgs, mcpSession).pipe(Effect.forkIn(sessionScope));
-          }).pipe(
+          });
+          return operation().pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterTurnStartError({
@@ -904,7 +905,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
                   cause,
                 }),
             ),
-          ),
+          );
+        },
         steerTurn: (steerInput) =>
           Effect.fail(
             new ProviderAdapterSteerRunUnsupportedError({
@@ -912,8 +914,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
               providerThreadId: steerInput.providerThread.id,
             }),
           ),
-        interruptTurn: (interruptInput) =>
-          Effect.gen(function* () {
+        interruptTurn: (interruptInput) => {
+          const operation = Effect.fn("ZCodeAdapterV2.interruptTurn")(function* () {
             const turn = activeTurn;
             if (turn === null || turn.providerTurn.id !== interruptInput.providerTurnId) {
               return yield* protocolError(
@@ -924,7 +926,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
             // Before spawn completes there is nothing to signal; the runner
             // checks the flag and stops the process as soon as it exists.
             if (turn.stop !== null) yield* turn.stop;
-          }).pipe(
+          });
+          return operation().pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterInterruptError({
@@ -934,7 +937,8 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
                   cause,
                 }),
             ),
-          ),
+          );
+        },
         respondToRuntimeRequest: (requestInput) =>
           Effect.fail(
             new ProviderAdapterRuntimeRequestResponseError({
