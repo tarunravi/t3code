@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -205,6 +206,7 @@ export const make = Effect.gen(function* () {
     ) {
       const now = yield* DateTime.now;
       const runs = [] as Array<OrchestrationV2ThreadProjection["runs"][number]>;
+      const legacyCheckpointRunIds = new Set<string>();
       for (const run of nonterminalRuns(projection)) {
         if (run.status === "waiting") {
           const checkpointEffects = yield* outbox
@@ -225,7 +227,111 @@ export const make = Effect.gen(function* () {
               effect.request.runId === run.id &&
               (effect.status === "pending" || effect.status === "running"),
           );
-          if (hasReplayableCheckpoint) continue;
+          if (hasReplayableCheckpoint) {
+            if (
+              checkpointEffects.some(
+                (effect) =>
+                  effect.request.type === "checkpoint.capture" &&
+                  effect.request.runId === run.id &&
+                  effect.request.historicalRefOnly === true &&
+                  (effect.status === "pending" || effect.status === "running"),
+              )
+            )
+              legacyCheckpointRunIds.add(run.id);
+            continue;
+          }
+          const root = projection.nodes.find((node) => node.id === run.rootNodeId);
+          const completedAttempt = projection.attempts.find(
+            (attempt) =>
+              attempt.id === run.activeAttemptId &&
+              attempt.runId === run.id &&
+              attempt.rootNodeId === root?.id &&
+              attempt.providerThreadId === run.providerThreadId &&
+              attempt.status === "completed" &&
+              attempt.completedAt !== null,
+          );
+          const exhaustedCapture = checkpointEffects.find(
+            (effect) =>
+              effect.threadId === projection.thread.id &&
+              effect.request.type === "checkpoint.capture" &&
+              effect.request.runId === run.id &&
+              effect.request.scopeId === root?.checkpointScopeId &&
+              effect.status === "failed" &&
+              effect.attemptCount >= 5,
+          );
+          if (
+            trigger === "startup" &&
+            projection.thread.archivedAt === null &&
+            projection.thread.deletedAt === null &&
+            run.checkpointId === null &&
+            run.completedAt === null &&
+            root?.status === "waiting" &&
+            completedAttempt !== undefined &&
+            exhaustedCapture !== undefined
+          ) {
+            const history = yield* projections
+              .getThreadRecords(projection.thread.id, ["runs"])
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderRuntimeRecoveryError({
+                      operation: "read-projections",
+                      threadId: projection.thread.id,
+                      cause,
+                    }),
+                ),
+              );
+            if (
+              history.runs.some(
+                (other) =>
+                  other.ordinal > run.ordinal &&
+                  other.status !== "queued" &&
+                  !(
+                    other.status === "cancelled" &&
+                    other.startedAt === null &&
+                    other.checkpointId === null
+                  ),
+              )
+            ) {
+              runs.push(run);
+              continue;
+            }
+            const requeued = yield* outbox.recoverFailedCheckpoint(exhaustedCapture).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderRuntimeRecoveryError({
+                    operation: "reconcile",
+                    threadId: projection.thread.id,
+                    cause,
+                  }),
+              ),
+            );
+            if (!requeued) {
+              const current = yield* outbox.get(exhaustedCapture.id).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderRuntimeRecoveryError({
+                      operation: "reconcile",
+                      threadId: projection.thread.id,
+                      cause,
+                    }),
+                ),
+              );
+              if (
+                Option.isNone(current) ||
+                (current.value.status !== "pending" && current.value.status !== "running")
+              ) {
+                return yield* new ProviderRuntimeRecoveryError({
+                  operation: "reconcile",
+                  threadId: projection.thread.id,
+                  cause:
+                    "Checkpoint recovery changed concurrently; reconcile again without cancelling completed provider work.",
+                });
+              }
+            }
+            legacyCheckpointRunIds.add(run.id);
+            continue;
+          }
         }
         runs.push(run);
       }
@@ -649,12 +755,16 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      const continuationRun =
+      const continuationCandidate =
         continueAfterRestart && trigger === "startup"
           ? restartContinuationRun(
               { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
               now,
             )
+          : undefined;
+      const continuationRun =
+        continuationCandidate !== undefined && !legacyCheckpointRunIds.has(continuationCandidate.id)
+          ? continuationCandidate
           : undefined;
       const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
         ? [

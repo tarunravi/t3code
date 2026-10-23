@@ -14,6 +14,7 @@ import {
   TurnItemId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -1449,5 +1450,191 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
         : [],
     );
     assert.deepEqual(noted, [`subagent ${nativeSubagentId}`]);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect.each([
+  "eligible",
+  "ordinary-pending",
+  "ordinary-running",
+  "recovered-pending",
+  "recovered-running",
+  "cancelled-followup",
+  "shutdown",
+  "archived",
+  "deleted",
+  "interrupted",
+  "cancelled",
+  "rolled_back",
+  "completed",
+  "checkpoint-present",
+  "attempt-running",
+  "wrong-scope",
+  "under-budget",
+  "newer-work",
+] as const)("legacy capture recovery only, case=%s", (scenario) => {
+  const threadId = ThreadId.make("legacy:parent");
+  const runId = RunId.make("legacy:run");
+  const rootId = NodeId.make("legacy:root");
+  const attemptId = RunAttemptId.make("legacy:attempt");
+  const providerThreadId = ProviderThreadId.make("legacy:provider-thread");
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const now = DateTime.makeUnsafe("2026-10-22T13:04:28Z");
+  const run = {
+    id: runId,
+    ordinal: 86,
+    status: ["interrupted", "cancelled", "rolled_back", "completed"].includes(scenario)
+      ? scenario
+      : "waiting",
+    rootNodeId: rootId,
+    activeAttemptId: attemptId,
+    providerThreadId,
+    providerInstanceId,
+    checkpointId: scenario === "checkpoint-present" ? "existing-checkpoint" : null,
+    startedAt: now,
+    completedAt: null,
+  };
+  const followup = {
+    ...run,
+    id: RunId.make("legacy:followup"),
+    ordinal: 88,
+    status: scenario === "cancelled-followup" ? "cancelled" : "queued",
+    startedAt: null,
+    userMessageId: MessageId.make("legacy:queued-message"),
+  };
+  const newer = { ...run, id: RunId.make("legacy:newer"), ordinal: 87, status: "completed" };
+  const projection = {
+    thread: {
+      id: threadId,
+      providerInstanceId,
+      archivedAt: scenario === "archived" ? now : null,
+      deletedAt: scenario === "deleted" ? now : null,
+    },
+    runs: [run, followup],
+    attempts: [
+      {
+        id: attemptId,
+        runId,
+        rootNodeId: rootId,
+        providerThreadId,
+        status: scenario === "attempt-running" ? "running" : "completed",
+        completedAt: now,
+      },
+    ],
+    nodes: [{ id: rootId, runId, status: "waiting", checkpointScopeId: "legacy:scope" }],
+    subagents: [],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        appThreadId: threadId,
+        driver: "codex",
+        providerInstanceId,
+        providerSessionId: ProviderSessionId.make("legacy:session"),
+        ownerNodeId: null,
+        status: "idle",
+        nativeThreadRef: { driver: "codex", nativeId: "persisted-thread", strength: "strong" },
+        pendingBackgroundTasks: [
+          { taskId: "awaited", kind: "background_task", description: "Await result" },
+        ],
+      },
+    ],
+    providerTurns: [
+      {
+        id: ProviderTurnId.make("legacy:completed-turn"),
+        providerThreadId,
+        runAttemptId: attemptId,
+        status: "completed",
+      },
+    ],
+    providerSessions: [
+      {
+        id: ProviderSessionId.make("legacy:session"),
+        driver: "codex",
+        providerInstanceId,
+        status: "ready",
+      },
+    ],
+    runtimeRequests: [],
+    messages: [],
+    turnItems: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const failed = {
+    id: `effect:checkpoint.capture:${runId}`,
+    threadId,
+    request: {
+      type: "checkpoint.capture",
+      runId,
+      historicalRefOnly: scenario.startsWith("recovered-"),
+      scopeId: scenario === "wrong-scope" ? "wrong" : "legacy:scope",
+    },
+    status: ["ordinary-pending", "recovered-pending"].includes(scenario)
+      ? "pending"
+      : ["ordinary-running", "recovered-running"].includes(scenario)
+        ? "running"
+        : "failed",
+    attemptCount: scenario === "under-budget" ? 4 : 5,
+  } as unknown as EffectOutbox.OrchestrationEffectV2;
+  const recovered: string[] = [];
+  const commands: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+  const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+        IdAllocator.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          // The bounded runtime projection can omit an intermediate settled turn.
+          getThreadRecords: () =>
+            Effect.succeed({
+              ...projection,
+              runs: scenario === "newer-work" ? [run, newer, followup] : projection.runs,
+            } as never),
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listByCommandId: () => Effect.succeed([failed]),
+          recoverFailedCheckpoint: (effect) =>
+            Effect.sync(() => {
+              recovered.push(effect.id);
+              return true;
+            }),
+          cancelUnsettled: () => Effect.succeed([]),
+          signalCancellations: () => Effect.void,
+          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          commitCommand: (input) =>
+            Effect.sync(() => {
+              commands.push(input);
+              return { committed: true, cancelledEffectCount: 0 } as never;
+            }),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    yield* recovery.reconcile(scenario === "shutdown" ? "shutdown" : "startup");
+    assert.deepEqual(
+      recovered,
+      ["eligible", "cancelled-followup"].includes(scenario) ? [failed.id] : [],
+    );
+    const effects = commands.flatMap((command) => command.effects);
+    if (["eligible", "cancelled-followup"].includes(scenario) || scenario.startsWith("recovered-"))
+      assert.deepEqual(effects, []);
+    if (scenario.startsWith("ordinary-"))
+      assert.deepEqual(
+        effects.map((effect) => effect.request),
+        [{ type: "provider-runtime.continue", sourceRunId: runId }],
+      );
+    assert.isFalse(effects.some((effect) => effect.request.type === "provider-turn.start"));
+    const events = commands.flatMap((command) => command.events);
+    if (scenario === "cancelled-followup")
+      assert.isFalse(
+        events.some((event) => event.type === "run.updated" && event.runId === followup.id),
+      );
+    if (["eligible", "cancelled-followup"].includes(scenario)) {
+      assert.isFalse(events.some((event) => event.type === "run.updated" && event.runId === runId));
+    }
   }).pipe(Effect.provide(layer));
 });
