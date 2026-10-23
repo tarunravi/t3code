@@ -80,11 +80,26 @@ describe("serverSettings helpers", () => {
 
   it("turns live thinking on and off without touching other settings", () => {
     const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { liveThinking: true });
-    expect(on).toEqual({ ...DEFAULT_SERVER_SETTINGS, liveThinking: true });
-    expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(DEFAULT_SERVER_SETTINGS);
+    const normalizedDefaults = { ...DEFAULT_SERVER_SETTINGS, idleCompaction: "onReturn" };
+    expect(on).toEqual({ ...normalizedDefaults, liveThinking: true });
+    expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(normalizedDefaults);
     expect(applyServerSettingsPatch(on, { enableProviderUpdateChecks: false }).liveThinking).toBe(
       true,
     );
+  });
+
+  it("preserves explicit idle compaction modes and customized settings when toggling live thinking", () => {
+    for (const idleCompaction of ["off", "onReturn", "beforeCacheExpires"] as const) {
+      const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+        idleCompaction,
+        enableProviderUpdateChecks: false,
+        fallbackProviderInstanceId: ProviderInstanceId.make("claude"),
+        fallbackModel: "claude-sonnet-4-5",
+      });
+      const on = applyServerSettingsPatch(current, { liveThinking: true });
+      expect(on).toEqual({ ...current, liveThinking: true });
+      expect(applyServerSettingsPatch(on, { liveThinking: false })).toEqual(current);
+    }
   });
 
   it("changes a cleanup rule without replacing the machine's other rules", () => {
