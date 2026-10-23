@@ -514,21 +514,31 @@ it("groups and counts a workflow by its run status instead of its coordinator ch
 it.each([
   { driver: "codex", origin: "app_owned", runId: null, canStop: true },
   { driver: "claudeAgent", origin: "app_owned", runId: null, canStop: true },
+  { driver: "codex", origin: "app_owned", runId: "parent-run", canStop: true },
+  { driver: "claudeAgent", origin: "app_owned", runId: "parent-run", canStop: true },
+  { driver: "opencode", origin: "app_owned", runId: null, canStop: true },
   { driver: "claudeAgent", origin: "provider_native", runId: "run-1", canStop: true },
   { driver: "claudeAgent", origin: "provider_native", runId: null, canStop: false },
+  { driver: "codex", origin: "provider_native", runId: "run-1", canStop: false },
 ])(
   "offers individual Stop for supported $origin $driver subagents with run $runId",
   async ({ driver, origin, runId, canStop }) => {
     await using _fixture = await setup();
+    const parentDriver =
+      origin === "provider_native" ? driver : driver === "codex" ? "claudeAgent" : "codex";
+    const workerInstanceId =
+      origin === "provider_native" ? `${parentDriver}-owner` : `${driver}-worker`;
     const parent = {
       id: "parent",
       lineage: { relationshipToParent: null },
       activeProviderThreadId: null,
+      modelSelection: { instanceId: `${parentDriver}-owner`, model: "parent-model" },
     };
     const child = {
       id: "child",
       title: "Worker",
       lineage: { parentThreadId: "parent", relationshipToParent: "subagent" },
+      modelSelection: { instanceId: workerInstanceId, model: "worker-model" },
     };
     const agent = {
       id: "agent",
@@ -536,12 +546,18 @@ it.each([
       origin,
       threadId: "parent",
       runId,
-      nativeTaskRef: { driver, nativeId: "claude-task", strength: "strong" },
+      parentNodeId: "owner-node",
+      createdBy: "agent",
+      providerThreadId: null,
+      nativeTaskRef:
+        origin === "provider_native"
+          ? { driver, nativeId: "claude-task", strength: "strong" }
+          : null,
       driver,
-      providerInstanceId: "codex",
+      providerInstanceId: workerInstanceId,
       title: "Worker",
       prompt: "Check the change",
-      model: "gpt-5.4",
+      model: "worker-model",
       status: "running",
       progress: null,
       result: null,
@@ -568,17 +584,18 @@ it.each([
     await render(panel);
     if (!canStop) {
       expect(allByLabel("Stop subagent Worker")).toHaveLength(0);
+      expect(state.command).not.toHaveBeenCalled();
+      expect(state.workflowCommand).not.toHaveBeenCalled();
+      expect(state.navigate).not.toHaveBeenCalled();
       return;
     }
     const stopButton = () => byLabel("Stop subagent Worker");
     await click(stopButton());
-    expect(state.command).toHaveBeenCalledWith({
+    expect(state.command).toHaveBeenCalledExactlyOnceWith({
       environmentId: "test",
-      input:
-        origin === "provider_native"
-          ? { threadId: "parent", subagentId: "agent" }
-          : { threadId: "child" },
+      input: { threadId: "parent", subagentId: "agent" },
     });
+    expect(state.workflowCommand).not.toHaveBeenCalled();
     expect(state.navigate).not.toHaveBeenCalled();
 
     for (const status of ["starting", "running", "waiting"] as const) {
@@ -609,7 +626,7 @@ it.each([
       expect(state.command).toHaveBeenCalledTimes(1);
       expect(state.command).toHaveBeenLastCalledWith({
         environmentId: "test",
-        input: { threadId: "child" },
+        input: { threadId: "parent", subagentId: "agent" },
       });
     }
     state.shells = [{ environmentId: "test", source: child }];
@@ -826,9 +843,10 @@ it("keeps a settled agent in current work while a follow-up run is active on its
   expect(text()).toContain("Previous agents (1)");
 });
 
-it("keeps Stop in the child header while expanding and navigating a four-level subagent tree", async () => {
+it("keeps Stop in the child header while expanding and navigating a four-level subagent tree under a nested owner", async () => {
   await using _fixture = await setup();
   const environmentId = EnvironmentId.make("test");
+  const ownerThreadId = ThreadId.make("nested-owner");
   const threadShell = (
     id: string,
     title: string,
@@ -851,7 +869,7 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
     },
   });
   state.shells = [
-    threadShell("child", "Child agent", "root", "subagent"),
+    threadShell("child", "Child agent", ownerThreadId, "subagent"),
     threadShell("grandchild", "Grandchild agent", "child", "subagent"),
     threadShell("great-grandchild", "Great-grandchild agent", "grandchild", "subagent"),
     threadShell("child-fork", "Child fork", "child", "fork"),
@@ -873,9 +891,9 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
   ];
   state.projection = {
     thread: {
-      id: "root",
-      title: "Root conversation",
-      lineage: { rootThreadId: "root", parentThreadId: null, relationshipToParent: null },
+      id: ownerThreadId,
+      title: "Nested owner conversation",
+      lineage: { rootThreadId: "root", parentThreadId: "root", relationshipToParent: "subagent" },
       activeProviderThreadId: null,
     },
     runs: [],
@@ -883,7 +901,13 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
     providerSessions: [],
     subagents: [
       {
-        id: "root-agent",
+        id: "owned-agent",
+        threadId: ownerThreadId,
+        runId: null,
+        parentNodeId: "owner-node",
+        createdBy: "agent",
+        providerThreadId: null,
+        nativeTaskRef: null,
         origin: "app_owned",
         driver: "codex",
         providerInstanceId: "codex",
@@ -903,9 +927,7 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
       { sourceThreadId: "child", targetThreadId: "child-transfer", status: "consumed" },
     ],
   };
-  const panel = (
-    <ThreadRelationshipsPanel environmentId={environmentId} threadId={ThreadId.make("root")} />
-  );
+  const panel = <ThreadRelationshipsPanel environmentId={environmentId} threadId={ownerThreadId} />;
   const text = () => textNodes(" ").replace(/\s+/g, " ");
   const expand = (label: string) => click(byLabel(label));
   const expectStopInChildHeader = () => {
@@ -941,14 +963,16 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
   await click(byLabel("Stop subagent Child agent"));
   expect(state.command).toHaveBeenCalledExactlyOnceWith({
     environmentId: "test",
-    input: { threadId: "child" },
+    input: { threadId: ownerThreadId, subagentId: "owned-agent" },
   });
+  expect(state.workflowCommand).not.toHaveBeenCalled();
   expect(state.navigate).toHaveBeenCalledTimes(navigationCount);
 
   await click(byLabel("Open Great-grandchild agent in this chat"));
-  expect(state.navigate).toHaveBeenCalledWith(
-    expect.objectContaining({ to: "/$environmentId/$threadId" }),
-  );
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "test", threadId: "great-grandchild" },
+  });
 });
 
 it("shows readable models and only differing workspace details in agent tooltips", async () => {
