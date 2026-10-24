@@ -180,7 +180,9 @@ function withDescriptorCurrentValue(
         currentValue: rawCurrentValue,
       };
     }
-    return descriptor;
+    return descriptor.id === "fastMode"
+      ? { ...descriptor, currentValue: descriptor.currentValue ?? false }
+      : descriptor;
   }
   const currentValue =
     typeof rawCurrentValue === "string"

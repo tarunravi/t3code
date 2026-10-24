@@ -34,6 +34,21 @@ const codexCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("descriptor helpers", () => {
+  it("defaults fast mode off while preserving explicit future choices", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [{ id: "fastMode", label: "Fast Mode", type: "boolean" }],
+    });
+    for (const value of [undefined, false, true]) {
+      const descriptors = getProviderOptionDescriptors({
+        caps,
+        selections: value === undefined ? undefined : [{ id: "fastMode", value }],
+      });
+      expect(buildProviderOptionSelectionsFromDescriptors(descriptors)).toEqual([
+        { id: "fastMode", value: value ?? false },
+      ]);
+    }
+  });
+
   it("builds dispatch options only from explicit selections", () => {
     const descriptors = getProviderOptionDescriptors({
       caps: codexCaps,
