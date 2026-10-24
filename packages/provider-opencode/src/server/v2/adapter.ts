@@ -209,6 +209,7 @@ interface ActiveTurn {
     reasoning: number;
   };
   steps: number;
+  stepModelReported: boolean;
   lastStep: Tokens | undefined;
   before: string | null | undefined;
   compaction: { readonly nativeId: string; readonly startedAt: DateTime.Utc } | undefined;
@@ -1113,6 +1114,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       nextOrdinal: providerTurn.ordinal * 100 + 1,
       usage: { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 },
       steps: 0,
+      stepModelReported: false,
       lastStep: undefined,
       before: undefined,
       compaction: undefined,
@@ -2102,10 +2104,26 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           return yield* emitCompaction(state, turn, "completed", event.data.text);
         case "session.compaction.failed":
           return yield* emitCompaction(state, turn, "failed");
+        case "session.step.started": {
+          // Only this active turn's step event attests serving; selection events do not.
+          const reported = event.data.model;
+          const model = reported === undefined ? null : `${reported.providerID}/${reported.id}`;
+          const previous = turn.providerTurn.servedModel;
+          turn.stepModelReported = model !== null && model.length <= 512;
+          turn.providerTurn = {
+            ...turn.providerTurn,
+            servedModel:
+              !turn.stepModelReported || previous === null ||
+              (previous !== undefined && previous !== model) ? null : model,
+          };
+          return;
+        }
         case "session.step.ended":
         case "session.step.failed": {
           const tokens = event.data.tokens;
           if (tokens === undefined) return;
+          if (!turn.stepModelReported) turn.providerTurn = { ...turn.providerTurn, servedModel: null };
+          turn.stepModelReported = false;
           turn.steps += 1;
           turn.lastStep = tokens;
           turn.usage.input += tokens.input + tokens.cache.read + tokens.cache.write;

@@ -756,8 +756,16 @@ function upsertProviderTurn(
   next: OrchestrationV2ProviderTurn,
 ): Array<OrchestrationV2ProviderTurn> {
   const current = turns.find((turn) => turn.id === next.id);
+  const previous = current?.servedModel;
+  const reported = next.servedModel;
+  const servedModel =
+    previous === null || reported === null ||
+    (previous !== undefined && reported !== undefined && previous !== reported)
+      ? null
+      : reported ?? previous;
   return upsertById(turns, {
     ...next,
+    ...(servedModel === undefined ? {} : { servedModel }),
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
@@ -2464,15 +2472,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               break;
             }
             case "provider-turn.updated": {
-              const existingRows =
-                event.payload.tokenUsage === undefined
-                  ? yield* sql<PayloadRow>`
-                    SELECT payload_json
-                    FROM orchestration_v2_projection_provider_turns
-                    WHERE provider_turn_id = ${event.payload.id}
-                    LIMIT 1
-                  `
-                  : [];
+              const existingRows = yield* sql<PayloadRow>`
+                SELECT payload_json
+                FROM orchestration_v2_projection_provider_turns
+                WHERE provider_turn_id = ${event.payload.id}
+                LIMIT 1
+              `;
               const existing = existingRows[0];
               const providerTurn =
                 existing === undefined

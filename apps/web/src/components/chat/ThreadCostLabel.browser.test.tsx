@@ -2,7 +2,7 @@ import { act, fakeTimers, render as mount, type Screen } from "../../../test/ren
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { ThreadCostEstimate } from "../../lib/threadCost";
+import { estimateThreadCost, type ThreadCostEstimate, type ThreadCostProjection } from "../../lib/threadCost";
 import { ThreadCostLabel } from "./ThreadCostLabel";
 
 const estimate = vi.hoisted(() => ({ current: null as ThreadCostEstimate | null }));
@@ -134,6 +134,39 @@ describe("ThreadCostLabel", () => {
       });
       expect(popupText()).toContain("Parent agent$1.00");
       expect(popupText()).toContain("Subagentsnone");
+    }
+  });
+});
+
+
+describe("scoped cost evidence presentation", () => {
+  it.each(["provider/A", undefined])("renders synthetic scoped evidence %s without inventing legacy prices", async (servedModel) => {
+    await using _fixture = await setup();
+    // Only the annotated synthetic case represents a provider step attestation.
+    const projection = {
+      runs: [{ id: "run:synthetic", modelSelection: { model: "requested-alias" } }],
+      attempts: [],
+      providerThreads: [{ id: "pt:synthetic", nativeMetadata: { modelSelection: { model: "provider/B" } } }],
+      providerTurns: [{
+        id: "turn:synthetic", providerThreadId: "pt:synthetic", nodeId: "root:synthetic",
+        runAttemptId: null, status: "completed", startedAt: 0,
+        ...(servedModel === undefined ? {} : { servedModel }),
+        turnTokenUsage: { usageScope: "main_agent", usageStatus: "complete", hasSubagents: false, inputTokens: 0, outputTokens: 1_000_000 },
+      }],
+    } as unknown as ThreadCostProjection;
+    const rates = new Map(["provider/A", "provider/B", "requested-alias"].map((model) => [model, {
+      inputCostPerToken: 0, outputCostPerToken: (model === "provider/A" ? 1 : 10) / 1_000_000,
+      cacheReadCostPerToken: 0, cacheCreationCostPerToken: 0,
+    }] as const));
+    const value = estimateThreadCost([{ threadId: "synthetic", title: "Synthetic", depth: 0, projection }], rates);
+    const trigger = await renderLabel(value);
+    expect(trigger.textContent).toBe(servedModel === undefined ? "Cost unknown" : "≈ $1.00");
+    expect(value.partial).toBe(servedModel === undefined);
+    if (servedModel === undefined) {
+      expect(trigger.textContent).not.toContain("$0");
+      expect(trigger.getAttribute("aria-label")).not.toContain("$0");
+      await act(async () => trigger.focus());
+      expect(popupText()).toContain("Parent agentUnknown");
     }
   });
 });

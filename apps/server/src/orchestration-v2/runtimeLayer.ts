@@ -151,12 +151,13 @@ const layerProviderAuthServiceProvided = ProviderAuthService.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
 
-const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
+const layerRunExecutionServiceProvided = RunExecutionService.layerFromServices.pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layer,
       PreviewAgentActivity.layer,
       ProjectionStore.layer,
+      ThreadCommandExecutor.layer,
       layerCheckpointServiceProvided,
       layerEventSinkProvided,
       IdAllocator.layer,
@@ -166,13 +167,14 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
-const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layerFromServices.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerContextHandoffServiceProvided,
       layerEventSinkProvided,
       IdAllocator.layer,
       ProjectionStore.layer,
+      ThreadCommandExecutor.layer,
       layerProviderSessionManagerProvided,
       layerProviderAuthServiceProvided,
       layerRunExecutionServiceProvided,

@@ -1103,6 +1103,8 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  /** Provider-reported model for this turn's entire usage; null means mixed or unattested steps. */
+  servedModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(512)))),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 

@@ -8,6 +8,7 @@ import {
   OrchestrationV2AppThread,
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ProviderTurn,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
@@ -644,5 +645,25 @@ describe("explicit preservation compatibility", () => {
       expect(() => decode({ preservationOnly: false })).toThrow();
       expect(() => decode({ preservationOnly: "true" })).toThrow();
     }
+  });
+});
+
+
+describe("provider turn served-model compatibility", () => {
+  const payload = {
+    id: "turn:model", providerThreadId: "provider-thread:model", nodeId: "node:model",
+    runAttemptId: "attempt:model", nativeTurnRef: null, ordinal: 1, status: "completed",
+    startedAt: null, completedAt: null,
+  };
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ProviderTurn);
+  it("decodes old payloads without inventing served-model evidence", () => {
+    expect(decode(payload)).not.toHaveProperty("servedModel");
+  });
+  it.each(["provider/A", null])("retains reported or explicitly mixed evidence %s", (servedModel) => {
+    expect(decode({ ...payload, servedModel })).toHaveProperty("servedModel", servedModel);
+  });
+  it("rejects empty and oversized served-model identifiers", () => {
+    expect(() => decode({ ...payload, servedModel: "" })).toThrow();
+    expect(() => decode({ ...payload, servedModel: "x".repeat(513) })).toThrow();
   });
 });

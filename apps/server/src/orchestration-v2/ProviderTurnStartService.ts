@@ -53,6 +53,7 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -121,7 +122,7 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
-export const layer: Layer.Layer<
+export const layerFromServices: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
   | EventSink.EventSinkV2
@@ -138,6 +139,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -153,6 +155,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const commands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
@@ -160,10 +163,13 @@ export const layer: Layer.Layer<
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
+        readonly admit: () => Effect.Effect<boolean, unknown>;
       }) {
         const { cwd, worktreePath, branch } = input;
+        if (!(yield* input.admit())) return;
         yield* gitWorkflow.pruneWorktrees({ cwd });
         const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
+        if (!(yield* input.admit())) return;
         if (localBranchNames.includes(branch)) {
           yield* gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath });
           return;
@@ -174,6 +180,7 @@ export const layer: Layer.Layer<
         if (baseRef === null) {
           return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
         }
+        if (!(yield* input.admit())) return;
         yield* gitWorkflow.createWorktree({
           cwd,
           refName: `refs/heads/${baseRef}`,
@@ -185,6 +192,27 @@ export const layer: Layer.Layer<
     );
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
+    const currentAttemptInStatus = (
+      input: { readonly threadId: ThreadId; readonly runId: RunId; readonly attemptId: OrchestrationV2RunAttempt["id"] },
+      expectedStatus: OrchestrationV2Run["status"],
+    ) => projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
+      Effect.map((current) => {
+        const run = current.runs.find((candidate) => candidate.id === input.runId);
+        return current.thread.id === input.threadId &&
+          current.thread.preservationOnly !== true &&
+          run?.threadId === input.threadId &&
+          run.activeAttemptId === input.attemptId && run.status === expectedStatus;
+      }),
+    );
+    // Serialize admission with dispatch, never Git/provider I/O. Already-admitted
+    // OS work cannot be undone by a later freeze.
+    const admitCurrentAttemptInStatus = (
+      input: Parameters<typeof currentAttemptInStatus>[0],
+      expectedStatus: OrchestrationV2Run["status"],
+    ) => commands.withLock(input.threadId, currentAttemptInStatus(input, expectedStatus));
+
+    // These callbacks outlive startup while a run drains background work. Build
+    // them outside start's scope so they cannot retain its full thread history.
     const makeRunControls = (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
@@ -196,12 +224,7 @@ export const layer: Layer.Layer<
       >;
     }) => {
       const isCurrentAttemptInStatus = (expectedStatus: OrchestrationV2Run["status"]) =>
-        projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
-          Effect.map((current) => {
-            const run = current.runs.find((candidate) => candidate.id === input.runId);
-            return run?.activeAttemptId === input.attemptId && run.status === expectedStatus;
-          }),
-        );
+        admitCurrentAttemptInStatus(input, expectedStatus);
       return {
         isCurrentAttemptInStatus,
         loadInheritedBackgroundTurnItems: () =>
@@ -217,7 +240,8 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.succeed(input.inheritedBackgroundTurnItems)),
           ),
-        shouldStartProviderTurn: () => isCurrentAttemptInStatus("running"),
+        // RunExecutionService already owns this same lock for its admission.
+        shouldStartProviderTurn: () => currentAttemptInStatus(input, "running"),
         shouldFinalizeRun: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) => {
@@ -367,6 +391,10 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+      const admitPreparation = () => admitCurrentAttemptInStatus({
+        threadId: input.threadId, runId, attemptId: attempt.id,
+      }, "starting");
+      if (!(yield* admitPreparation())) return;
       const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
         function* (input: {
           readonly signal: string;
@@ -460,6 +488,7 @@ export const layer: Layer.Layer<
                   },
                 ]
               : [];
+          if (!(yield* admitPreparation())) return;
           yield* eventSink.writeIfRunCurrent({
             threadId: projection.thread.id,
             runId,
@@ -609,6 +638,7 @@ export const layer: Layer.Layer<
                 cwd: project.workspaceRoot,
                 worktreePath,
                 branch,
+                admit: admitPreparation,
               }).pipe(
                 Effect.mapError((cause) =>
                   cause._tag === "WorktreeRecreateNoBaseError"
@@ -654,6 +684,7 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
+      if (!(yield* admitPreparation())) return;
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection: run.modelSelection,
@@ -687,6 +718,7 @@ export const layer: Layer.Layer<
         if (Option.isSome(liveSession)) {
           // Older versions could fail the run without stopping its provider.
           // Recover that exact turn before reusing its native conversation.
+          if (!(yield* admitPreparation())) return;
           const recovered = yield* Effect.result(
             liveSession.value.interruptTurn({
               providerThread,
@@ -705,6 +737,7 @@ export const layer: Layer.Layer<
           }
         }
         const completedAt = yield* DateTime.now;
+        if (!(yield* admitPreparation())) return;
         const repaired = yield* eventSink.writeIfRunCurrent({
           threadId: projection.thread.id,
           runId: run.id,
@@ -727,6 +760,7 @@ export const layer: Layer.Layer<
         });
         if (!repaired.committed) return;
       }
+      if (!(yield* admitPreparation())) return;
       const sessionResult = yield* Effect.result(
         providerSessions.open({
           threadId: projection.thread.id,
@@ -759,9 +793,10 @@ export const layer: Layer.Layer<
       const session = sessionResult.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
-        load: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
+        load: () => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
       ) {
-        const loaded = yield* Effect.result(load);
+        if (!(yield* admitPreparation())) return undefined;
+        const loaded = yield* Effect.result(Effect.suspend(load));
         if (loaded._tag === "Success") return loaded.success;
         if (input.willRetry === true) return yield* loaded.failure;
         yield* settleStartFailure({
@@ -799,7 +834,7 @@ export const layer: Layer.Layer<
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
             });
           }
-          return yield* loadFromProvider(
+          return yield* loadFromProvider(() =>
             session.forkThread({
               sourceProviderThread,
               sourceProviderTurns: sourceProjection.providerTurns,
@@ -813,8 +848,11 @@ export const layer: Layer.Layer<
           );
         }
         if (providerThread.nativeThreadRef === null) {
-          // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
-          return yield* loadFromProvider(
+          // Hand the run's provider thread to the adapter so it adopts this
+          // row's identity when attaching native state. An adapter that mints
+          // its own row instead leaves two live rows per app thread, and
+          // `activeProviderThreadId` then flaps between them on every update.
+          return yield* loadFromProvider(() =>
             session.ensureThread({
               threadId: projection.thread.id,
               title: projection.thread.title,
@@ -831,6 +869,7 @@ export const layer: Layer.Layer<
             handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
             handoff.delivery?.status === "pending",
         );
+        if (!(yield* admitPreparation())) return undefined;
         const resumed = yield* Effect.result(
           uncertainDelivery
             ? Effect.fail(
@@ -860,7 +899,7 @@ export const layer: Layer.Layer<
           reason: uncertainDelivery ? "uncertain_history_delivery" : "resume_failed",
           errorTag: resumed.failure._tag,
         });
-        const replacement = yield* loadFromProvider(
+        const replacement = yield* loadFromProvider(() =>
           session.ensureThread({
             threadId: projection.thread.id,
             title: projection.thread.title,
@@ -871,7 +910,7 @@ export const layer: Layer.Layer<
             existingProviderThread: { ...providerThread, nativeThreadRef: null },
           }),
         );
-        if (replacement === undefined) return undefined;
+        if (replacement === undefined || !(yield* admitPreparation())) return undefined;
         const transferId = yield* idAllocator.allocate.contextTransfer({
           sourceThreadId: projection.thread.id,
           targetThreadId: projection.thread.id,
@@ -898,6 +937,7 @@ export const layer: Layer.Layer<
           ),
           createdAt,
         });
+        if (!(yield* admitPreparation())) return undefined;
         // Delivery ranks later handoffs as newer history. Pending handoffs from
         // earlier runs predate this summary; handoffs for this run (provider-switch
         // delta, merge-back) are newer and must stay last.
@@ -1100,6 +1140,7 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
+      if (!(yield* admitPreparation())) return;
       const runningWrite = yield* eventSink.writeIfRunCurrent({
         threadId: projection.thread.id,
         runId: run.id,
@@ -1307,12 +1348,16 @@ export const layer: Layer.Layer<
               ? {}
               : {
                   inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
-                    session.injectHistory!({
-                      providerThread: runningProviderThread,
-                      ...history,
+                    Effect.gen(function* () {
+                      if (!(yield* isCurrentAttemptInStatus("running"))) return false;
+                      return yield* session.injectHistory!({
+                        providerThread: runningProviderThread,
+                        ...history,
+                      });
                     }),
                 }),
             persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
+              if (!(yield* isCurrentAttemptInStatus("running"))) return;
               const updatedAt = yield* DateTime.now;
               yield* eventSink.write({
                 events: [
@@ -1464,3 +1509,6 @@ export const layer: Layer.Layer<
     });
   }),
 );
+
+// Standalone assemblies share the memoized executor layer, as RunExecutionService does.
+export const layer = layerFromServices.pipe(Layer.provide(ThreadCommandExecutor.layer));
