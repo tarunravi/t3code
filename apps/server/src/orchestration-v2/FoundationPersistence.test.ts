@@ -3717,7 +3717,15 @@ it.effect("persists OpenCode step-scoped served models through payload JSON and 
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     const sql = yield* SqlClient.SqlClient;
-    const native = yield* Queue.unbounded<OpenCode2StreamEvent>();
+    let native = yield* Queue.unbounded<OpenCode2StreamEvent, import("effect/Cause").Done>();
+    const subscribed = yield* Queue.unbounded<void>();
+    const reconnecting = yield* Queue.unbounded<void>();
+    const resume = yield* Queue.unbounded<void>();
+    let disconnected = false;
+    let connections = 0;
+    let activeReads = 0;
+    let historyReads = 0;
+    let promptId = "";
     const ended = yield* Queue.unbounded<import("@t3tools/contracts").OrchestrationV2ProviderTurn>();
     const selected = yield* Queue.unbounded<string>();
     const instanceId = ProviderInstanceId.make("opencode-cost");
@@ -3733,16 +3741,33 @@ it.effect("persists OpenCode step-scoped served models through payload JSON and 
         create: () => Effect.succeed({ id: "ses_cost", model: { providerID: "request", id: "alias" } }),
         update: () => Effect.void, switchModel: () => Effect.void, switchAgent: () => Effect.void,
         instructions: { entry: { put: () => Effect.void } },
-        prompt: () => Effect.void, interrupt: () => Effect.void,
+        prompt: (input: { id: string }) => Effect.sync(() => { promptId = input.id; }),
+        interrupt: () => Effect.void,
+        active: () => Effect.sync(() => { activeReads++; return { ses_cost: {} }; }),
+        form: { list: () => Effect.succeed([]) },
       },
+      permission: { list: () => Effect.succeed([]) },
+      message: { list: () => Effect.sync(() => { historyReads++; return { data: [{ id: promptId, type: "user" }], cursor: {} }; }) },
     } as unknown as OpenCode2Server.OpenCode2Connection["client"];
     const connection: OpenCode2Server.OpenCode2Connection = {
-      client, events: Effect.succeed(Stream.fromQueue(native)), url: "http://test.invalid", version: "2.0.28", external: true,
+      client,
+      events: Effect.sync(() => {
+        const current = native;
+        return Stream.fromEffect(Queue.offer(subscribed, undefined)).pipe(Stream.drain, Stream.concat(Stream.fromQueue(current)));
+      }),
+      url: "http://test.invalid", version: "2.0.28", external: true,
     };
     const adapter = yield* OpenCode2Adapter.make(instanceId).pipe(
-      Effect.provideService(OpenCode2Server.OpenCode2Server, { withConnection: (use) => use(connection) }),
+      Effect.provideService(OpenCode2Server.OpenCode2Server, { withConnection: (use) => Effect.gen(function* () {
+        if (connections++ > 0 && disconnected) {
+          yield* Queue.offer(reconnecting, undefined);
+          yield* Queue.take(resume);
+        }
+        return yield* use(connection);
+      }) }),
     );
     const runtime = yield* adapter.openSession({ threadId, providerSessionId: ProviderSessionId.make("session:cost"), modelSelection: selection, runtimePolicy: policy });
+    yield* Queue.take(subscribed);
     let sequence = 0;
     yield* runtime.events.pipe(Stream.runForEach((event) => Effect.gen(function* () {
       if (event.type !== "provider_turn.updated" && event.type !== "provider_thread.updated") return;
@@ -3750,7 +3775,7 @@ it.effect("persists OpenCode step-scoped served models through payload JSON and 
         ? { id: EventId.make(`event:cost:${++sequence}`), type: "provider-turn.updated", driver: runtime.driver, threadId, providerInstanceId: instanceId, occurredAt: now, payload: event.providerTurn }
         : { id: EventId.make(`event:cost:${++sequence}`), type: "provider-thread.updated", driver: runtime.driver, threadId, providerInstanceId: instanceId, occurredAt: now, payload: event.providerThread };
       yield* sink.write({ events: [domain] });
-      if (event.type === "provider_turn.updated" && event.providerTurn.status === "completed") yield* Queue.offer(ended, event.providerTurn);
+      if (event.type === "provider_turn.updated" && (event.providerTurn.status === "completed" || event.providerTurn.status === "failed")) yield* Queue.offer(ended, event.providerTurn);
       if (event.type === "provider_thread.updated") yield* Queue.offer(selected, event.providerThread.nativeMetadata?.modelSelection?.model ?? "");
     })), Effect.forkScoped);
     const providerThread = yield* runtime.ensureThread({ threadId, modelSelection: selection, runtimePolicy: policy });
@@ -3805,8 +3830,82 @@ it.effect("persists OpenCode step-scoped served models through payload JSON and 
     yield* send("session.step.started", { model: { providerID: "provider", id: "A" } });
     yield* step("B");
     assert.isNull((yield* finish()).servedModel);
+    // Decode new reconnect fixtures with the pinned native protocol, not a weakened test shape.
+    const { OpenCodeEvent } = yield* Effect.promise(() => import(new URL("../../../node_modules/@opencode/protocol/dist/groups/event.js", import.meta.resolve("@t3tools/provider-opencode/server/v2/adapter")).href));
+    const decodeNative = Schema.decodeUnknownResult(OpenCodeEvent);
+    let nativeSequence = 0;
+    const missed: OpenCode2StreamEvent[] = [];
+    const nativeEvent = (type: string, data: Record<string, unknown> = {}): OpenCode2StreamEvent => {
+      const decoded = decodeNative({
+      id: `evt_cost_${++nativeSequence}`, type, created: DateTime.toEpochMillis(now),
+      durable: { aggregateID: "ses_cost", seq: nativeSequence, version: 1 },
+      data: { sessionID: "ses_cost", ...data },
+      });
+      if (decoded._tag !== "Success") return assert.fail("Native reconnect fixture failed the pinned protocol schema");
+      return decoded.success as OpenCode2StreamEvent;
+    };
+    const emitNative = (event: OpenCode2StreamEvent) => disconnected
+      ? Effect.sync(() => { missed.push(event); })
+      : Queue.offer(native, event).pipe(Effect.asVoid);
+    const started = (id: string, model: string) => nativeEvent("session.step.started", {
+      assistantMessageID: id, agent: "build", model: { providerID: "provider", id: model }, started: DateTime.toEpochMillis(now),
+    });
+    const terminal = (id: string, output = 1_000_000, finish = "stop") => nativeEvent("session.step.ended", {
+      assistantMessageID: id, finish, cost: 0, tokens: { input: 0, output, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    const gap = (ordinal: number, initialModel: string, nextModel: string, laterSameModel: boolean) => Effect.gen(function* () {
+      yield* start(ordinal);
+      yield* Queue.takeAll(selected);
+      yield* emitNative(started(`msg_cost_${ordinal}_X`, initialModel));
+      yield* Queue.take(selected).pipe(Effect.repeat({ until: (model) => model === `provider/${initialModel}` }));
+      disconnected = true;
+      yield* Queue.end(native);
+      yield* Queue.take(reconnecting);
+      // These valid normal events are emitted while the volatile subscription is absent.
+      yield* emitNative(terminal(`msg_cost_${ordinal}_X`, 100, "tool-calls"));
+      yield* emitNative(started(`msg_cost_${ordinal}_Y`, nextModel));
+      native = yield* Queue.unbounded<OpenCode2StreamEvent, import("effect/Cause").Done>();
+      disconnected = false;
+      yield* Queue.offer(resume, undefined);
+      yield* Queue.take(subscribed);
+      assert.isAtLeast(activeReads, 1);
+      assert.isAtLeast(historyReads, 1);
+      yield* emitNative(terminal(`msg_cost_${ordinal}_Y`));
+      if (laterSameModel) {
+        yield* emitNative(started(`msg_cost_${ordinal}_Z`, initialModel));
+        yield* emitNative(terminal(`msg_cost_${ordinal}_Z`));
+      }
+      yield* emitNative(nativeEvent("session.execution.succeeded"));
+      const turn = yield* Queue.take(ended);
+      assert.equal(turn.runAttemptId, `attempt:cost:${ordinal}`);
+      assert.equal(turn.providerThreadId, first.providerThreadId);
+      assert.isNull(turn.servedModel);
+      assert.equal(turn.turnTokenUsage?.usageStatus, "partial");
+      const projected = yield* projections.getThreadProjection(threadId);
+      assert.equal(cost(projected).totalUsd, 11);
+      assert.isTrue(cost(projected).partial);
+      const payload = yield* sql<{ payload_json: string }>`SELECT payload_json FROM orchestration_v2_projection_provider_turns WHERE provider_turn_id = ${turn.id}`;
+      assert.isNull(JSON.parse(payload[0]!.payload_json).servedModel);
+    });
+    yield* gap(6, "A", "B", false);
+    yield* gap(7, "B", "B", true);
+    assert.equal(missed.length, 4);
+    // A tokenless failed step ends its execution here; no native continuation is assumed.
+    yield* start(8);
+    yield* emitNative(started("msg_cost_failed", "A"));
+    const error = { type: "provider.error", message: "synthetic failure" };
+    yield* emitNative(nativeEvent("session.step.failed", { assistantMessageID: "msg_cost_failed", error }));
+    yield* emitNative(nativeEvent("session.execution.failed", { error }));
+    const failed = yield* Queue.take(ended);
+    assert.equal(failed.status, "failed");
+    assert.isNull(failed.servedModel);
+    assert.equal(failed.turnTokenUsage?.usageStatus, "unavailable");
+    yield* start(9); yield* step("A"); yield* step("A");
+    const sameModel = yield* finish();
+    assert.equal(sameModel.servedModel, "provider/A");
+    assert.equal(sameModel.turnTokenUsage?.usageStatus, "complete");
     const before = yield* projections.getThreadProjection(threadId);
-    assert.equal(cost(before).totalUsd, 11);
+    assert.equal(cost(before).totalUsd, 13);
     assert.isTrue(cost(before).partial);
     assert.isTrue((yield* maintenance.rebuild).valid);
     const rebuilt = yield* projections.getThreadProjection(threadId);
