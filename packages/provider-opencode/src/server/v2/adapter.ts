@@ -214,6 +214,8 @@ interface ActiveTurn {
   // A reconnect dropped events, so steps may have ended unseen.
   missedEvents: boolean;
   steps: number;
+  stepModelReported: boolean;
+  usageIncomplete: boolean;
   readonly models: Set<string>;
   lastStep: Tokens | undefined;
   before: string | null | undefined;
@@ -654,7 +656,10 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
         ...models,
         usageScope: "main_agent" as const,
         usageStatus:
-          status === "completed" && !turn.missedEvents && turn.steps >= turn.startedSteps
+          status === "completed" &&
+          !turn.usageIncomplete &&
+          !turn.missedEvents &&
+          turn.steps >= turn.startedSteps
             ? ("complete" as const)
             : ("partial" as const),
         inputTokens: turn.usage.input,
@@ -1144,6 +1149,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       startedSteps: 0,
       missedEvents: false,
       steps: 0,
+      stepModelReported: false,
+      usageIncomplete: false,
       models: new Set(),
       lastStep: undefined,
       before: undefined,
@@ -2127,13 +2134,33 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           return yield* emitCompaction(state, turn, "completed", event.data.text);
         case "session.compaction.failed":
           return yield* emitCompaction(state, turn, "failed");
-        case "session.step.started":
+        case "session.step.started": {
           turn.startedSteps += 1;
-          turn.models.add(`${event.data.model.providerID}/${event.data.model.id}`);
+          if (event.data.model !== undefined)
+            turn.models.add(`${event.data.model.providerID}/${event.data.model.id}`);
+          // Only this active turn's step event attests serving; selection events do not.
+          const reported = event.data.model;
+          const model = reported === undefined ? null : `${reported.providerID}/${reported.id}`;
+          const previous = turn.providerTurn.servedModel;
+          turn.stepModelReported = model !== null && model.length <= 512;
+          turn.providerTurn = {
+            ...turn.providerTurn,
+            servedModel:
+              !turn.stepModelReported ||
+              previous === null ||
+              (previous !== undefined && previous !== model)
+                ? null
+                : model,
+          };
           return;
+        }
         case "session.step.ended":
         case "session.step.failed": {
+          const modelReported = turn.stepModelReported;
+          turn.stepModelReported = false;
           const tokens = event.data.tokens;
+          if (!modelReported || tokens === undefined)
+            turn.providerTurn = { ...turn.providerTurn, servedModel: null };
           if (tokens === undefined) return;
           turn.steps += 1;
           turn.lastStep = tokens;
@@ -2710,6 +2737,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         Effect.flatMap(() =>
           Effect.gen(function* () {
             streamFailure = "The OpenCode event stream was lost. Reconnecting.";
+            // A volatile gap can hide both a step boundary and usage, even if the execution survives.
+            yield* lock.withPermit(
+              Effect.sync(() => {
+                for (const state of threads.values()) {
+                  const turn = state.active;
+                  if (turn === undefined) continue;
+                  turn.stepModelReported = false;
+                  turn.usageIncomplete = true;
+                  turn.providerTurn = { ...turn.providerTurn, servedModel: null };
+                }
+              }),
+            );
             yield* Effect.logWarning("Lost the OpenCode event stream; reconnecting.");
             // Failures may contain URLs or response text; annotate only the tag and keep details in cause.
             const next = yield* reconnect.pipe(
