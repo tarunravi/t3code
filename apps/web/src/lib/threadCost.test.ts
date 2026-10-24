@@ -47,6 +47,7 @@ function projection(
       nodeId: "root",
       providerThreadId: `pt:${model}`,
       runAttemptId: "attempt:1",
+      servedModel: reportedModel ?? model,
       status: turn.status ?? "completed",
       startedAt: "startedAt" in turn ? turn.startedAt : 0,
       turnTokenUsage:
@@ -255,6 +256,7 @@ describe("estimateThreadCost", () => {
         {
           ...parent.providerTurns[0]!,
           id: "turn:pt2",
+          servedModel: "glm-5.3",
           providerThreadId: "pt2",
           runAttemptId: "attempt:2",
           turnTokenUsage: {
@@ -290,5 +292,102 @@ describe("estimateThreadCost", () => {
     expect(estimate.parent).toEqual({ usd: 0, partial: true });
     expect(estimate.subagents).toEqual({ usd: expect.closeTo(0.52, 10), partial: false });
     expect(estimate.partial).toBe(true);
+  });
+});
+
+// R1-F2: a provider-thread model selection is mutable, unlike owning run identity.
+describe("R1-F2 historical model attribution", () => {
+  const rates = new Map([
+    ["provider/A", perMillion(0, 1)],
+    ["provider/B", perMillion(0, 10)],
+    ["default", perMillion(0, 0.25)],
+  ]);
+
+  function history(secondTurn = false, firstModel = "provider/A", selected = "provider/B") {
+    const first = projection(firstModel, [{ usage: { inputTokens: 0, outputTokens: 1_000_000 } }]);
+    const providerThreadId = first.providerTurns[0]!.providerThreadId;
+    return {
+      ...first,
+      runs: [
+        ...first.runs,
+        {
+          ...first.runs[0]!,
+          id: "run:2",
+          rootNodeId: "root:2",
+          modelSelection: { model: "provider/B" },
+        },
+      ].slice(0, secondTurn ? 2 : 1),
+      attempts: [
+        { ...first.attempts[0]!, providerThreadId },
+        { id: "attempt:2", runId: "run:2", providerThreadId },
+      ].slice(0, secondTurn ? 2 : 1),
+      providerThreads: [{ ...first.providerThreads[0]!, nativeMetadata: { modelSelection: { model: selected } } }],
+      providerTurns: [
+        ...first.providerTurns.map((turn) => ({ ...turn, servedModel: firstModel === "default" ? undefined : firstModel })),
+        { ...first.providerTurns[0]!, id: "turn:2", nodeId: "root:2", runAttemptId: "attempt:2", servedModel: "provider/B" },
+      ].slice(0, secondTurn ? 2 : 1),
+    } as unknown as ThreadCostProjection;
+  }
+
+  it("does not reprice T1 after selecting B without any new tokens", () => {
+    const before = estimateThreadCost([source("parent", 0, history(false, "provider/A", "provider/A"))], rates);
+    expect(before.totalUsd).toBe(1);
+    const after = estimateThreadCost([source("parent", 0, history())], rates);
+    expect(after.totalUsd).toBe(1);
+    expect(after.partial).toBe(false);
+  });
+
+  it("prices known A and B runs on one provider thread as 11 dollars, not 20", () => {
+    const value = estimateThreadCost([source("parent", 0, history(true))], rates);
+    expect(value.totalUsd).toBe(11);
+    expect(value.partial).toBe(false);
+  });
+
+  it("does not price an unknown historical default route from either alias or current model", () => {
+    const value = estimateThreadCost([source("parent", 0, history(false, "default"))], rates);
+    expect(value.partial).toBe(true);
+    expect(value.totalUsd).toBe(0);
+    expect(value.rows[0]?.costUsd).toBeNull();
+  });
+
+  it("suppresses missing attempt evidence instead of selecting the first matching root", () => {
+    const original = history();
+    const value = {
+      ...original,
+      providerThreads: [],
+      attempts: [],
+      providerTurns: original.providerTurns.map((turn) => ({ ...turn, servedModel: undefined })),
+      runs: [original.runs[0]!, { ...original.runs[0]!, id: "ambiguous-run", modelSelection: { model: "provider/B" } }],
+    } as unknown as ThreadCostProjection;
+    const estimate = estimateThreadCost([source("parent", 0, value)], rates);
+    expect(estimate.partial).toBe(true);
+    expect(estimate.totalUsd).toBe(0);
+  });
+
+  it("retains same-session parent and child subtotals without double-counting a mirror", () => {
+    const parent = history(true);
+    const child = { ...parent, providerTurns: parent.providerTurns.map((turn) => ({ ...turn, id: `child:${turn.id}` })) } as unknown as ThreadCostProjection;
+    const estimate = estimateThreadCost([
+      source("parent", 0, parent),
+      source("child", 1, child),
+      source("mirror", 2, child),
+    ], rates);
+    expect(estimate.parent).toEqual({ usd: 11, partial: false });
+    expect(estimate.subagents).toEqual({ usd: 11, partial: false });
+    expect(estimate.totalUsd).toBe(22);
+  });
+});
+
+
+describe("scoped served-model evidence", () => {
+  it.each([undefined, null])("leaves legacy or mixed evidence %s unknown even with requested/current prices", (servedModel) => {
+    const original = projection("requested-alias", [{ usage: { inputTokens: 0, outputTokens: 1_000_000 } }], "current-model");
+    const value = { ...original, providerTurns: original.providerTurns.map((turn) => ({ ...turn, servedModel })) };
+    const estimate = estimateThreadCost([source("parent", 0, value)], new Map([
+      ["requested-alias", perMillion(0, 1)], ["current-model", perMillion(0, 10)],
+    ]));
+    expect(estimate.totalUsd).toBe(0);
+    expect(estimate.partial).toBe(true);
+    expect(estimate.rows[0]?.costUsd).toBeNull();
   });
 });

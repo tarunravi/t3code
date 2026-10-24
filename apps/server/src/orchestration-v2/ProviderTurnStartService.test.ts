@@ -4,6 +4,7 @@ import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
   GitCommandError,
+  ContextHandoffId,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -49,6 +50,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -100,6 +102,7 @@ function startWithMissingWorktree(
     runs: [
       {
         id: runId,
+        threadId,
         status: "starting",
         rootNodeId,
         activeAttemptId: attemptId,
@@ -125,9 +128,10 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
-  const layer = ProviderTurnStart.layer.pipe(
+  const layer = ProviderTurnStart.layerFromServices.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ThreadCommandExecutor.layer,
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -173,12 +177,7 @@ function startWithMissingWorktree(
           },
           getRuntimeRecoveryProjection: () => {
             projectionReadCount += 1;
-            return Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: "simulated inherited-background projection failure",
-              }),
-            );
+            return Effect.succeed(projection);
           },
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
@@ -186,7 +185,9 @@ function startWithMissingWorktree(
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({resolve: () => Effect.fail(
+          new ProjectionStore.ProjectionStoreReadError({threadId, cause: "simulated routing failure"}),
+        ) as never}),
       ),
     ),
   );
@@ -262,6 +263,7 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly commands?: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
   readonly text: string;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
@@ -350,6 +352,7 @@ function makeLocalCommandHarness(input: {
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
       id: threadId,
+      lineage: {parentThreadId: null, relationshipToParent: null},
       activeProviderThreadId: providerThreadId,
       projectId: ProjectId.make("project-native-account-command"),
       branch: input.worktreePath === undefined ? null : "feature/restore",
@@ -674,6 +677,7 @@ function makeLocalCommandHarness(input: {
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
       Effect.succeed({ cwd: thread.worktreePath ?? "/tmp/native-account-command" } as never),
   );
+  const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(() =>
     Effect.succeed({} as never),
   );
@@ -690,13 +694,30 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
-  const layer = ProviderTurnStart.layer.pipe(
+  const getTurnStartHistory = vi.fn(() =>
+    Effect.fail(new ProjectionStore.ProjectionStoreReadError({
+      threadId, cause: input.historyReadFailureAfterFallback,
+    })),
+  );
+  const write = vi.fn(({ events: incoming }: { events: ReadonlyArray<OrchestrationV2DomainEvent> }) =>
+    Effect.sync(() => {
+      for (const event of incoming) {
+        events.push(event);
+        projection = ProjectionStore.applyToProjection(projection, event);
+      }
+      return { storedEvents: [] } as never;
+    }),
+  );
+  const layer = ProviderTurnStart.layerFromServices.pipe(
     Layer.provide(
       Layer.mergeAll(
+        input.commands === undefined
+          ? ThreadCommandExecutor.layer
+          : Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, input.commands),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent, write }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
@@ -704,7 +725,7 @@ function makeLocalCommandHarness(input: {
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
-              pruneWorktrees: () => Effect.void,
+              pruneWorktrees,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
               createWorktree,
             })
@@ -727,13 +748,7 @@ function makeLocalCommandHarness(input: {
                   (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
               ),
             }),
-          getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
-            ),
+          getTurnStartHistory,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
@@ -757,12 +772,14 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    getTurnStartHistory,
     getThreadRecords,
     getTurnStartContext,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
     resolveRuntimePolicy,
+    pruneWorktrees,
     createWorktree,
     open,
     writeIfRunCurrent,
@@ -1340,7 +1357,7 @@ effectIt.effect("does not overwrite a run interrupted while its provider session
 
     yield* harness.start;
 
-    expect(harness.writeIfRunCurrent).toHaveBeenCalledOnce();
+    expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
     const projection = harness.projection();
     expect(projection.runs.at(-1)?.status).toBe("interrupted");
@@ -1426,3 +1443,174 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+
+// R1-F1: exercise the real startup layer, including its delivery-session wrapper.
+effectIt.effect.each(["exists", "policy"] as const)(
+  "R1-F1 suppresses new workspace/provider IO after freeze during %s",
+  (boundary) => Effect.gen(function* () {
+    const commands = yield* Effect.provide(ThreadCommandExecutor.ThreadCommandExecutor, ThreadCommandExecutor.layer);
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
+    const worktreePath = `${managedWorktreesDir}/project/freeze`;
+    const harness = makeLocalCommandHarness({ text: "Continue", commands, openFailure: "test provider failure",
+      ...(boundary === "exists" ? {worktreePath, fileSystem: {
+        exists: () => gate.pipe(Effect.as(false)),
+        realPath: (target: string) => Effect.succeed(normalize(target)),
+      } as never} : {}),
+    });
+    // The existing harness records create; policy deferral covers the open boundary.
+    if (boundary === "policy") harness.resolveRuntimePolicy.mockReturnValue(gate.pipe(Effect.as({cwd: "/tmp/fake"} as never)));
+    const startup = yield* harness.start.pipe(Effect.forkChild({startImmediately: true}));
+    yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(startup).pipe(Effect.andThen(Effect.die("barrier not reached"))));
+    const current = harness.projection();
+    yield* commands.withLock(current.thread.id, Effect.sync(() => harness.setProjection({
+      ...current, thread: {...current.thread, preservationOnly: true},
+    })));
+    const frozen = harness.projection();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(startup);
+    expect(harness.pruneWorktrees).not.toHaveBeenCalled();
+    expect(harness.createWorktree).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.events).toEqual([]);
+    expect(harness.projection()).toEqual(frozen);
+  }),
+);
+
+function deliveryRegressionHarness(commands: ThreadCommandExecutor.ThreadCommandExecutor["Service"], compact: boolean) {
+  const harness = makeLocalCommandHarness({text: "Continue", commands});
+  const projection = harness.projection();
+  const run = projection.runs.at(-1)!;
+  const providerThread = {...projection.providerThreads.at(-1)!, nativeThreadRef: {
+    driver: ProviderDriverKind.make("codex"), nativeId: "freeze-native", strength: "strong" as const,
+  }};
+  harness.setProjection({...projection, thread: {...projection.thread, lineage: {parentThreadId: null, relationshipToParent: null} as never}, providerThreads: [providerThread], contextHandoffs: [{
+    id: ContextHandoffId.make("freeze-handoff"), threadId: projection.thread.id,
+    targetRunId: run.id, transferId: null, fromProviderThreadIds: [providerThread.id],
+    toProviderThreadId: providerThread.id, fromProviderInstanceId: run.providerInstanceId,
+    toProviderInstanceId: run.providerInstanceId, coveredRunOrdinals: {from: 1, to: 1},
+    strategy: "delta_since_target_last_seen", status: "ready", summaryText: "Earlier context",
+    createdAt: projection.updatedAt, updatedAt: projection.updatedAt,
+  } as never]});
+  const startTurn = vi.fn(() => Effect.void);
+  const compactThread = vi.fn(() => Effect.void);
+  const injectHistory = vi.fn(() => Effect.succeed(true));
+  const ensureThread = vi.fn(() => Effect.succeed(providerThread));
+  harness.open.mockReturnValue(Effect.succeed({
+    driver: providerThread.driver, providerSession: {
+      id: providerThread.providerSessionId, driver: providerThread.driver,
+      providerInstanceId: run.providerInstanceId, status: "ready", cwd: "/tmp/fake", model: null,
+      capabilities: CodexProviderCapabilitiesV2, createdAt: projection.updatedAt,
+      updatedAt: projection.updatedAt, lastError: null,
+    }, ensureThread, resumeThread: ensureThread, startTurn, compactThread, injectHistory,
+  } as never));
+  harness.startRootRun.mockImplementation((input) =>
+    (compact ? input.session.compactThread! : input.session.startTurn)({
+      message: {text: "Continue", attachments: []},
+    } as never).pipe(Effect.orDie),
+  );
+  return {...harness, startTurn, compactThread, injectHistory};
+}
+
+effectIt.effect.each([false, true])("R1-F1 delivery budget freeze suppresses actual native call (compact=%s)", compact =>
+  Effect.gen(function* () {
+    const commands = yield* Effect.provide(ThreadCommandExecutor.ThreadCommandExecutor, ThreadCommandExecutor.layer);
+    const harness = deliveryRegressionHarness(commands, compact);
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    harness.getTurnStartHistory.mockReturnValue(Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Deferred.await(release)), Effect.as([]),
+    ) as never);
+    const startup = yield* harness.start.pipe(Effect.forkChild({startImmediately: true}));
+    yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(startup).pipe(Effect.andThen(Effect.die("delivery budget not reached"))));
+    const current = harness.projection();
+    yield* commands.withLock(current.thread.id, Effect.sync(() => harness.setProjection({
+      ...current, thread: {...current.thread, preservationOnly: true},
+    })));
+    const frozen = harness.projection();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(startup);
+    expect({inject: harness.injectHistory.mock.calls.length,
+      start: harness.startTurn.mock.calls.length, compact: harness.compactThread.mock.calls.length,
+    }).toEqual({inject: 0, start: 0, compact: 0});
+    expect(harness.projection()).toEqual(frozen);
+  }),
+);
+
+effectIt.effect.each([false, true])("R1-F1 ordinary delivery starts exactly once (compact=%s)", compact =>
+  Effect.gen(function* () {
+    const commands = yield* Effect.provide(ThreadCommandExecutor.ThreadCommandExecutor, ThreadCommandExecutor.layer);
+    const harness = deliveryRegressionHarness(commands, compact);
+    harness.getTurnStartHistory.mockReturnValue(Effect.succeed([]) as never);
+    yield* harness.start;
+    expect(harness.open).toHaveBeenCalledOnce();
+    expect(harness.injectHistory).toHaveBeenCalledOnce();
+    expect(harness.startTurn).toHaveBeenCalledTimes(compact ? 0 : 1);
+    expect(harness.compactThread).toHaveBeenCalledTimes(compact ? 1 : 0);
+  }),
+);
+
+effectIt.effect.each(["frozen", "attempt", "status", "thread"] as const)("R1-F1 rejects initial %s admission", loss =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({text: "Continue", openFailure: "test provider failure"});
+    const current = harness.projection();
+    // Keep the initial worker snapshot stale; authoritative admission must reread.
+    harness.getTurnStartContext.mockReturnValue(Effect.succeed({...current, hasConversation: true}));
+    harness.setProjection({...current,
+      thread: {...current.thread, ...(loss === "frozen" ? {preservationOnly: true as const} : {})},
+      runs: current.runs.map(run => ({...run,
+        ...(loss === "attempt" ? {activeAttemptId: RunAttemptId.make("wrong-attempt")} : {}),
+        ...(loss === "status" ? {status: "interrupted" as const} : {}),
+        ...(loss === "thread" ? {threadId: ThreadId.make("wrong-thread")} : {}),
+      })),
+    });
+    const frozen = harness.projection();
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.events).toEqual([]);
+    expect(harness.projection()).toEqual(frozen);
+  }),
+);
+
+
+effectIt.effect.each(["prune", "open"] as const)("R1-F1 freeze during admitted %s suppresses the next IO", boundary =>
+  Effect.gen(function* () {
+    const commands = yield* Effect.provide(ThreadCommandExecutor.ThreadCommandExecutor, ThreadCommandExecutor.layer);
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
+    const harness = makeLocalCommandHarness({text: "Continue", commands,
+      ...(boundary === "prune" ? {worktreePath: `${managedWorktreesDir}/project/next`, fileSystem: {
+        exists: () => Effect.succeed(false), realPath: (target: string) => Effect.succeed(normalize(target)),
+      } as never} : {}),
+    });
+    const providerThread = harness.projection().providerThreads[0]!;
+    const load = vi.fn(() => Effect.succeed(providerThread));
+    harness.open.mockReturnValue((boundary === "open" ? gate : Effect.void).pipe(Effect.as({
+      driver: providerThread.driver, ensureThread: load, resumeThread: load, forkThread: load,
+      providerSession: {
+        id: providerThread.providerSessionId, driver: providerThread.driver,
+        providerInstanceId: providerThread.providerInstanceId, status: "ready", cwd: "/tmp/fake", model: null,
+        capabilities: CodexProviderCapabilitiesV2, createdAt: harness.projection().updatedAt,
+        updatedAt: harness.projection().updatedAt, lastError: null,
+      },
+    } as never)));
+    harness.startRootRun.mockReturnValue(Effect.void);
+    if (boundary === "prune") harness.pruneWorktrees.mockReturnValue(gate);
+    const startup = yield* harness.start.pipe(Effect.forkChild({startImmediately: true}));
+    yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(startup).pipe(Effect.andThen(Effect.die("IO barrier not reached"))));
+    const current = harness.projection();
+    yield* commands.withLock(current.thread.id, Effect.sync(() => harness.setProjection({
+      ...current, thread: {...current.thread, preservationOnly: true},
+    })));
+    const frozen = harness.projection();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(startup);
+    expect({prune: harness.pruneWorktrees.mock.calls.length, create: harness.createWorktree.mock.calls.length,
+      open: harness.open.mock.calls.length, load: load.mock.calls.length,
+    }).toEqual({prune: boundary === "prune" ? 1 : 0, create: 0, open: boundary === "open" ? 1 : 0, load: 0});
+    expect(harness.projection()).toEqual(frozen);
+  }),
+);

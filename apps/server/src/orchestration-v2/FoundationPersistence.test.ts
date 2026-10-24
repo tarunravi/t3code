@@ -1,4 +1,12 @@
 import * as NodeSqlite from "node:sqlite";
+import * as OpenCode2Adapter from "@t3tools/provider-opencode/server/v2/adapter";
+import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
+import type { OpenCode2StreamEvent } from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as Queue from "effect/Queue";
+import { estimateThreadCost } from "../../../web/src/lib/threadCost.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -3665,4 +3673,114 @@ it.effect.each(["cancel transaction", "fail transaction", "cancel publication"] 
         ),
       );
     }).pipe(Effect.provide(layerDatabase)),
+);
+
+
+it.effect("persists OpenCode step-scoped served models through payload JSON and rebuild into costs", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const native = yield* Queue.unbounded<OpenCode2StreamEvent>();
+    const ended = yield* Queue.unbounded<import("@t3tools/contracts").OrchestrationV2ProviderTurn>();
+    const selected = yield* Queue.unbounded<string>();
+    const instanceId = ProviderInstanceId.make("opencode-cost");
+    const threadId = ThreadId.make("thread:scoped-served-cost");
+    const selection = { instanceId, model: "request/alias" };
+    const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({ runtimeMode: "full-access", interactionMode: "default", cwd: null });
+    const now = yield* DateTime.now;
+    const thread = { ...makeThread(threadId, now), providerInstanceId: instanceId, modelSelection: selection };
+    yield* sink.write({ events: [{ ...threadCreatedEvent({ id: "event:cost:create", thread, now }), providerInstanceId: instanceId }] });
+    const client = {
+      model: { list: () => Effect.succeed({ data: [] }) },
+      session: {
+        create: () => Effect.succeed({ id: "ses_cost", model: { providerID: "request", id: "alias" } }),
+        update: () => Effect.void, switchModel: () => Effect.void, switchAgent: () => Effect.void,
+        instructions: { entry: { put: () => Effect.void } },
+        prompt: () => Effect.void, interrupt: () => Effect.void,
+      },
+    } as unknown as OpenCode2Server.OpenCode2Connection["client"];
+    const connection: OpenCode2Server.OpenCode2Connection = {
+      client, events: Effect.succeed(Stream.fromQueue(native)), url: "http://test.invalid", version: "2.0.28", external: true,
+    };
+    const adapter = yield* OpenCode2Adapter.make(instanceId).pipe(
+      Effect.provideService(OpenCode2Server.OpenCode2Server, { withConnection: (use) => use(connection) }),
+    );
+    const runtime = yield* adapter.openSession({ threadId, providerSessionId: ProviderSessionId.make("session:cost"), modelSelection: selection, runtimePolicy: policy });
+    let sequence = 0;
+    yield* runtime.events.pipe(Stream.runForEach((event) => Effect.gen(function* () {
+      if (event.type !== "provider_turn.updated" && event.type !== "provider_thread.updated") return;
+      const domain: OrchestrationV2DomainEvent = event.type === "provider_turn.updated"
+        ? { id: EventId.make(`event:cost:${++sequence}`), type: "provider-turn.updated", driver: runtime.driver, threadId, providerInstanceId: instanceId, occurredAt: now, payload: event.providerTurn }
+        : { id: EventId.make(`event:cost:${++sequence}`), type: "provider-thread.updated", driver: runtime.driver, threadId, providerInstanceId: instanceId, occurredAt: now, payload: event.providerThread };
+      yield* sink.write({ events: [domain] });
+      if (event.type === "provider_turn.updated" && event.providerTurn.status === "completed") yield* Queue.offer(ended, event.providerTurn);
+      if (event.type === "provider_thread.updated") yield* Queue.offer(selected, event.providerThread.nativeMetadata?.modelSelection?.model ?? "");
+    })), Effect.forkScoped);
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection: selection, runtimePolicy: policy });
+    const start = (ordinal: number) => runtime.startTurn({
+      appThread: thread, threadId, runId: RunId.make(`run:cost:${ordinal}`), runOrdinal: ordinal,
+      providerTurnOrdinal: ordinal, attemptId: RunAttemptId.make(`attempt:cost:${ordinal}`),
+      rootNodeId: NodeId.make(`node:cost:${ordinal}`), providerThread, modelSelection: selection, runtimePolicy: policy,
+      message: { createdBy: "user", creationSource: "web", messageId: MessageId.make(`message:cost:${ordinal}`), text: "hello", attachments: [] },
+    });
+    const send = (type: string, data: Record<string, unknown> = {}) => Queue.offer(native, {
+      type, created: DateTime.toEpochMillis(now), data: { sessionID: "ses_cost", ...data },
+    } as unknown as OpenCode2StreamEvent);
+    const step = (model: string | undefined) => Effect.gen(function* () {
+      if (model !== undefined) yield* send("session.step.started", { model: { providerID: "provider", id: model } });
+      yield* send("session.step.ended", { tokens: { input: 0, output: 1_000_000, reasoning: 0, cache: { read: 0, write: 0 } } });
+    });
+    const finish = () => send("session.execution.succeeded").pipe(Effect.andThen(Queue.take(ended)));
+    const rates = new Map(["A", "B"].map((model) => [`provider/${model}`, { inputCostPerToken: 0, outputCostPerToken: (model === "A" ? 1 : 10) / 1_000_000, cacheReadCostPerToken: 0, cacheCreationCostPerToken: 0 }] as const));
+    const cost = (projection: OrchestrationV2ThreadProjection) => estimateThreadCost([{ threadId, title: "cost", depth: 0, projection }], rates);
+
+    yield* start(1); yield* step("A");
+    const first = yield* finish();
+    assert.equal(first.runAttemptId, "attempt:cost:1");
+    assert.equal(first.servedModel, "provider/A");
+    assert.equal(cost(yield* projections.getThreadProjection(threadId)).totalUsd, 1);
+    yield* send("session.model.selected", { model: { providerID: "provider", id: "B" } });
+    yield* Queue.take(selected).pipe(Effect.repeat({ until: (model) => model === "provider/B" }));
+    assert.equal(cost(yield* projections.getThreadProjection(threadId)).totalUsd, 1);
+
+    yield* start(2); yield* step("B");
+    const second = yield* finish();
+    assert.equal(second.runAttemptId, "attempt:cost:2");
+    assert.equal(second.providerThreadId, first.providerThreadId);
+    assert.equal(second.servedModel, "provider/B");
+    assert.equal(cost(yield* projections.getThreadProjection(threadId)).totalUsd, 11);
+
+    // An older snapshot omitting the optional field must not erase the attestation.
+    const { servedModel: _servedModel, ...stale } = first;
+    yield* sink.write({ events: [{ id: EventId.make("event:cost:stale"), type: "provider-turn.updated", driver: runtime.driver, threadId, occurredAt: now, payload: stale }] });
+    assert.equal((yield* projections.getThreadProjection(threadId)).providerTurns.find((turn) => turn.id === first.id)?.servedModel, "provider/A");
+    const rows = yield* sql<{ payload_json: string }>`SELECT payload_json FROM orchestration_v2_projection_provider_turns WHERE provider_turn_id = ${first.id}`;
+    assert.equal(JSON.parse(rows[0]!.payload_json).servedModel, "provider/A");
+
+    yield* start(3); yield* step("A"); yield* step("B");
+    const mixed = yield* finish();
+    assert.isNull(mixed.servedModel);
+    yield* sink.write({ events: [{ id: EventId.make("event:cost:mixed-stale"), type: "provider-turn.updated", driver: runtime.driver, threadId, occurredAt: now, payload: { ...mixed, servedModel: "provider/A" } }] });
+    assert.isNull((yield* projections.getThreadProjection(threadId)).providerTurns.find((turn) => turn.id === mixed.id)?.servedModel);
+    yield* start(4); yield* step(undefined); yield* step("A");
+    assert.isNull((yield* finish()).servedModel);
+    yield* start(5);
+    yield* send("session.step.started", { model: { providerID: "provider", id: "A" } });
+    yield* step("B");
+    assert.isNull((yield* finish()).servedModel);
+    const before = yield* projections.getThreadProjection(threadId);
+    assert.equal(cost(before).totalUsd, 11);
+    assert.isTrue(cost(before).partial);
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    const rebuilt = yield* projections.getThreadProjection(threadId);
+    assert.deepEqual(rebuilt.providerTurns, before.providerTurns);
+    assert.deepEqual(cost(rebuilt), cost(before));
+  }).pipe(
+    Effect.provideService(ProviderHost.ProviderHost, { paths: { cwd: process.cwd() }, resolveAttachmentPath: () => null } as unknown as ProviderHost.ProviderHost["Service"]),
+    Effect.provide(Layer.merge(layerTest, McpProviderSessions.layer)),
+    Effect.scoped,
+    Effect.provide(NodeServices.layer),
+  ),
 );

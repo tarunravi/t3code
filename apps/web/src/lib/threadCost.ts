@@ -53,22 +53,14 @@ export interface ThreadCostEstimate {
 }
 
 /**
- * Sums each ended provider turn's normalized usage by the model that served it.
- * The provider-reported model wins over the requested one (ZCode reports `default`
- * as its selection). In-flight turns mark the estimate incomplete until totals arrive.
+ * Sums ended usage only when the provider attested a single served model for that turn.
+ * Legacy, mixed-model and otherwise unattested usage stays unknown, never priced from
+ * requested aliases or mutable provider-thread metadata.
  */
 export function threadUsageByModel(projection: ThreadCostProjection): {
   readonly usage: readonly ModelTokenUsage[];
   readonly incomplete: boolean;
 } {
-  const runsById = new Map(projection.runs.map((run) => [run.id, run]));
-  const attemptRunIds = new Map(projection.attempts.map((attempt) => [attempt.id, attempt.runId]));
-  const reportedModels = new Map(
-    projection.providerThreads.flatMap((thread) => {
-      const model = thread.nativeMetadata?.modelSelection?.model;
-      return model ? [[thread.id, model] as const] : [];
-    }),
-  );
   const byModel = new Map<string, ModelTokenUsage>();
   let incomplete = false;
   for (const turn of projection.providerTurns) {
@@ -83,16 +75,8 @@ export function threadUsageByModel(projection: ThreadCostProjection): {
       continue;
     }
     if (usage.usageStatus === "partial") incomplete = true;
-    const runId = turn.runAttemptId === null ? undefined : attemptRunIds.get(turn.runAttemptId);
-    const run =
-      (runId === undefined ? undefined : runsById.get(runId)) ??
-      projection.runs.find(
-        (candidate) =>
-          candidate.rootNodeId === turn.nodeId &&
-          candidate.providerThreadId === turn.providerThreadId,
-      );
-    const model = reportedModels.get(turn.providerThreadId) ?? run?.modelSelection.model;
-    if (model === undefined) {
+    const model = turn.servedModel;
+    if (model == null) {
       incomplete = true;
       continue;
     }
