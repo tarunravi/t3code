@@ -177,6 +177,37 @@ describe("CodexAdapterV2 runtime policy", () => {
       }),
   );
 
+  it.effect("uses Sol and Luna defaults without replacing explicit turn options", () =>
+    Effect.gen(function* () {
+      for (const [model, expected] of [
+        ["gpt-6.1-sol", "medium"],
+        ["gpt-6-luna", "max"],
+      ] as const) {
+        const base = {
+          nativeThreadId: "default-options",
+          codexInput: [{ type: "text" as const, text: "test" }],
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model },
+        };
+        const defaults = yield* CodexAdapterV2.buildCodexTurnStartParams(base);
+        assert.equal(defaults.effort, expected);
+        assert.equal(defaults.serviceTier, "default");
+        const explicit = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          ...base,
+          modelSelection: {
+            ...base.modelSelection,
+            options: [
+              { id: "reasoningEffort", value: "low" },
+              { id: "serviceTier", value: "priority" },
+            ],
+          },
+        });
+        assert.equal(explicit.effort, "low");
+        assert.equal(explicit.serviceTier, "priority");
+      }
+    }),
+  );
+
   it.effect("derives concrete Codex turn policies from every T3 runtime mode", () =>
     Effect.gen(function* () {
       const build = (
@@ -663,6 +694,7 @@ function codexReplayPreamble(input: {
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
+          serviceTier: "default",
           summary: "detailed",
           collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
         },
@@ -1712,6 +1744,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 cwd: "/workspace",
                 model: "gpt-5.4",
                 ...turnPolicies[turnModes[index]!],
+                serviceTier: "default",
                 summary: "detailed",
                 collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
               },

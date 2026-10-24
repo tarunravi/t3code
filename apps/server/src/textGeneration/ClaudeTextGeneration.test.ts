@@ -236,6 +236,24 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       ),
   );
 
+  it.effect("explicitly disables fast mode for text generation by default", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Standard speed" } }),
+        argsMustContain: '--settings {"disableAllHooks":true,"fastMode":false}',
+      },
+      (textGeneration) =>
+        textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Name this thread",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+          ),
+        }),
+    ),
+  );
+
   it.effect(
     "generates thread titles outside the project with tools, skills, and hooks disabled",
     () =>
