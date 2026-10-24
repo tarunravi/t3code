@@ -1,8 +1,10 @@
 import { assert, it } from "@effect/vitest";
 
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
-it("maps current Codex model capability fields", () => {
+it("defaults to standard routing even when the catalog recommends another tier", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: [],
     defaultReasoningEffort: "super-high",
@@ -46,7 +48,7 @@ it("maps current Codex model capability fields", () => {
       label: "Service Tier",
       type: "select",
       options: [
-        { id: "default", label: "Standard" },
+        { id: "default", label: "Standard", isDefault: true },
         {
           id: "priority",
           label: "Fast",
@@ -56,10 +58,9 @@ it("maps current Codex model capability fields", () => {
           id: "flex",
           label: "Flex",
           description: "Lower-cost asynchronous routing.",
-          isDefault: true,
         },
       ],
-      currentValue: "flex",
+      currentValue: "default",
     },
   ]);
 });
@@ -152,4 +153,51 @@ it("ignores custom models that shadow a preferred slug", () => {
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
+});
+
+it.each([
+  ["gpt-6.1-sol", ["low", "medium", "high", "max", "ultra"], "medium"],
+  ["openai.gpt-6.1-sol", ["low", "medium", "high"], "medium"],
+  ["gpt-6-luna", ["max", "medium", "low", "xhigh", "high"], "max"],
+  ["openai.gpt-6-luna", ["low", "medium", "high"], "high"],
+] as const)("uses the preferred supported effort for %s", (model, efforts, expected) => {
+  const caps = mapCodexModelCapabilities({
+    id: model,
+    model,
+    displayName: model,
+    description: "",
+    hidden: false,
+    isDefault: false,
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    supportedReasoningEfforts: efforts.map((reasoningEffort) => ({
+      reasoningEffort,
+      description: "",
+    })),
+  });
+  const effort = caps.optionDescriptors?.find((descriptor) => descriptor.id === "reasoningEffort");
+  assert.equal(effort?.currentValue, expected);
+  assert.deepStrictEqual(
+    effort?.type === "select"
+      ? effort.options.filter((option) => option.isDefault).map((option) => option.id)
+      : [],
+    [expected],
+  );
+});
+
+it.each([
+  { options: undefined, expected: "default" },
+  { options: [], expected: "default" },
+  { options: [{ id: "fastMode", value: false }], expected: "default" },
+  { options: [{ id: "fastMode", value: true }], expected: "fast" },
+  { options: [{ id: "serviceTier", value: "priority" }], expected: "priority" },
+])("dispatches $expected routing while preserving explicit choices", ({ options, expected }) => {
+  assert.equal(
+    getCodexServiceTierOptionValue({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6.1-sol",
+      ...(options ? { options } : {}),
+    }),
+    expected,
+  );
 });

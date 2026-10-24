@@ -160,8 +160,16 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
   return account.email;
 }
 
-export function codexDefaultReasoningEffortOverride(model: string): "medium" | undefined {
-  return codexModelFamily(model) === "gpt-6-astra" ? "medium" : undefined;
+export function codexDefaultReasoningEffortOverride(
+  model: string,
+  supportedEfforts: ReadonlyArray<string> = ["max"],
+): string | undefined {
+  const family = codexModelFamily(model);
+  if (family === "gpt-6.1-sol" || family === "gpt-6-astra") return "medium";
+  if (family !== "gpt-6-luna") return undefined;
+  return ["ultra", "max", "xhigh", "high", "medium", "low"].find((effort) =>
+    supportedEfforts.includes(effort),
+  );
 }
 
 export function mapCodexModelCapabilities(
@@ -169,7 +177,10 @@ export function mapCodexModelCapabilities(
 ): ModelCapabilities {
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
     reasoningEffort ===
-    (codexDefaultReasoningEffortOverride(model.model) ?? model.defaultReasoningEffort)
+    (codexDefaultReasoningEffortOverride(
+      model.model,
+      model.supportedReasoningEfforts.map((entry) => entry.reasoningEffort),
+    ) ?? model.defaultReasoningEffort)
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -189,12 +200,7 @@ export function mapCodexModelCapabilities(
           name: id === "fast" ? "Fast" : id,
           description: "",
         }));
-  const catalogDefaultServiceTier = serviceTiers.some(
-    (tier) => tier.id === model.defaultServiceTier,
-  )
-    ? model.defaultServiceTier
-    : null;
-  const defaultServiceTier = catalogDefaultServiceTier ?? DEFAULT_SERVICE_TIER_ID;
+  const defaultServiceTier = DEFAULT_SERVICE_TIER_ID;
   const optionDescriptors: ProviderOptionDescriptor[] = [];
 
   if (reasoningOptions.length > 0) {
