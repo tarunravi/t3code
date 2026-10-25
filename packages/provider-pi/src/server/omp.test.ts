@@ -71,7 +71,7 @@ interface FakeOmp {
   readonly takeRequest: (type: string) => Effect.Effect<PiRpcRecord>;
   readonly requests: () => ReadonlyArray<PiRpcRecord>;
   /** omp's settle predicate as `get_state` reports it. */
-  readonly setSettled: (settled: boolean) => void;
+  readonly setSettled: (settled: boolean, streaming?: boolean) => void;
   readonly lastSpawnArgs: () => ReadonlyArray<string>;
 }
 
@@ -90,6 +90,7 @@ const makeFakeOmp = (options: {
     const requestQueue = yield* Queue.unbounded<PiRpcRecord>();
     const allRequests: Array<PiRpcRecord> = [];
     let settled = true;
+    let streaming = false;
     let goal: Record<string, unknown> | null = null;
     let stdinBuffer = "";
     let spawnArgs: ReadonlyArray<string> = [];
@@ -117,10 +118,10 @@ const makeFakeOmp = (options: {
             data: {
               model: { provider: "sparksdirect", id: "GLM-5.3-Flash-EXL3" },
               thinkingLevel: "high",
-              isStreaming: !settled,
+              isStreaming: streaming,
               isCompacting: false,
               queuedMessageCount: 0,
-              hasPendingAsyncWork: false,
+              hasPendingAsyncWork: !settled && !streaming,
               isSettled: settled,
               sessionFile,
               sessionId: "omp-session",
@@ -151,6 +152,7 @@ const makeFakeOmp = (options: {
               };
               // omp schedules the first goal turn before answering.
               settled = false;
+              streaming = true;
               break;
             case "drop":
               goal = null;
@@ -210,8 +212,9 @@ const makeFakeOmp = (options: {
           }
         }),
       requests: () => allRequests,
-      setSettled: (value: boolean) => {
+      setSettled: (value: boolean, live = !value) => {
         settled = value;
+        streaming = live;
       },
       lastSpawnArgs: () => spawnArgs,
     } satisfies FakeOmp;
@@ -346,7 +349,7 @@ describe("omp RPC records", () => {
         status: "completed",
         sessionSettled: true,
       }),
-      { type: "response", command: "prompt", success: true },
+      { type: "response", command: "prompt", success: true, sessionSettled: true },
     );
   });
 
@@ -370,6 +373,94 @@ describe("omp RPC records", () => {
 });
 
 describe("PiAdapterV2 with the omp flavor", () => {
+  it.effect("completes a settled omp prompt result when no settle frame follows", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp({ nativeGoals: false });
+      const { runtime, takeEvent, providerThread } = yield* openOmpRuntime(fake);
+      yield* startTurn(runtime, providerThread, "Report the benchmark");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      for (const record of assistantText("Benchmark complete.")) yield* fake.emit(record);
+      yield* fake.emit({
+        type: "prompt_result",
+        agentInvoked: true,
+        status: "completed",
+        sessionSettled: true,
+      });
+
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("fails the run when omp exhausts incomplete-answer recovery", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp({ nativeGoals: false });
+      const { runtime, takeEvent, providerThread } = yield* openOmpRuntime(fake);
+      yield* startTurn(runtime, providerThread, "Finish the task");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({
+        type: "notice",
+        level: "error",
+        source: "unexpected-stop-retry",
+        message: "Assistant stopped without completing its answer after 3 recovery attempts.",
+      });
+      yield* fake.emit({ type: "agent_end", messages: [], isTerminal: true });
+
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "failed");
+      if (terminal.type === "turn.terminal") {
+        assert.isFalse(terminal.failure?.retryable);
+        assert.include(terminal.failure?.message ?? "", "3 recovery attempts");
+      }
+      assert.equal(fake.requests().filter((record) => record["type"] === "prompt").length, 1);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("completes an idle terminal omp yield when the separate settle frame is missing", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp({ nativeGoals: false });
+      const { runtime, takeEvent, providerThread } = yield* openOmpRuntime(fake);
+      yield* startTurn(runtime, providerThread, "Report the benchmark");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      for (const record of assistantText("All benchmark artifacts are ready."))
+        yield* fake.emit(record);
+      yield* fake.emit({ type: "agent_end", messages: [], isTerminal: true });
+
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps a terminal omp yield open while provider background work can wake it", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp({ nativeGoals: false });
+      const { runtime, takeEvent, providerThread } = yield* openOmpRuntime(fake);
+      yield* startTurn(runtime, providerThread, "Finish the background benchmark");
+      yield* fake.takeRequest("prompt");
+      fake.setSettled(false, false);
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({ type: "agent_end", messages: [], isTerminal: true });
+      yield* fake.takeRequest("get_state");
+      yield* fake.emit({ type: "agent_start" });
+      for (const record of assistantText("Background benchmark finished."))
+        yield* fake.emit(record);
+      fake.setSettled(true);
+      yield* fake.emit({ type: "agent_end", messages: [], isTerminal: true });
+
+      const text = yield* takeEvent(
+        (event) =>
+          event.type === "message.updated" &&
+          event.message.text === "Background benchmark finished.",
+      );
+      assert.equal(text.type, "message.updated");
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect(
     "shows an omp timer wake on the thread and steers a prompt sent during it instead of failing",
     () =>
