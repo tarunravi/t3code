@@ -1,0 +1,257 @@
+From cbfd27f82d90f78d6d579f53b86b7524a6350240 Mon Sep 17 00:00:00 2001
+From: Tarun <tarun@Taruns-MacBook-Pro.local>
+Date: Sun, 25 Oct 2026 00:10:28 -0400
+Subject: [PATCH] fix(session): retain recovery requested after a continuation
+ yields
+
+---
+ packages/coding-agent/CHANGELOG.md            |  4 ++
+ .../coding-agent/src/session/agent-session.ts | 29 ++++++++++++-
+ .../coding-agent/src/session/turn-recovery.ts | 14 ++++--
+ ...gent-session-auto-compaction-queue.test.ts | 43 +++++++++++++++++++
+ ...gent-session-unexpected-stop-guard.test.ts | 10 +++++
+ 5 files changed, 94 insertions(+), 6 deletions(-)
+
+diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
+index 65b5e4f..6570c42 100644
+--- a/packages/coding-agent/CHANGELOG.md
++++ b/packages/coding-agent/CHANGELOG.md
+@@ -2,6 +2,10 @@
+ 
+ ## [Unreleased]
+ 
++### Fixed
++
++- Continued recovery after a prior continuation yields, and stopped with a visible error when incomplete-answer retries are exhausted.
++
+ ## [18.4.2] - 2026-09-28
+ 
+ ### Added
+diff --git a/packages/coding-agent/src/session/agent-session.ts b/packages/coding-agent/src/session/agent-session.ts
+index 42cbe39..cbb8828 100644
+--- a/packages/coding-agent/src/session/agent-session.ts
++++ b/packages/coding-agent/src/session/agent-session.ts
+@@ -585,6 +585,7 @@ type ScheduledAgentContinueOptions = {
+ 
+ type ScheduledAgentContinueRequest = {
+ 	schedulerToken: number;
++	agentEndSequence: number;
+ 	options: ScheduledAgentContinueOptions;
+ };
+ 
+@@ -604,6 +605,7 @@ type PromptDispatchOutcome = { sessionClaimed: boolean };
+ 
+ type ActiveAgentContinue = {
+ 	schedulerToken: number;
++	agentEndSequence: number;
+ 	source: string;
+ 	coalescedSources: Set<string>;
+ 	promise: Promise<AgentContinueOutcome>;
+@@ -932,6 +934,7 @@ export class AgentSession implements SettingsScope {
+ 	 */
+ 	#promptSetupAbortController: AbortController | undefined;
+ 	#activeAgentContinue: ActiveAgentContinue | undefined;
++	#agentEndSequence = 0;
+ 	#agentContinueSchedulerToken = 0;
+ 
+ 	readonly #streamingEditGuard: StreamingEditGuard;
+@@ -2997,6 +3000,7 @@ export class AgentSession implements SettingsScope {
+ 	 * event/persistence pipeline during teardown.
+ 	 */
+ 	#handleAgentEvent = (event: AgentEvent): Promise<void> => {
++		if (event.type === "agent_end") this.#agentEndSequence++;
+ 		const processing = this.#dispatchAgentEvent(event);
+ 		this.#inFlightEventHandlers.add(processing);
+ 		void processing.finally(() => this.#inFlightEventHandlers.delete(processing)).catch(() => {});
+@@ -3984,9 +3988,14 @@ export class AgentSession implements SettingsScope {
+ 				}
+ 			}
+ 
+-			if (await this.#recovery.handleUnexpectedAssistantStop(msg)) {
++			const unexpectedStop = await this.#recovery.handleUnexpectedAssistantStop(msg);
++			if (unexpectedStop) {
+ 				maintenanceRoute("unexpected-stop-handled");
+-				await emitAgentEndNotification({ willContinue: true });
++				if (unexpectedStop === "terminal") {
++					this.#recovery.resolveRetry();
++					this.#resetSessionStopContinuationState();
++				}
++				await emitAgentEndNotification(unexpectedStop === "continue" ? { willContinue: true } : undefined);
+ 				return;
+ 			}
+ 
+@@ -4293,6 +4302,7 @@ export class AgentSession implements SettingsScope {
+ 	#scheduleAgentContinue(options: ScheduledAgentContinueOptions): void {
+ 		const request: ScheduledAgentContinueRequest = {
+ 			schedulerToken: ++this.#agentContinueSchedulerToken,
++			agentEndSequence: this.#agentEndSequence,
+ 			options,
+ 		};
+ 		logger.debug("agent.continue scheduled", {
+@@ -4317,6 +4327,20 @@ export class AgentSession implements SettingsScope {
+ 
+ 				const active = this.#activeAgentContinue;
+ 				if (active) {
++					if (active.agentEndSequence !== request.agentEndSequence) {
++						// The active loop already yielded; it cannot consume recovery work
++						// requested by that yield. Wait for its ownership to unwind, then
++						// re-admit the request with the generation/cancellation guards.
++						const outcome = await active.promise;
++						if (outcome.status !== "completed") {
++							this.#handleAgentContinueOutcome(outcome, request);
++						} else if (signal.aborted || this.#isDisposed) {
++							this.#skipAgentContinue("session-unavailable", request);
++						} else {
++							this.#scheduleAgentContinue(options);
++						}
++						return;
++					}
+ 					active.coalescedSources.add(options.source);
+ 					logger.debug("agent.continue coalesced after scheduling", {
+ 						source: options.source,
+@@ -4333,6 +4357,7 @@ export class AgentSession implements SettingsScope {
+ 				const promise = this.#runAgentContinue(signal, request, coalescedSources);
+ 				const attempt: ActiveAgentContinue = {
+ 					schedulerToken: request.schedulerToken,
++					agentEndSequence: request.agentEndSequence,
+ 					source: options.source,
+ 					coalescedSources,
+ 					promise,
+diff --git a/packages/coding-agent/src/session/turn-recovery.ts b/packages/coding-agent/src/session/turn-recovery.ts
+index e70e00e..d98f3e1 100644
+--- a/packages/coding-agent/src/session/turn-recovery.ts
++++ b/packages/coding-agent/src/session/turn-recovery.ts
+@@ -549,7 +549,7 @@ export class TurnRecovery {
+ 	}
+ 
+ 	/** Classifies suspicious terminal stops and schedules bounded recovery. */
+-	handleUnexpectedAssistantStop(message: AssistantMessage): Promise<boolean> {
++	handleUnexpectedAssistantStop(message: AssistantMessage): Promise<"continue" | "terminal" | false> {
+ 		return this.#handleUnexpectedAssistantStop(message);
+ 	}
+ 
+@@ -1029,7 +1029,7 @@ export class TurnRecovery {
+ 			maxRetries: EMPTY_STOP_MAX_RETRIES,
+ 		});
+ 	}
+-	async #handleUnexpectedAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
++	async #handleUnexpectedAssistantStop(assistantMessage: AssistantMessage): Promise<"continue" | "terminal" | false> {
+ 		const mode = cfgFeaturesUnexpectedStopDetection.get(this.#host.settings);
+ 		if (mode === "none") {
+ 			return false;
+@@ -1092,8 +1092,14 @@ export class TurnRecovery {
+ 				model: assistantMessage.model,
+ 				provider: assistantMessage.provider,
+ 			});
++			await this.#host.emitSessionEvent({
++				type: "notice",
++				level: "error",
++				source: "unexpected-stop-retry",
++				message: `Assistant stopped without completing its answer after ${UNEXPECTED_STOP_MAX_RETRIES} recovery attempts. Send a new prompt to retry.`,
++			});
+ 			this.#unexpectedStopRetryCount = 0;
+-			return false;
++			return "terminal";
+ 		}
+ 
+ 		this.#host.agent.appendMessage({
+@@ -1106,7 +1112,7 @@ export class TurnRecovery {
+ 			source: "unexpected-stop-retry",
+ 			generation: this.#host.promptGeneration(),
+ 		});
+-		return true;
++		return "continue";
+ 	}
+ 
+ 	#unexpectedStopRetryReminder(): string {
+diff --git a/packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts b/packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts
+index 921c37b..e4d5d4e 100644
+--- a/packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts
++++ b/packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts
+@@ -17,6 +17,7 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+ import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
+ import * as logger from "@oh-my-pi/pi-utils/logger";
+ import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
++import { createAssistantMessage } from "./helpers/agent-session-setup";
+ 
+ import {
+ 	cfgCompactionAutoContinue,
+@@ -212,6 +213,48 @@ describe("AgentSession auto-compaction queue resume", () => {
+ 		tempDir.removeSync();
+ 	});
+ 
++	it("recovers a thinking-only stop after an overflow compaction retry yields", async () => {
++		vi.useRealTimers();
++		cfgCompactionMethodOrder.set(session.settings, ["soft"]);
++		cfgCompactionKeepRecentTokens.set(session.settings, 1);
++		cfgRetryEnabled.set(session.settings, false);
++		cfgFeaturesUnexpectedStopDetection.set(session.settings, "mechanical");
++		sessionManager.appendMessage(createAssistantMessage("Earlier completed work"));
++		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
++		const mock = createMockModel({
++			responses: [
++				{
++					throw: "400 context_length_exceeded: maximum context length is 262144 tokens; 229808 prompt tokens plus max_tokens 32768",
++				},
++				{ content: [{ type: "thinking", thinking: "the the the" }], stopReason: "stop" },
++				{ content: ["Recovered final answer"], stopReason: "stop" },
++			],
++		});
++		session.agent.streamFn = mock.stream;
++		session.agent.setModel({ ...mock, contextWindow: 400000, maxTokens: 32768 });
++		session.agent.getApiKey = () => "test-key";
++		const releaseTail = Promise.withResolvers<void>();
++		const continueAgent = session.agent.continue.bind(session.agent);
++		let continuations = 0;
++		vi.spyOn(session.agent, "continue").mockImplementation(async signal => {
++			await continueAgent(signal);
++			if (++continuations === 1) await releaseTail.promise;
++		});
++		const appendMessage = session.agent.appendMessage.bind(session.agent);
++		vi.spyOn(session.agent, "appendMessage").mockImplementation(message => {
++			appendMessage(message);
++			if (message.role === "developer") setImmediate(releaseTail.resolve);
++		});
++
++		await session.prompt("Finish the task after compaction");
++		await session.waitForIdle();
++
++		expect(getRuntimeSignals()).toContain("compaction:start:overflow");
++		expect(mock.calls).toHaveLength(3);
++		expect(session.getLastAssistantMessage()?.content).toEqual([{ type: "text", text: "Recovered final answer" }]);
++		expect(session.isStreaming).toBe(false);
++	});
++
+ 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
+ 		session.agent.followUp({
+ 			role: "custom",
+diff --git a/packages/coding-agent/test/agent-session-unexpected-stop-guard.test.ts b/packages/coding-agent/test/agent-session-unexpected-stop-guard.test.ts
+index a721e4f..038a613 100644
+--- a/packages/coding-agent/test/agent-session-unexpected-stop-guard.test.ts
++++ b/packages/coding-agent/test/agent-session-unexpected-stop-guard.test.ts
+@@ -283,8 +283,15 @@ describe("AgentSession unexpected stop guard", () => {
+ 			],
+ 			{
+ 				"features.unexpectedStopDetection": "smart",
++				"todo.enabled": true,
++				"todo.reminders": true,
+ 			},
+ 		);
++		session.setTodoPhases([{ name: "Repair", tasks: [{ content: "Finish the fix", status: "pending" }] }]);
++		const failures: string[] = [];
++		session.subscribe(event => {
++			if (event.type === "notice" && event.level === "error") failures.push(event.message);
++		});
+ 
+ 		await session.prompt("do the thing");
+ 		await session.waitForIdle();
+@@ -293,6 +300,9 @@ describe("AgentSession unexpected stop guard", () => {
+ 		expect(mock.calls).toHaveLength(4);
+ 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(3);
+ 		expect(warnSpy).toHaveBeenCalled();
++		expect(failures).toHaveLength(1);
++		expect(failures[0]).toContain("3 recovery attempts");
++		expect(session.isStreaming).toBe(false);
+ 	});
+ 
+ 	it("does not classify a message that contains a tool call", async () => {

@@ -2087,6 +2087,16 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             yield* emitExtensionError(event);
             return;
           }
+          case "t3.provider_failure": {
+            if (turn !== null) {
+              turn.failure = makeProviderFailure({
+                message: recordString(event, "message") ?? "Provider recovery failed.",
+                class: "provider_error",
+                retryable: false,
+              });
+            }
+            return;
+          }
           case "goal_updated": {
             if (state !== null && nativeGoals && flavor.goals !== undefined) {
               yield* updateProviderThread(state, {
@@ -2165,11 +2175,15 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               if (
                 pendingPrompt?.kind === "turn_start" &&
                 responseTurn !== null &&
-                ((responseTurn.promptMayBeCommandOnly && !responseTurn.sawAgentActivity) ||
+                (event["sessionSettled"] === true ||
+                  (responseTurn.promptMayBeCommandOnly && !responseTurn.sawAgentActivity) ||
                   (responseTurn.adoptedWake &&
                     (responseTurn.settleWhenIdle || responseTurn.promptMayBeCommandOnly)))
               ) {
-                yield* scheduleSettleProbe(responseTurn, responseTurn.adoptedWake);
+                yield* scheduleSettleProbe(
+                  responseTurn,
+                  responseTurn.adoptedWake || event["sessionSettled"] === true,
+                );
               }
               return;
             }

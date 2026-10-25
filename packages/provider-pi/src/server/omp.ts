@@ -97,8 +97,16 @@ export function makeOmpRecordNormalizer(): (record: PiRpcRecord) => PiRpcRecord 
   let rejectedResults = 0;
   return (record) => {
     switch (record["type"]) {
+      case "agent_end":
+        // A terminal yield is also a settle hint. The adapter verifies get_state
+        // before completing, including background jobs that can wake omp again.
+        return record["isTerminal"] === true ? { ...record, type: "agent_settled" } : record;
       case "session_settled":
         return { type: "agent_settled" };
+      case "notice":
+        return record["level"] === "error" && record["source"] === "unexpected-stop-retry"
+          ? { type: "t3.provider_failure", message: record["message"] }
+          : record;
       case "auto_compaction_start":
         return { ...record, type: "compaction_start" };
       case "auto_compaction_end":
@@ -131,7 +139,12 @@ export function makeOmpRecordNormalizer(): (record: PiRpcRecord) => PiRpcRecord 
               success: false,
               error: recordString(record["error"], "message") ?? "omp rejected the prompt.",
             }
-          : { type: "response", command: "prompt", success: true };
+          : {
+              type: "response",
+              command: "prompt",
+              success: true,
+              ...(record["sessionSettled"] === true ? { sessionSettled: true } : {}),
+            };
       }
       default:
         return record;
