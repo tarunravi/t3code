@@ -1162,6 +1162,15 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
   ),
 );
 
+// Stop captures a checkpoint in the fork; this manual-worker harness must pump queue admission afterward.
+const drainCheckpointedQueue = Effect.fn("SteeringCompletion.drainCheckpointedQueue")(function* (
+  worker: EffectWorker.OrchestrationEffectWorkerV2["Service"],
+) {
+  yield* worker.drain();
+  yield* (yield* Orchestrator.OrchestratorV2).resumeQueuedRuns;
+  yield* worker.drain();
+});
+
 const goalHarness = Effect.fn("goalHarness")(function* (name: string) {
   const harness = yield* nextTurnSelectionHarness(name);
   const send = (id: string, text: string, delivery: "queue" | "auto") =>
@@ -1211,7 +1220,7 @@ it.effect("stops the running turn and starts a goal sent into it next", () =>
         const threadId = yield* startFirstTurn;
         yield* send("queued", "queued", "queue");
         yield* send("goal", "/goal all tests pass", "auto");
-        yield* worker.drain();
+        yield* drainCheckpointedQueue(worker);
 
         assert.deepEqual(steered, []);
         assert.deepEqual(yield* read(threadId), {
@@ -1267,7 +1276,7 @@ it.effect("promotes a queued goal by stopping the running turn", () =>
           queuedRunId: goalRun.id,
           targetRunId: started[0]!.runId,
         });
-        yield* worker.drain();
+        yield* drainCheckpointedQueue(worker);
 
         assert.deepEqual(steered, []);
         assert.deepEqual(yield* read(threadId), {
@@ -1351,7 +1360,7 @@ it.effect.each(["next", "/goal ship it"])(
             queuedRunId: nextRun.id,
             targetRunId: compactRun.id,
           });
-          yield* worker.drain();
+          yield* drainCheckpointedQueue(worker);
 
           const projection = yield* orchestrator.getThreadProjection(threadId);
           assert.deepEqual(steered, []);
@@ -1454,7 +1463,7 @@ it.effect("stops the running turn when a goal clear ends the goal driving it", (
         });
         yield* Fiber.join(goalSeen);
         yield* send("clear", "/goal clear", "auto");
-        yield* worker.drain();
+        yield* drainCheckpointedQueue(worker);
 
         assert.deepEqual(steered, []);
         assert.deepEqual(yield* read(threadId), {
