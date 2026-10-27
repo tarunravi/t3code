@@ -844,9 +844,27 @@ describe("orchestration v2 provider switching", () => {
             yield* wait(targetOrdinal + 3);
           }
           const projection = yield* orchestrator.getThreadProjection(threadId);
+          if (scenario.includes("target-tight")) {
+            // The fork's pointer fallback fits even when full history does not; current input stays intact.
+            assert.equal(projection.runs.at(-1)?.status, "completed");
+            assert.equal(yield* Ref.get(generation), 2);
+            const latest = (yield* Ref.get(capturedTurns)).at(-1)!;
+            assert.include(latest.text, current);
+            assert.deepEqual(latest.attachments, screenshots);
+            const context = scenario.endsWith("-native")
+              ? yield* encodeJson(yield* Ref.get(injectedHistory))
+              : latest.text;
+            assert.include(context, "t3_thread_read");
+            assert.isTrue(
+              projection.turnItems.some(
+                (item) =>
+                  item.type === "user_message" && item.text === "Original request with constraints",
+              ),
+            );
+            return;
+          }
           if (
             scenario.includes("target-oversized") ||
-            scenario.includes("target-tight") ||
             scenario.includes("target-background") ||
             scenario.includes("target-subagent")
           ) {

@@ -995,6 +995,22 @@ export const layerFromServices: Layer.Layer<
             !deliveredAttemptIds.has(source.activeAttemptId),
         );
         const missedRunIds = new Set(missedRuns.map((source) => source.id));
+        const budget = Effect.fn("ProviderTurnStartService.handoffBudget")(function* (
+          reserveRecoveryPointer: boolean,
+        ) {
+          return handoffBudget({
+            tokenCap,
+            reserveRecoveryPointer,
+            modelContextWindow,
+            userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+            attachments: message.attachments,
+            providerThread: budgetProviderThread,
+            nativeContextEstimate:
+              budgetProviderThread.contextUsage?.usedTokens === undefined
+                ? yield* nativeContextEstimate
+                : 0,
+          });
+        });
         return {
           sameNativeThread,
           handoffUsage,
@@ -1005,19 +1021,8 @@ export const layerFromServices: Layer.Layer<
           legacyInputRunIds,
           missedRuns,
           missedRunIds,
-          budget: Effect.gen(function* () {
-            return handoffBudget({
-              tokenCap,
-              modelContextWindow,
-              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
-              attachments: message.attachments,
-              providerThread: budgetProviderThread,
-              nativeContextEstimate:
-                budgetProviderThread.contextUsage?.usedTokens === undefined
-                  ? yield* nativeContextEstimate
-                  : 0,
-            });
-          }),
+          budget: budget(true),
+          recoveryBudget: budget(false),
         };
       };
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
@@ -1192,7 +1197,7 @@ export const layerFromServices: Layer.Layer<
           const fits = yield* deliverContextHandoffs({
             handoffs: [...handoffs, ...resumedRetryHandoff],
             providerThread: { ...resumed.success, id: providerThread.id },
-            budget: context.budget,
+            budget: context.recoveryBudget,
             deferInline: isCompactionCommandMessage(message) || goalCommand,
             alreadyDeliveredItemIds: context.deliveredItemIds,
             persist: () => Effect.void,
@@ -1207,14 +1212,18 @@ export const layerFromServices: Layer.Layer<
           const fitsFresh = yield* deliverContextHandoffs({
             handoffs: withRecoveryHandoff(handoff),
             providerThread: freshThread,
-            budget: freshContext.budget,
+            budget: freshContext.recoveryBudget,
             alreadyDeliveredItemIds: freshContext.deliveredItemIds,
             persist: () => Effect.void,
           }).pipe(
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (!fitsFresh) return resumed.success;
+          if (!fitsFresh) {
+            // Neither native session can physically fit the request; do not let the pointer reserve overcommit it.
+            context.budget = context.recoveryBudget;
+            return resumed.success;
+          }
           const hasPendingWork = yield* (
             session.hasPendingBackgroundWorkForThread?.(resumed.success, {
               includeSubagents: true,
