@@ -1,0 +1,31 @@
+# For a fresh isolated ACP profile. Config overrides replace complete entry configs.
+- id: llm-pi-ai
+  config:
+    providers:
+      sparksdeepseek:
+        api: openai-completions
+        baseURL: http://spark-20d3:8888/v1
+        apiKeyEnv: DSH_LOCAL_API_KEY
+        reasoning: high
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          supportsReasoningEffort: false
+          supportsUsageInStreaming: true
+          maxTokensField: max_tokens
+          thinkingFormat: chat-template
+          chatTemplateKwargs:
+            enable_thinking: { $var: thinking.enabled }
+        models:
+          - id: DeepSeek-V4.1-Flash-1017
+            name: DeepSeek V4.1 Flash 1017 (Spark, local)
+            contextWindow: 1000000
+            maxTokens: 32768
+            input: [text]
+            reasoningEfforts:
+              off:
+              high: high
+- id: acp
+  config:
+    provider: sparksdeepseek
+    model: DeepSeek-V4.1-Flash-1017

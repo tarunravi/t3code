@@ -1,0 +1,27 @@
+# Merge this provider into ~/.omp/agent/models.yml; leave GLM providers unchanged.
+providers:
+  sparksdeepseek:
+    baseUrl: http://spark-20d3:8888/v1
+    api: openai-completions
+    apiKey: local
+    models:
+      - id: DeepSeek-V4.1-Flash-1017
+        name: DeepSeek V4.1 Flash 1017 (Spark, local)
+        reasoning: true
+        contextWindow: 1000000
+        maxTokens: 32768
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        thinking:
+          mode: effort
+          efforts: [high]
+          defaultLevel: high
+          requiresEffort: false
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          supportsReasoningEffort: false
+          supportsReasoningParams: true
+          supportsUsageInStreaming: true
+          thinkingFormat: qwen-chat-template
+          reasoningContentField: reasoning_content
+          maxTokensField: max_tokens
