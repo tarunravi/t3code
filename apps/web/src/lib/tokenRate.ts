@@ -105,11 +105,7 @@ export interface TokenRateSample {
   readonly atMs: number;
 }
 
-/**
- * Providers only report trustworthy output totals when a turn completes, so live
- * speed is estimated from the root agent's streamed assistant and reasoning text.
- * Tool-call arguments are not streamed as text and are therefore not counted.
- */
+/** Prefer live provider output counters; otherwise estimate streamed root-agent text. */
 export function liveTokenRateSource(
   projection: TokenRateProjection | null | undefined,
 ): { readonly key: string; readonly estimatedTokens: number; readonly measured?: boolean } | null {

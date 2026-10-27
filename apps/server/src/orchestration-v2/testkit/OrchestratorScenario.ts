@@ -496,7 +496,7 @@ export function runOrchestratorV2Scenario(
           const gateReached = options.replayGate?.hasReached(label) ?? false;
           if (
             gateReached &&
-            run?.status === "completed" &&
+            run?.status === "waiting" &&
             providerThread !== undefined &&
             pendingTaskCount > 0
           ) {
