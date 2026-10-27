@@ -1,12 +1,4 @@
-/**
- * CursorUsage - speed rows for Cursor turns run through T3 Code.
- *
- * Cursor keeps no timing on disk, but T3 Code's own projections record when
- * each Cursor turn started, first produced output, and finished. Tokens and
- * cost come from cursor.com through `cursorUsageReader.ts`.
- *
- * @module usageCursorSource
- */
+/** Cursor speed comes from persisted T3 turns; transcripts lack timing and tokens. */
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -69,11 +61,12 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return CursorUsage.of({
-      readTurnSpeed: (sinceMs, untilMs) =>
-        readCursorTurnSpeed(sinceMs, untilMs).pipe(
+      readTurnSpeed: Effect.fn("CursorUsage.readTurnSpeed")(function (sinceMs, untilMs) {
+        return readCursorTurnSpeed(sinceMs, untilMs).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.catchCause(() => Effect.succeed(null)),
-        ),
+        );
+      }),
     });
   }),
 );
@@ -83,7 +76,9 @@ export const layerTest = (implementation?: Partial<typeof CursorUsage.Service>) 
   Layer.succeed(
     CursorUsage,
     CursorUsage.of({
-      readTurnSpeed: () => Effect.succeed([]),
+      readTurnSpeed: Effect.fn("CursorUsage.readTurnSpeed")(function () {
+        return Effect.succeed([]);
+      }),
       ...implementation,
     }),
   );

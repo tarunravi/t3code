@@ -58,7 +58,7 @@ it.effect.each([
     yield* insertEvent(2, type, { id: "entity", text: "middle", ...owner });
     yield* insertEvent(3, type, { id: "entity", text: "latest" });
     const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
-    const result = yield* maintenance.compactEventStore;
+    const result = yield* maintenance.compactEventStore();
     assert.equal(result.deletedEventCount, 0);
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
   }).pipe(Effect.provide(Layer.fresh(maintenanceLayer))),
@@ -76,7 +76,7 @@ it.effect.each([
       yield* insertEvent(ordinal, "thread.visited", { id: "synthetic:thread" });
     }
     const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(maintenance.compactEventStore)));
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(maintenance.compactEventStore())));
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
   }).pipe(Effect.provide(Layer.fresh(maintenanceLayer))),
 );
@@ -94,7 +94,7 @@ it.effect.each([false, null, "future"])(
       });
       yield* insertEvent(3, "thread.metadata-updated", { id: "synthetic:thread" });
       const before = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
-      assert.equal((yield* maintenance.compactEventStore).deletedEventCount, 0);
+      assert.equal((yield* maintenance.compactEventStore()).deletedEventCount, 0);
       assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, before);
     }).pipe(Effect.provide(Layer.fresh(maintenanceLayer))),
 );

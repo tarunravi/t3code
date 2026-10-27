@@ -244,10 +244,9 @@ export const make = Effect.gen(function* () {
         );
 
   const requireConfig = Ref.get(config).pipe(
-    Effect.flatMap((current) =>
-      current === null
-        ? Effect.fail(new DevboxStepError("Turn on the devbox panel in Settings → General first."))
-        : Effect.succeed(current),
+    Effect.filterOrFail(
+      (current) => current !== null,
+      () => new DevboxStepError("Turn on the devbox panel in Settings → General first."),
     ),
   );
 
@@ -724,7 +723,8 @@ export const make = Effect.gen(function* () {
             process.env.USER ?? "",
             "-w",
           ]).pipe(Effect.flatMap((result) => require(result, "Reading this Mac's Claude session")))
-        : Effect.succeed(undefined);
+        : // @effect-diagnostics-next-line effectSucceedWithVoid:off -- Missing credentials are an optional string, not void.
+          Effect.succeed<string | undefined>(undefined);
 
   const startLogin = (input: DesktopDevboxLoginStart) => {
     const operation = Effect.fn("DesktopDevbox.startLogin")(function* () {
@@ -974,7 +974,9 @@ export const make = Effect.gen(function* () {
     getState,
     run,
     listAwsProfiles,
-    setEnabled: (input) => setEnabled(input).pipe(Effect.mapError(toError)),
+    setEnabled: Effect.fn("DesktopDevbox.setEnabled")(function (input) {
+      return setEnabled(input).pipe(Effect.mapError(toError));
+    }),
     startLogin,
     setSignInAwsProfile,
     getAwsLoginStatus,

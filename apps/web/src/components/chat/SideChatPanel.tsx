@@ -1,3 +1,4 @@
+import { createChatCanvasStore } from "./canvasStore";
 import { type LegendListRef } from "@legendapp/list/react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
@@ -246,6 +247,7 @@ export function SideChatPanel(props: {
       ? null
       : SIDE_CHAT_PARENT_STATUS_LABELS[resolveSideChatParentStatus(parentShell)];
 
+  const [canvasStore] = useState(createChatCanvasStore);
   return (
     <div
       className="flex h-full min-h-0 flex-col overflow-x-clip bg-background"
@@ -259,13 +261,19 @@ export function SideChatPanel(props: {
           </span>
         )}
       </div>
-      <ChatCanvas composerOverlayElement={null}>
+      <ChatCanvas
+        store={canvasStore}
+        threadRef={sideShell ? { environmentId, threadId: sideThreadId } : null}
+        preview={null}
+        composerOverlayElement={null}
+      >
         {sideShell === null ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
             {sideShellSeen ? "This side chat has ended." : "Opening side chat…"}
           </div>
         ) : (
-          <MessagesTimeline emptyPlaceholderInset={0}
+          <MessagesTimeline
+            emptyPlaceholderInset={0}
             isWorking={isWorking}
             activeTurnInProgress={isWorking}
             listRef={listRef}
@@ -293,7 +301,6 @@ export function SideChatPanel(props: {
             contentInsetEndAdjustment={0}
             onIsAtEndChange={noop}
             liveFollowEnabled
-            onManualNavigation={noop}
           />
         )}
       </ChatCanvas>

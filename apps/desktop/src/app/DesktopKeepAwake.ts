@@ -51,7 +51,7 @@ export class DesktopKeepAwake extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopKeepAwake") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -60,7 +60,11 @@ export const make = Effect.gen(function* () {
   const active = yield* SynchronizedRef.make<Option.Option<Fiber.Fiber<never>>>(Option.none());
 
   if (environment.platform !== "darwin") {
-    return DesktopKeepAwake.of({ setEnabled: () => Effect.void });
+    return DesktopKeepAwake.of({
+      setEnabled: Effect.fn("DesktopKeepAwake.setEnabled")(function () {
+        return Effect.void;
+      }),
+    });
   }
 
   const runCaffeinate = Effect.scoped(

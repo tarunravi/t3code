@@ -1,3 +1,4 @@
+import { useNowMinute } from "../../hooks/useNowMinute";
 import type {
   DesktopAwsProfile,
   DesktopDevboxLogin,
@@ -23,7 +24,6 @@ import {
   SettingsRow,
   SettingsSection,
   SettingsUnavailableGroup,
-  useRelativeTimeTick,
 } from "./settingsLayout";
 
 const POLL_MS = 1_500;
@@ -106,7 +106,7 @@ export function MachinesSettings() {
   const [profiles, setProfiles] = useState<readonly DesktopAwsProfile[]>([]);
   const [selected, setTarget] = useState<DesktopDevboxLoginTarget>(MAC);
   const handled = useRef(new Set<string>());
-  const nowMs = useRelativeTimeTick(60_000);
+  const nowMs = Date.parse(`${useNowMinute()}:00.000Z`);
 
   const available = bridge?.getDevboxState !== undefined && bridge.startDevboxLogin !== undefined;
   const hasDevbox = state?.config != null;
@@ -142,12 +142,13 @@ export function MachinesSettings() {
     },
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load host-owned state when this settings view mounts.
   useEffect(() => {
     void load({ checkHealth: true });
     void bridge?.listAwsProfiles?.().then(setProfiles);
   }, [load]);
 
-  // Sign-ins and checks run in the desktop process; follow them only while active.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Poll desktop-owned sign-ins only while a login is active.
   useEffect(() => {
     if (!busy) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
