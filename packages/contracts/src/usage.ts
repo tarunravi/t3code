@@ -17,6 +17,7 @@ export const UsageProviderKind = Schema.Literals([
   "pi",
   "muse",
   "zcode",
+  "omp",
 ]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
@@ -109,6 +110,21 @@ export const UsagePricing = Schema.Struct({
 });
 export type UsagePricing = typeof UsagePricing.Type;
 
+export const UsageFilters = Schema.Struct({
+  model: Schema.optional(TrimmedNonEmptyString),
+  providerInstanceId: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(TrimmedNonEmptyString),
+  threadKind: Schema.optional(Schema.Literals(["agent", "subagent"])),
+});
+export type UsageFilters = typeof UsageFilters.Type;
+
+export const UsageThread = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  title: Schema.String,
+  providerInstanceId: TrimmedNonEmptyString,
+  isSubagent: Schema.Boolean,
+});
+export type UsageThread = typeof UsageThread.Type;
 /**
  * Matches a provider's original model ID, before usage model aliases apply. Omit provider to
  * match any; a string provider lets older clients carry selectors for providers they lack.
@@ -135,6 +151,7 @@ export const UsageSummaryInput = Schema.Struct({
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   untilTime: Schema.optional(TrimmedNonEmptyString),
   awaitRefresh: Schema.optional(Schema.Boolean),
+  filters: Schema.optional(UsageFilters),
   modelFilter: Schema.optional(UsageModelFilter),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
@@ -149,6 +166,8 @@ export const UsageSummary = Schema.Struct({
   sources: ForwardCompatibleArray(UsageSource),
   pricing: UsagePricing,
   scanDurationMs: NonNegativeInt,
+  filtersApplied: Schema.optional(Schema.Literal(true)),
+  threads: Schema.optional(ForwardCompatibleArray(UsageThread)),
   /** The filter the server applied; absent means unfiltered, including servers that predate filters. */
   modelFilter: Schema.optional(UsageModelFilter),
 });
