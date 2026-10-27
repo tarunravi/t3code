@@ -1,7 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Tool } from "effect/ai";
+import * as Schema from "effect/Schema";
+import {
+  ProviderInstanceId,
+  OrchestratorMcpDelegateTaskInput,
+  OrchestratorMcpSaveScheduledTaskInput,
+} from "@t3tools/contracts";
 
 import { DelegateTaskTool, OrchestratorToolkit } from "./tools.ts";
+
+const decodeDelegateTask = Schema.decodeSync(OrchestratorMcpDelegateTaskInput);
+const decodeScheduleTask = Schema.decodeSync(OrchestratorMcpSaveScheduledTaskInput);
 
 const {
   create_threads: CreateThreadsTool,
@@ -11,31 +20,28 @@ const {
 
 describe("orchestrator MCP tool guidance", () => {
   it("directs subagent requests to delegation instead of ordinary threads", () => {
-    assert.include(DelegateTaskTool.description ?? "", "Delegate a subagent");
-    assert.include(CreateThreadsTool.description ?? "", "not delegation");
-    assert.include(CreateThreadsTool.description ?? "", "call delegate_task");
-    assert.include(DelegateTaskTool.description ?? "", "waitTimedOut");
-    assert.include(DelegateTaskTool.description ?? "", "child is still running");
-    assert.include(DelegateTaskTool.description ?? "", "keep that taskId");
-    assert.include(DelegateTaskTool.description ?? "", "call delegate_task again");
-    assert.include(DelegateTaskTool.description ?? "", "childThreadId is backing storage");
-    assert.include(
-      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
-      "a requested follow-up creates a fresh task",
-    );
-    assert.include(
-      OrchestratorToolkit.tools.task_cancel.description ?? "",
-      "This includes later child-thread runs, even after the task is terminal",
-    );
+    assert.include(DelegateTaskTool.description ?? "", "child agent");
+    assert.include(CreateThreadsTool.description ?? "", "Not delegation");
+    assert.include(CreateThreadsTool.description ?? "", "t3_thread_launch");
+    assert.include(DelegateTaskTool.description ?? "", "taskId");
+    assert.include(OrchestratorToolkit.tools.t3_thread_send.description ?? "", "fresh task");
+    assert.include(OrchestratorToolkit.tools.task_cancel.description ?? "", "including later runs");
   });
 
   it("points agents at models and options without a role field", () => {
-    const description = DelegateTaskTool.description ?? "";
-    assert.include(description, "orchestrator_capabilities");
-    assert.include(description, "options (such as reasoning effort");
-    assert.notInclude(description, "threadRoster");
-    assert.include(description, '"providerInstanceId":"claudeAgent"');
-
+    const target = decodeDelegateTask({
+      task: "work",
+      target: {
+        providerInstanceId: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: [{ id: "effort", value: "medium" }],
+      },
+    }).target;
+    assert.deepEqual(target, {
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "medium" }],
+    });
     const schema = Tool.getJsonSchema(DelegateTaskTool) as {
       readonly properties?: Readonly<Record<string, unknown>>;
       readonly required?: ReadonlyArray<string>;
@@ -68,7 +74,7 @@ describe("orchestrator MCP tool guidance", () => {
     ]
       .filter((value) => typeof value === "string")
       .join(" ");
-    assert.include(modeText, "Defaults to async");
+    assert.include(modeText, "Default 'async'");
     assert.include(timeoutText, "does not cancel the child");
   });
 
@@ -81,10 +87,16 @@ describe("orchestrator MCP tool guidance", () => {
     };
 
     assert.equal(schema.type, "object");
-    assert.isString(schema.properties?.schedule?.description);
-    assert.isAtLeast(schema.properties?.schedule?.anyOf?.length ?? 0, 2);
-    assert.include(ScheduleTaskTool.description ?? "", "STRUCTURED OBJECT");
-    assert.include(ScheduleTaskTool.description ?? "", "nextRunAt");
+    assert.property(schema.properties ?? {}, "schedule");
+    const schedule = { type: "interval", everyMs: 60_000 } as const;
+    assert.deepEqual(decodeScheduleTask({ prompt: "work", schedule }).schedule, schedule);
+    assert.deepEqual(
+      decodeScheduleTask({ prompt: "work", schedule: '{"type":"interval","everyMs":60000}' })
+        .schedule,
+      schedule,
+    );
+    assert.include(ScheduleTaskTool.description ?? "", "object, not text");
+    assert.include(ScheduleTaskTool.description ?? "", "webhookUrl");
   });
 
   it("publishes thread metadata actions from an object-root schema", () => {
@@ -94,13 +106,8 @@ describe("orchestrator MCP tool guidance", () => {
     };
 
     assert.equal(schema.type, "object");
-    assert.hasAllKeys(schema.properties ?? {}, [
-      "threadId",
-      "action",
-      "title",
-      "pullRequest",
-      "clientRequestId",
-    ]);
-    assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch changes");
+    assert.hasAllKeys(schema.properties ?? {}, ["threadId", "action", "title", "clientRequestId"]);
+    assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch cannot change here");
+    assert.notProperty(schema.properties ?? {}, "pullRequest");
   });
 });
