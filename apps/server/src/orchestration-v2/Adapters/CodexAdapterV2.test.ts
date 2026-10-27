@@ -1689,6 +1689,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.equal(completed?.type, "provider_turn.updated");
         if (completed?.type === "provider_turn.updated") {
+          assert.equal(completed.providerTurn.servedModel, "gpt-5.4");
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.status === "running" &&
+                event.providerTurn.turnTokenUsage?.usageStatus === "partial" &&
+                event.providerTurn.turnTokenUsage.outputTokens === 5,
+            ),
+          );
           assert.deepEqual(completed.providerTurn.turnTokenUsage, {
             usageStatus: "complete",
             usageScope: "main_agent",

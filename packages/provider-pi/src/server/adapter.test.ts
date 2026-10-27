@@ -1,3 +1,4 @@
+import { OMP_RPC_FLAVOR } from "./omp.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -397,6 +398,7 @@ const makeAdapter = Effect.fnUntraced(function* (
   launchArgs = "",
   forkFake?: FakePi,
   continuationRequests?: PiAdapterV2Options["continuationRequests"],
+  flavor?: PiAdapterV2Options["flavor"],
 ) {
   const spawner =
     forkFake === undefined
@@ -426,6 +428,7 @@ const makeAdapter = Effect.fnUntraced(function* (
     instanceId: PI_INSTANCE_ID,
     settings: { enabled: true, binaryPath: "pi", launchArgs, customModels: [] },
     environment: {},
+    ...(flavor === undefined ? {} : { flavor }),
   }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
 });
 
@@ -436,8 +439,9 @@ const openRuntime = Effect.fnUntraced(function* (
   providerSessionId = SESSION_ID,
   forkFake?: FakePi,
   continuationRequests?: PiAdapterV2Options["continuationRequests"],
+  flavor?: PiAdapterV2Options["flavor"],
 ) {
-  const adapter = yield* makeAdapter(fake, "", forkFake, continuationRequests);
+  const adapter = yield* makeAdapter(fake, "", forkFake, continuationRequests, flavor);
   const runtime = yield* adapter.openSession({
     threadId,
     providerSessionId,
@@ -521,6 +525,68 @@ const startTurn = Effect.fnUntraced(function* (
 });
 
 describe("PiAdapterV2", () => {
+  it.effect("records omp's nested live usage, native model and zero local cost per turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(
+        fake,
+        "default",
+        THREAD_ID,
+        SESSION_ID,
+        undefined,
+        undefined,
+        OMP_RPC_FLAVOR,
+      );
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      const message = {
+        role: "assistant",
+        provider: "sparksdirect",
+        model: "GLM-5.3-Flash-EXL3",
+        usage: { input: 10, cacheRead: 5, output: 20, totalTokens: 35, cost: { total: 0 } },
+      };
+      yield* fake.emit({ type: "message_start", message });
+      yield* fake.emit({
+        type: "message_update",
+        message,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Hello" },
+      });
+      const live = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" &&
+          event.providerTurn.turnTokenUsage?.outputTokens === 20,
+      );
+      assert.isTrue(
+        live.type === "provider_turn.updated" && live.providerTurn.status === "running",
+      );
+      yield* fake.emit({ type: "message_end", message });
+      fake.queueState({ isStreaming: false });
+      yield* fake.emit({ type: "agent_settled" });
+      const completed = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      if (completed.type !== "provider_turn.updated") return assert.fail("Missing completed usage");
+      assert.equal(completed.providerTurn.servedModel, "sparksdirect/GLM-5.3-Flash-EXL3");
+      assert.equal(completed.providerTurn.reportedCostUsd, 0);
+      assert.deepEqual(completed.providerTurn.turnTokenUsage, {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 15,
+        outputTokens: 20,
+        cachedInputTokens: 5,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      });
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("keeps native image bytes and the saved path in the prompt", () =>
     Effect.gen(function* () {
       const host = yield* ProviderHost.ProviderHost;

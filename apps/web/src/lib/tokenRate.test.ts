@@ -516,3 +516,55 @@ describe("liveTokenRateSource", () => {
     expect(liveTokenRateSource(null)).toBeNull();
   });
 });
+
+it.each(["claude-opus-5-5", "combo/gpt-6.1-sol", "sparksdirect/GLM-5.3-Flash-EXL3"])(
+  "uses reported live output counters for %s without counting input",
+  () => {
+    const current = turn({
+      status: "running",
+      completedAt: null,
+      turnTokenUsage: {
+        usageStatus: "partial",
+        usageScope: "main_agent",
+        hasSubagents: false,
+        inputTokens: 900_000,
+        outputTokens: 120,
+      },
+    });
+    const source = liveTokenRateSource({
+      ...projection({ runs: [run({ status: "running" })], providerTurns: [current] }),
+      turnItems: [],
+      nodes: [],
+    });
+    expect(source).toEqual({ key: `${run().id}:usage`, estimatedTokens: 120, measured: true });
+    const rate = rollingTokenRate(
+      [
+        { atMs: 0, tokens: 100 },
+        { atMs: 2000, tokens: source!.estimatedTokens },
+      ],
+      2000,
+    );
+    expect(formatLiveTokenRate(rate, false)).toBe("10 tok/s");
+  },
+);
+
+it("measures native subagents that have provider turns but no application run", () => {
+  const native = turn({
+    runAttemptId: null,
+    status: "running",
+    completedAt: null,
+    turnTokenUsage: {
+      usageStatus: "partial",
+      usageScope: "main_agent",
+      hasSubagents: false,
+      outputTokens: 42,
+    },
+  });
+  expect(
+    liveTokenRateSource({
+      ...projection({ runs: [], attempts: [], providerTurns: [native] }),
+      turnItems: [],
+      nodes: [],
+    }),
+  ).toEqual({ key: `${native.id}:usage`, estimatedTokens: 42, measured: true });
+});
