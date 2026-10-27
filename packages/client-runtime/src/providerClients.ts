@@ -15,6 +15,7 @@ import { fxClient } from "@t3tools/provider-fx/client";
 import { grokClient } from "@t3tools/provider-grok/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
+import { dshClient } from "@t3tools/provider-dsh/client";
 import { piClient } from "@t3tools/provider-pi/client";
 
 export const providerClients = makeProviderClientRegistry([
@@ -50,13 +51,28 @@ export const providerClients = makeProviderClientRegistry([
     settingsSchema: ZCodeSettings,
     hasDefaultInstance: false,
     environmentFields: [
-      { name: "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", label: "Personal provider config", description: "Optional. Absolute path to provider_config.json.", placeholder: "/path/to/provider_config.json" },
-      { name: "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", label: "Built-in provider config", description: "Optional. Overrides the bundled provider catalog." },
+      {
+        name: "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE",
+        label: "Personal provider config",
+        description: "Optional. Absolute path to provider_config.json.",
+        placeholder: "/path/to/provider_config.json",
+      },
+      {
+        name: "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+        label: "Built-in provider config",
+        description: "Optional. Overrides the bundled provider catalog.",
+      },
     ],
   },
-  { driverKind: ProviderDriverKind.make("omp"), label: "oh-my-pi", settingsSchema: OmpSettings, hasDefaultInstance: false },
+  {
+    driverKind: ProviderDriverKind.make("omp"),
+    label: "oh-my-pi",
+    settingsSchema: OmpSettings,
+    hasDefaultInstance: false,
+  },
   museClient,
   piClient,
+  dshClient,
   acpRegistryClient,
 ]);
 
