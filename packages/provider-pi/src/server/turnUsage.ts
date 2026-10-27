@@ -42,3 +42,12 @@ export function piReportedCost(usage: unknown, local: boolean): number | undefin
     ? cost
     : undefined;
 }
+
+// Missing SDK prices also produce zero; only known local namespaces attest free inference.
+export function isLocalPiModel(model: string | null | undefined): boolean {
+  return (
+    model !== null &&
+    model !== undefined &&
+    /^(?:sparks(?:direct|deepseek)?|local|ollama|lmstudio|llamacpp|vllm)\//i.test(model)
+  );
+}

@@ -14,6 +14,7 @@ import {
 } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { OmpSettings } from "@t3tools/contracts";
+import { isLocalPiModel } from "./turnUsage.ts";
 import type { PiSettings } from "../settings.ts";
 
 const PiScanState = Schema.Struct({ sessionId: Schema.mutableKey(Schema.String) });
@@ -89,7 +90,7 @@ function parseRecord(
   const reportedCostUsd =
     typeof cost === "number" &&
     Number.isFinite(cost) &&
-    (cost > 0 || (provider === "omp" && cost === 0))
+    (cost > 0 || (provider === "omp" && isLocalPiModel(model) && cost === 0))
       ? cost
       : null;
   if (totalTokens(totals) === 0 && reportedCostUsd === null) return [];
