@@ -5,6 +5,8 @@ import type {
   UsageReadError,
   UsageSource,
   UsageTokenTotals,
+  UsageFilters,
+  UsageThread,
   TurnTokenUsage,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -13,6 +15,7 @@ import type * as Schema from "effect/Schema";
 export type UsageSpeed = "standard" | "fast" | "ultrafast";
 
 export interface UsageRecord {
+  readonly thread?: UsageThread;
   readonly provider: UsageProviderKind;
   readonly timestampMs: number;
   readonly model: string;
@@ -178,4 +181,20 @@ export function sumTurnTokenUsage(
     ...(inputKnown ? { inputTokens: sum("inputTokens") } : {}),
     ...(outputKnown ? { outputTokens: sum("outputTokens") } : {}),
   };
+}
+
+export function matchesUsageFilters(
+  record: Pick<UsageRecord, "model" | "thread">,
+  filters: UsageFilters | undefined,
+): boolean {
+  return (
+    filters === undefined ||
+    ((filters.model === undefined || record.model === filters.model) &&
+      (filters.providerInstanceId === undefined ||
+        record.thread?.providerInstanceId === filters.providerInstanceId) &&
+      (filters.threadId === undefined || record.thread?.threadId === filters.threadId) &&
+      (filters.threadKind === undefined ||
+        (record.thread !== undefined &&
+          record.thread.isSubagent === (filters.threadKind === "subagent"))))
+  );
 }

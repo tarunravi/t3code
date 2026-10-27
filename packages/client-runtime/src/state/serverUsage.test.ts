@@ -300,3 +300,25 @@ it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
     }),
   ),
 );
+
+it.effect("forwards model, instance and delegated-thread filters over the remote RPC channel", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const input = {
+        ...INPUT,
+        filters: {
+          model: "DeepSeek-V4.1-Flash-1017",
+          providerInstanceId: "omp-local",
+          threadId: "delegated-child",
+          threadKind: "subagent" as const,
+        },
+      };
+      const atom = harness.summary(input);
+      const unmount = harness.registry.mount(atom);
+      yield* settledSummary(harness.registry, atom);
+      expect(harness.inputs()[0]?.filters).toEqual(input.filters);
+      unmount();
+    }),
+  ),
+);

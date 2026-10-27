@@ -1,3 +1,4 @@
+import * as UsageProjectionSource from "./UsageProjectionSource.ts";
 // @effect-diagnostics nodeBuiltinImport:off - the suite seeds and grows real
 // transcript trees on disk, outside the service's Effect FileSystem.
 import * as NodeChildProcess from "node:child_process";
@@ -144,6 +145,7 @@ const layerService = (input: {
   ) => Effect.Effect<Response, HttpClientError.HttpClientError>;
   readonly environment?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
+  readonly projections?: UsageProjectionSource.ProjectionUsage;
   readonly cursor?: Partial<typeof CursorUsageSource.CursorUsage.Service>;
 }) =>
   layerCursorUsageAccounts(
@@ -161,6 +163,13 @@ const layerService = (input: {
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(HostProcess.Platform, input.platform ?? "linux")),
     Layer.provideMerge(CursorUsageSource.layerTest(input.cursor)),
+    Layer.provideMerge(
+      input.projections === undefined
+        ? UsageProjectionSource.layerEmpty
+        : Layer.succeed(UsageProjectionSource.UsageProjectionSource, {
+            read: () => Effect.succeed(input.projections!),
+          }),
+    ),
     Layer.provideMerge(ServerSettings.layerTest(input.settings)),
     Layer.provideMerge(
       Layer.succeed(
@@ -469,6 +478,115 @@ describe("Codex usage history", () => {
 });
 
 describe("UsageService", () => {
+  it.live(
+    "merges a mocked remote with local history, includes omp subagents, and filters without double counting",
+    () =>
+      Effect.gen(function* () {
+        const { home, transcript, settings } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 20)));
+        const thread = {
+          threadId: "main",
+          title: "Main",
+          providerInstanceId: "claudeAgent",
+          isSubagent: false,
+        };
+        const child = {
+          threadId: "child",
+          title: "Delegated work",
+          providerInstanceId: "omp-local",
+          isSubagent: true,
+        };
+        const base = {
+          provider: "claude" as const,
+          model: "claude-fable-5",
+          timestampMs: Date.parse("2026-08-01T10:00:00Z"),
+          sessionId: "session-1",
+          totals: {
+            uncachedInputTokens: 10,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 20,
+            reasoningTokens: 0,
+          },
+          speed: "standard" as const,
+          reportedCostUsd: null,
+          dedupeKey: "parent-turn",
+          thread,
+        };
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            layerService({
+              prefix: "unified",
+              home,
+              settings,
+              projections: {
+                threads: [thread, child],
+                records: [
+                  base,
+                  {
+                    ...base,
+                    provider: "omp",
+                    model: "sparksdirect/GLM-5.3-Flash",
+                    sessionId: "child-session",
+                    reportedCostUsd: 0,
+                    dedupeKey: "child-turn",
+                    thread: child,
+                  },
+                ],
+              },
+            }),
+          ),
+        );
+        const local = yield* service.readSummary(WINDOW);
+        assert.strictEqual(
+          local.buckets.reduce((n, bucket) => n + bucket.totals.outputTokens, 0),
+          40,
+        );
+        const childOnly = yield* service.readSummary({
+          ...WINDOW,
+          filters: {
+            threadKind: "subagent",
+            providerInstanceId: "omp-local",
+            model: "sparksdirect/GLM-5.3-Flash",
+            threadId: "child",
+          },
+        });
+        assert.strictEqual(childOnly.filtersApplied, true);
+        assert.strictEqual(childOnly.buckets.length, 1);
+        assert.strictEqual(childOnly.buckets[0]?.costUsd, 0);
+        assert.strictEqual(
+          childOnly.sources.reduce((n, source) => n + source.distinctSessions, 0),
+          1,
+        );
+        const remote = {
+          ...childOnly,
+          sources: childOnly.sources.map((source) => ({
+            ...source,
+            fingerprint: { ...source.fingerprint, hostId: "spark-20d3", volumeId: "remote-volume" },
+          })),
+        };
+        const merged = mergeUsage(
+          [
+            {
+              environmentId: EnvironmentId.make("this-instance"),
+              label: "Work Mac",
+              summary: local,
+            },
+            { environmentId: EnvironmentId.make("remote"), label: "Spark", summary: remote },
+          ],
+          local.contractVersion,
+        );
+        assert.strictEqual(
+          merged.models.reduce((n, model) => n + model.tokens.outputTokens, 0),
+          60,
+        );
+        assert.strictEqual(
+          merged.providers.find((provider) => provider.provider === "omp")?.costUsd,
+          0,
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.live(
     "repairs initial Codex prices after unchanged-file retries, persists evidence and corrections, and honors later native tiers",
     () =>

@@ -1,18 +1,10 @@
-/**
- * OmpDriver — `ProviderDriver` for oh-my-pi. The instance is built on the ACP
- * Registry driver's local-command path (`omp acp`): discovery publishes omp's
- * model and thinking config options, and text generation runs `omp -p`.
- *
- * Sessions run over omp's RPC mode by default, through the Pi adapter with
- * omp's flavor. RPC shows turns omp starts on its own (background job and
- * timer wakes), queues prompts sent while omp is busy, and runs `/goal` on
- * omp's own goal loop when the omp build supports it. The `acp` transport
- * keeps the ACP runtime, with T3-tracked goals and omp's plan mode.
- */
+import { ompUsageReader } from "@t3tools/provider-pi/server/usage";
+/** omp uses its native RPC goal loop by default; ACP remains an opt-in transport. */
 import { OmpSettings } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type * as Path from "effect/Path";
 
 import { makeOmpTextGeneration } from "../../textGeneration/OmpTextGeneration.ts";
 import {
@@ -38,8 +30,9 @@ const decodeOmpSettings = Schema.decodeSync(OmpSettings);
 
 export type OmpDriverEnv = AcpRegistryDriverEnv | PiAdapterV2DriverEnv;
 
-export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
+export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
   driverKind: OMP_DRIVER_KIND,
+  usage: ompUsageReader,
   metadata: {
     displayName: "oh-my-pi",
     supportsMultipleInstances: true,

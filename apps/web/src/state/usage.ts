@@ -59,14 +59,21 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         continue;
       }
       const result = get(serverEnvironment.usageSummary({ environmentId, input }));
-      const summary = Option.getOrNull(AsyncResult.value(result));
+      const reported = Option.getOrNull(AsyncResult.value(result));
+      const unsupportedFilters =
+        input.filters !== undefined && reported !== null && reported.filtersApplied !== true;
+      const summary = unsupportedFilters ? null : reported;
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
         isPending: result.waiting,
         canReadDiagnostics: true,
         isConnected,
-        error: result._tag === "Failure" ? "This environment could not report usage." : null,
+        error: unsupportedFilters
+          ? "Update this instance to filter usage by model or thread."
+          : result._tag === "Failure"
+            ? "This environment could not report usage."
+            : null,
         summary,
         needsCursorKeychainAccess: needsCursorKeychainAccess(
           summary,
@@ -164,6 +171,7 @@ export function useUsage(
     resolution: input.resolution,
     sinceTime: input.sinceTime,
     untilTime: input.untilTime,
+    filters: input.filters,
   });
   const atom = usageByWindowAtom(windowKey);
   const environments = useAtomValue(atom);
