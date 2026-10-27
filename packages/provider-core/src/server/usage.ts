@@ -138,6 +138,7 @@ export function mergeServedModel(
   previous: string | null | undefined,
   incoming: string | null | undefined,
 ): string | null | undefined {
+  if (incoming === null) return null;
   const model = incoming?.trim();
   if (!model || model === "<synthetic>") return previous;
   return previous === undefined || previous === model ? model : null;

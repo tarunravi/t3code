@@ -40,6 +40,8 @@ describe("Pi-family turn accounting", () => {
     expect(mergeServedModel(model, model)).toBe(model);
     expect(mergeServedModel(model, "other/model")).toBeNull();
     expect(mergeServedModel(null, model)).toBeNull();
+    expect(mergeServedModel(model, null)).toBeNull();
+    expect(mergeServedModel(undefined, null)).toBeNull();
     expect(mergeServedModel(model, "<synthetic>")).toBe(model);
   });
 });
