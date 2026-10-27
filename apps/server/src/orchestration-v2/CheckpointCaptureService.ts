@@ -333,10 +333,10 @@ export const make = Effect.gen(function* () {
   });
 
   return CheckpointCaptureServiceV2.of({
-    execute: (input) =>
+    execute: Effect.fn("CheckpointCaptureServiceV2.execute")(function (input) {
       // Capture and delegated settlement both rewrite run state. Share the
       // dispatch lock so neither can restore the other's stale snapshot.
-      commands
+      return commands
         .withLock(input.threadId, execute(input))
         .pipe(
           Effect.mapError((cause) =>
@@ -344,7 +344,8 @@ export const make = Effect.gen(function* () {
               ? cause
               : new CheckpointCaptureExecutionError({ ...input, cause }),
           ),
-        ),
+        );
+    }),
   });
 });
 

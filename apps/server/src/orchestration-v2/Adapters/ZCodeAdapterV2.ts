@@ -1,26 +1,7 @@
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 /**
- * ZCodeAdapterV2 — orchestrator-v2 adapter for the ZCode CLI
- * (https://github.com/zai-org/ZCode).
- *
- * Each turn is one headless `zcode --prompt=… --output-format stream-json`
- * process; follow-up turns pass `--resume <sessionId>`. ZCode persists the
- * session itself, so the ZCode session id is the durable `nativeThreadRef`
- * and a T3 thread can also be resumed from the ZCode TUI.
- *
- * `zcode app-server` is deliberately not used: it speaks ZCode's internal
- * desktop protocol (binary-framed v4 conversation topics with snapshot and
- * delta reassembly), which is far larger than what T3 needs and changes with
- * every ZCode desktop release. The headless stream is a stable CLI surface.
- *
- * Headless ZCode cannot ask for approval, so tools that would prompt are
- * denied; runtime modes map onto ZCode permission modes (see
- * `zcodePermissionMode`). Stop sends SIGINT to the process group, which ZCode
- * handles as a cancelled turn and persists before exiting.
- *
- * T3's MCP server reaches ZCode through `--mcp-config`, which only some ZCode
- * builds accept: each turn writes the thread's endpoint and bearer to a
- * private temp file that lives for that turn's process.
+ * Use the resumable headless JSON stream; app-server uses ZCode's private binary protocol.
+ * Headless ZCode cannot request approvals, so approval-required turns must be rejected.
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -325,13 +306,18 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
   return ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: ZCODE_PROVIDER,
-    getCapabilities: () => Effect.map(supportsMcpConfig, zcodeCapabilities),
-    planSelectionTransition: ({ target }) =>
-      Effect.succeed(
+    getCapabilities: Effect.fn("ZCodeAdapterV2.getCapabilities")(function () {
+      return Effect.map(supportsMcpConfig, zcodeCapabilities);
+    }),
+    planSelectionTransition: Effect.fn("ZCodeAdapterV2.planSelectionTransition")(function ({
+      target,
+    }) {
+      return Effect.succeed(
         target.model === "default"
           ? { type: "apply_on_next_turn" as const }
           : { type: "reject" as const, reason: MODEL_SELECTION_MESSAGE },
-      ),
+      );
+    }),
     openSession: Effect.fn("ZCodeAdapterV2.openSession")(function* (
       input: ProviderAdapterV2OpenSessionInput,
     ) {

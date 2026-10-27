@@ -124,6 +124,17 @@ class WebhookDeliverySkipped extends Data.TaggedError("WebhookDeliverySkipped")<
   readonly reason: string;
 }> {}
 
+const decodeRecoveryPayload = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const decodeRecoveryAttempt = Schema.decodeEffect(
+  Schema.fromJsonString(OrchestrationV2RunAttemptJson),
+);
+const decodeRecoveryTurnItem = Schema.decodeUnknownOption(OrchestrationV2TurnItemJson);
+const encodeRecoveryJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeRecoveryKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeRecoveryRun = Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson));
+
 interface RateWindow {
   readonly accepted: ReadonlyArray<{ readonly at: number }>;
   readonly rejectedLogged: boolean;
@@ -720,13 +731,25 @@ export const layer = Layer.effect(
 
     // Closed terminal evidence only. Active/buffered silence is never proof of a stall.
     const terminalRecoveryObservation = Effect.fnUntraced(function* (
-      run: NonNullable<IdleStallRecoveryInput["run"]>, attempt: NonNullable<IdleStallRecoveryInput["attempt"]>,
+      run: NonNullable<IdleStallRecoveryInput["run"]>,
+      attempt: NonNullable<IdleStallRecoveryInput["attempt"]>,
     ) {
       const failed = run.status === "failed" && attempt.status === "failed";
-      if ((!failed && (run.status !== "completed" || attempt.status !== "completed")) ||
-        run.startedAt === null || attempt.startedAt === null || attempt.providerTurnId === null) return null;
-      const rows = yield* sql<{ sequence: number; event_type: string; occurred_at: string;
-        payload_json: string | null; total_bytes: number; stream_version: number }>`
+      if (
+        (!failed && (run.status !== "completed" || attempt.status !== "completed")) ||
+        run.startedAt === null ||
+        attempt.startedAt === null ||
+        attempt.providerTurnId === null
+      )
+        return null;
+      const rows = yield* sql<{
+        sequence: number;
+        event_type: string;
+        occurred_at: string;
+        payload_json: string | null;
+        total_bytes: number;
+        stream_version: number;
+      }>`
         WITH recent AS (SELECT sequence, stream_version, event_type, occurred_at, payload_json, metadata_json
           FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${run.threadId}
             AND application_event_version = 2 ORDER BY sequence DESC LIMIT 257),
@@ -746,75 +769,174 @@ export const layer = Layer.effect(
       const streaming = new Map<string, boolean>();
       for (const row of rows) {
         if (row.payload_json === null) return null;
-        const payload = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))(row.payload_json);
-        if ((row.event_type === "run-attempt.created" || row.event_type === "run-attempt.updated") &&
-          payload.id === attempt.id && payload.runId === run.id &&
-          payload.providerThreadId === attempt.providerThreadId && payload.providerInstanceId === run.providerInstanceId && payload.status === "running" &&
-          payload.startedAt === DateTime.formatIso(attempt.startedAt)) startSequence ??= row.sequence;
+        const payload = yield* decodeRecoveryPayload(row.payload_json);
+        if (
+          (row.event_type === "run-attempt.created" || row.event_type === "run-attempt.updated") &&
+          payload.id === attempt.id &&
+          payload.runId === run.id &&
+          payload.providerThreadId === attempt.providerThreadId &&
+          payload.providerInstanceId === run.providerInstanceId &&
+          payload.status === "running" &&
+          payload.startedAt === DateTime.formatIso(attempt.startedAt)
+        )
+          startSequence ??= row.sequence;
         if (startSequence === null || row.sequence < startSequence) continue;
         if (previousVersion !== null && row.stream_version !== previousVersion + 1) return null;
         previousVersion = row.stream_version;
-        const exactTurn = row.event_type === "provider-turn.updated" && payload.id === attempt.providerTurnId &&
-          payload.runAttemptId === attempt.id && payload.providerThreadId === attempt.providerThreadId;
-        const exactRun = row.event_type === "run.updated" && payload.id === run.id && payload.activeAttemptId === attempt.id;
-        if (exactTurn) terminalTurn = payload.status === attempt.status &&
-          payload.completedAt === (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
-        if (exactRun) terminalRun = payload.status === run.status &&
-          payload.completedAt === (run.completedAt === null ? null : DateTime.formatIso(run.completedAt));
+        const exactTurn =
+          row.event_type === "provider-turn.updated" &&
+          payload.id === attempt.providerTurnId &&
+          payload.runAttemptId === attempt.id &&
+          payload.providerThreadId === attempt.providerThreadId;
+        const exactRun =
+          row.event_type === "run.updated" &&
+          payload.id === run.id &&
+          payload.activeAttemptId === attempt.id;
+        if (exactTurn)
+          terminalTurn =
+            payload.status === attempt.status &&
+            payload.completedAt ===
+              (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
+        if (exactRun)
+          terminalRun =
+            payload.status === run.status &&
+            payload.completedAt ===
+              (run.completedAt === null ? null : DateTime.formatIso(run.completedAt));
         if (row.event_type === "run-attempt.updated" && payload.id === attempt.id) {
-          terminalAttempt = payload.runId === run.id && payload.status === attempt.status &&
-            payload.providerThreadId === attempt.providerThreadId && payload.providerTurnId === attempt.providerTurnId &&
-            payload.completedAt === (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
+          terminalAttempt =
+            payload.runId === run.id &&
+            payload.status === attempt.status &&
+            payload.providerThreadId === attempt.providerThreadId &&
+            payload.providerTurnId === attempt.providerTurnId &&
+            payload.completedAt ===
+              (attempt.completedAt === null ? null : DateTime.formatIso(attempt.completedAt));
         }
         const at = Date.parse(row.occurred_at);
-        if (exactTurn || exactRun) events.push({ sequence: row.sequence, occurredAtMs: at,
-          kind: "tool", subjectId: `${row.event_type}:${String(payload.id)}`, value: String(payload.status) });
-        else if (payload.runId === run.id && payload.providerTurnId === attempt.providerTurnId &&
-          row.event_type === "turn-item.updated" && typeof payload.id === "string") {
+        if (exactTurn || exactRun)
+          events.push({
+            sequence: row.sequence,
+            occurredAtMs: at,
+            kind: "tool",
+            subjectId: `${row.event_type}:${String(payload.id)}`,
+            value: String(payload.status),
+          });
+        else if (
+          payload.runId === run.id &&
+          payload.providerTurnId === attempt.providerTurnId &&
+          row.event_type === "turn-item.updated" &&
+          typeof payload.id === "string"
+        ) {
           if (failed && payload.type === "error") {
-            const decoded = Schema.decodeUnknownOption(OrchestrationV2TurnItemJson)(payload);
+            const decoded = decodeRecoveryTurnItem(payload);
             if (Option.isNone(decoded) || decoded.value.type !== "error") return null;
-            if (decoded.value.providerThreadId !== attempt.providerThreadId || decoded.value.threadId !== run.threadId ||
-              run.completedAt === null || at < DateTime.toEpochMillis(attempt.startedAt) || at > DateTime.toEpochMillis(run.completedAt)) return null;
+            if (
+              decoded.value.providerThreadId !== attempt.providerThreadId ||
+              decoded.value.threadId !== run.threadId ||
+              run.completedAt === null ||
+              at < DateTime.toEpochMillis(attempt.startedAt) ||
+              at > DateTime.toEpochMillis(run.completedAt)
+            )
+              return null;
             const failure = decoded.value.failure;
             // Native structured code, not message matching or a generic retryable flag.
-            failureId = decoded.value.status === "failed" && failure.class === "transport_error" &&
-              failure.code === "responseStreamDisconnected" && failure.retryable === true
-              ? decoded.value.id : null;
+            failureId =
+              decoded.value.status === "failed" &&
+              failure.class === "transport_error" &&
+              failure.code === "responseStreamDisconnected" &&
+              failure.retryable === true
+                ? decoded.value.id
+                : null;
           } else if (payload.type === "assistant_message" || payload.type === "reasoning") {
             streaming.set(payload.id, payload.streaming === true);
-            if (typeof payload.text === "string") events.push({ sequence: row.sequence, occurredAtMs: at,
-              kind: payload.type === "reasoning" ? "reasoning" : "assistant", subjectId: payload.id, value: payload.text });
+            if (typeof payload.text === "string")
+              events.push({
+                sequence: row.sequence,
+                occurredAtMs: at,
+                kind: payload.type === "reasoning" ? "reasoning" : "assistant",
+                subjectId: payload.id,
+                value: payload.text,
+              });
           } else if (payload.type === "command_execution" || payload.type === "dynamic_tool") {
-            const value = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([payload.status, payload.output ?? null, payload.exitCode ?? null]);
-            events.push({ sequence: row.sequence, occurredAtMs: at, kind: "tool", subjectId: payload.id, value });
+            const value = yield* encodeRecoveryJson([
+              payload.status,
+              payload.output ?? null,
+              payload.exitCode ?? null,
+            ]);
+            events.push({
+              sequence: row.sequence,
+              occurredAtMs: at,
+              kind: "tool",
+              subjectId: payload.id,
+              value,
+            });
           }
         }
       }
-      if (startSequence === null || !terminalTurn || !terminalRun || [...streaming.values()].some(Boolean) ||
-        (failed && (!terminalAttempt || failureId === null || run.completedAt === null || attempt.completedAt === null))) return null;
-      return { runId: run.id, attemptId: attempt.id, providerInstanceId: run.providerInstanceId,
-        providerThreadId: attempt.providerThreadId, providerTurnId: attempt.providerTurnId,
-        observedAtMs: DateTime.toEpochMillis(yield* localNow), completeSinceMs: DateTime.toEpochMillis(attempt.startedAt),
-        visibility: "complete", liveness: failed ? "stale" : "idle", failureId, activeOperations: [], events } satisfies NonNullable<IdleStallRecoveryInput["observation"]>;
+      if (
+        startSequence === null ||
+        !terminalTurn ||
+        !terminalRun ||
+        [...streaming.values()].some(Boolean) ||
+        (failed &&
+          (!terminalAttempt ||
+            failureId === null ||
+            run.completedAt === null ||
+            attempt.completedAt === null))
+      )
+        return null;
+      return {
+        runId: run.id,
+        attemptId: attempt.id,
+        providerInstanceId: run.providerInstanceId,
+        providerThreadId: attempt.providerThreadId,
+        providerTurnId: attempt.providerTurnId,
+        observedAtMs: DateTime.toEpochMillis(yield* localNow),
+        completeSinceMs: DateTime.toEpochMillis(attempt.startedAt),
+        visibility: "complete",
+        liveness: failed ? "stale" : "idle",
+        failureId,
+        activeOperations: [],
+        events,
+      } satisfies NonNullable<IdleStallRecoveryInput["observation"]>;
     });
 
-    const recoveryGeneration = (task: ScheduledTask) => Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))([
-      task.createdAt, task.projectId, task.threadId, task.schedule, task.prompt,
-    ]);
+    const recoveryGeneration = (task: ScheduledTask) =>
+      encodeRecoveryKey([
+        task.createdAt,
+        task.projectId,
+        task.threadId,
+        task.schedule,
+        task.prompt,
+      ]);
     const recoveryFireKey = Effect.fnUntraced(function* (taskId: string, key: string) {
-      const digest = Array.from(new Uint8Array(yield* crypto.digest("SHA-256", new TextEncoder().encode(key))),
-        (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const digest = Array.from(
+        new Uint8Array(yield* crypto.digest("SHA-256", new TextEncoder().encode(key))),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
       return `${taskId}:idle-stall:${digest}`;
     });
     const recoveryInput = Effect.fn("ScheduledTaskService.recoveryInput")(function* (
-      task: ScheduledTask, previousRunAt = task.lastRunAt,
+      task: ScheduledTask,
+      previousRunAt = task.lastRunAt,
     ) {
-      const policy = task.schedule.type === "interval" ? task.schedule.idleStallRecovery : undefined;
-      if (policy === undefined || task.threadId === null || !task.enabled ||
-        recoveryGeneration(task).length > 65536) return null;
+      const policy =
+        task.schedule.type === "interval" ? task.schedule.idleStallRecovery : undefined;
+      if (
+        policy === undefined ||
+        task.threadId === null ||
+        !task.enabled ||
+        recoveryGeneration(task).length > 65536
+      )
+        return null;
       // Exact latest run, exact active attempt: no history scan or unbounded payload under the lock.
-      const rows = yield* sql<{ run: string; attempt: string; blocked: number; session_id: string | null; dead_session: number; pending_effect: number }>`
+      const rows = yield* sql<{
+        run: string;
+        attempt: string;
+        blocked: number;
+        session_id: string | null;
+        dead_session: number;
+        pending_effect: number;
+      }>`
         SELECT run.payload_json AS run, attempt.payload_json AS attempt,
           json_extract(provider.payload_json, '$.providerSessionId') AS session_id,
           EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_sessions AS session
@@ -860,25 +982,44 @@ export const layer = Layer.effect(
       `;
       const row = rows[0];
       if (row === undefined || row.blocked) return null;
-      const run = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunJson))(row.run);
-      const attempt = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunAttemptJson))(row.attempt);
+      const run = yield* decodeRecoveryRun(row.run);
+      const attempt = yield* decodeRecoveryAttempt(row.attempt);
       if (run.status === "failed") {
-        if (attempt.status !== "failed" || row.session_id === null || !row.dead_session || row.pending_effect ||
+        if (
+          attempt.status !== "failed" ||
+          row.session_id === null ||
+          !row.dead_session ||
+          row.pending_effect ||
           threadManagement.isProviderSessionLive === undefined ||
-          (yield* threadManagement.isProviderSessionLive(ProviderSessionId.make(row.session_id)))) return null;
+          (yield* threadManagement.isProviderSessionLive(ProviderSessionId.make(row.session_id)))
+        )
+          return null;
       }
       const observation = yield* terminalRecoveryObservation(run, attempt);
       if (observation === null || observation.events.length > 256) return null;
-      const observationJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(observation);
+      const observationJson = yield* encodeRecoveryJson(observation);
       if (new TextEncoder().encode(observationJson).byteLength > 128 * 1024) return null;
       const now = yield* localNow;
       const input = {
-        enabled: true, taskId: task.id, taskGeneration: recoveryGeneration(task), run, attempt,
-        nowMs: DateTime.toEpochMillis(now), timeoutMs: policy.timeoutMs,
-        maxObservationAgeMs: 5000, cooldownMs: policy.cooldownMs,
+        enabled: true,
+        taskId: task.id,
+        taskGeneration: recoveryGeneration(task),
+        run,
+        attempt,
+        nowMs: DateTime.toEpochMillis(now),
+        timeoutMs: policy.timeoutMs,
+        maxObservationAgeMs: 5000,
+        cooldownMs: policy.cooldownMs,
         lastRecoveryAtMs: previousRunAt === null ? null : Date.parse(previousRunAt),
-        recoveredEpisodeKeys: [], blockers: { manualStop: false, frozen: false, superseded: false,
-          awaitingInput: false, finalizing: run.status === "waiting", otherActiveOrQueuedRun: false },
+        recoveredEpisodeKeys: [],
+        blockers: {
+          manualStop: false,
+          frozen: false,
+          superseded: false,
+          awaitingInput: false,
+          finalizing: run.status === "waiting",
+          otherActiveOrQueuedRun: false,
+        },
         observation,
       } satisfies IdleStallRecoveryInput;
       const decision = decideIdleStallRecovery(input);
@@ -958,7 +1099,9 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        const recoveryOnly = trigger === "scheduled" && active.schedule.type === "interval" &&
+        const recoveryOnly =
+          trigger === "scheduled" &&
+          active.schedule.type === "interval" &&
           active.schedule.idleStallRecovery !== undefined;
         const recovery = recoveryOnly ? yield* recoveryInput(active) : null;
         const proposal = recovery === null ? null : decideIdleStallRecovery(recovery);
@@ -986,10 +1129,12 @@ export const layer = Layer.effect(
         yield* notifyChanged;
 
         const episodeKey = proposal?.episodeKey;
-        const fireKey = episodeKey != null ? yield* recoveryFireKey(active.id, episodeKey) :
-          webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-            : `${active.id}:webhook:${webhook.deliveryId}`;
+        const fireKey =
+          episodeKey != null
+            ? yield* recoveryFireKey(active.id, episodeKey)
+            : webhook === undefined
+              ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+              : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         // A webhook prompt was rendered from the row when the request arrived.
@@ -1036,14 +1181,26 @@ export const layer = Layer.effect(
                     creationSource: active.creationSource,
                   })
                   .pipe(
-                    Effect.provideService(IdleStallRecoveryDispatchGate, !recoveryOnly ? {} : { check: Effect.gen(function* () {
-                      const current = yield* findTask(active.id);
-                      if (current === null || !current.enabled || recoveryGeneration(current) !== recoveryGeneration(active)) return false;
-                      const latest = yield* recoveryInput(current, active.lastRunAt);
-                      if (latest === null) return false;
-                      const decision = decideIdleStallRecovery(latest);
-                      return decision.eligible && decision.episodeKey === episodeKey;
-                    }) }),
+                    Effect.provideService(
+                      IdleStallRecoveryDispatchGate,
+                      !recoveryOnly
+                        ? {}
+                        : {
+                            check: Effect.gen(function* () {
+                              const current = yield* findTask(active.id);
+                              if (
+                                current === null ||
+                                !current.enabled ||
+                                recoveryGeneration(current) !== recoveryGeneration(active)
+                              )
+                                return false;
+                              const latest = yield* recoveryInput(current, active.lastRunAt);
+                              if (latest === null) return false;
+                              const decision = decideIdleStallRecovery(latest);
+                              return decision.eligible && decision.episodeKey === episodeKey;
+                            }),
+                          },
+                    ),
                     Effect.as(ThreadId.make(active.threadId)),
                   ),
               );

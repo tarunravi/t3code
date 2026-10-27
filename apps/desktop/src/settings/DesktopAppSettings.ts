@@ -588,10 +588,10 @@ export const make = Effect.gen(function* () {
         return yield* persist((settings) => setLocalEnvironmentEnabled(settings, enabled));
       },
     ),
-    setKeepAwakeEnabled: (enabled) =>
-      persist((settings) => setKeepAwakeEnabled(settings, enabled)).pipe(
-        Effect.withSpan("desktop.settings.setKeepAwakeEnabled", { attributes: { enabled } }),
-      ),
+    setKeepAwakeEnabled: Effect.fn("desktop.settings.setKeepAwakeEnabled")(function* (enabled) {
+      yield* Effect.annotateCurrentSpan({ enabled });
+      return yield* persist((settings) => setKeepAwakeEnabled(settings, enabled));
+    }),
     applyWslWindowsFallback: persist(applyWslWindowsFallback).pipe(
       Effect.withSpan("desktop.settings.applyWslWindowsFallback"),
     ),
@@ -655,8 +655,11 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
             return update((settings) => setLocalEnvironmentEnabled(settings, enabled));
           },
         ),
-        setKeepAwakeEnabled: (enabled) =>
-          update((settings) => setKeepAwakeEnabled(settings, enabled)),
+        setKeepAwakeEnabled: Effect.fn("DesktopAppSettings.setKeepAwakeEnabled")(
+          function (enabled) {
+            return update((settings) => setKeepAwakeEnabled(settings, enabled));
+          },
+        ),
         applyWslWindowsFallback: update(applyWslWindowsFallback),
         applyWslWindowsFallbackInMemory: update(applyWslWindowsFallback),
       });

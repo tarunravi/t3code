@@ -7,7 +7,7 @@ function SettingsVoiceRecordingsRoute() {
   return <VoiceRecordingsSettingsPanel {...(recording ? { focusedRecordingId: recording } : {})} />;
 }
 
-export const Route = createFileRoute("/settings/voice-recordings")({
+export const Route = createFileRoute("/_chat/settings/voice-recordings")({
   validateSearch: (raw: Record<string, unknown>): { recording?: string } =>
     typeof raw.recording === "string" && raw.recording.trim() ? { recording: raw.recording } : {},
   component: SettingsVoiceRecordingsRoute,
