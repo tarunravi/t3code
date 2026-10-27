@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { mergeServedModel, sumTurnTokenUsage } from "@t3tools/provider-core/server/usage";
-import { piMessageUsage, piReportedCost, piServedModel } from "./turnUsage.ts";
+import { isLocalPiModel, piMessageUsage, piReportedCost, piServedModel } from "./turnUsage.ts";
 
 describe("Pi-family turn accounting", () => {
   it("normalizes disjoint cache counters and counts reasoning only inside output", () => {
@@ -27,6 +27,9 @@ describe("Pi-family turn accounting", () => {
     });
     expect(piReportedCost({ cost: { total: 0 } }, true)).toBe(0);
     expect(piReportedCost({ cost: { total: 0 } }, false)).toBeUndefined();
+    expect(isLocalPiModel("sparksdeepseek/DeepSeek-V4.1-Flash-1017")).toBe(true);
+    expect(isLocalPiModel("openai/gpt-6.1-sol")).toBe(false);
+    expect(isLocalPiModel(null)).toBe(false);
     expect(piReportedCost({ cost: { total: -1 } }, true)).toBeUndefined();
   });
   it("freezes native model identity rather than borrowing a requested alias", () => {

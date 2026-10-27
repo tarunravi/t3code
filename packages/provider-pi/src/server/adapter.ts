@@ -1,5 +1,5 @@
 import { mergeServedModel, sumTurnTokenUsage } from "@t3tools/provider-core/server/usage";
-import { piMessageUsage, piReportedCost, piServedModel } from "./turnUsage.ts";
+import { isLocalPiModel, piMessageUsage, piReportedCost, piServedModel } from "./turnUsage.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -783,7 +783,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           const messageUsage = piMessageUsage(usage);
           if (messageUsage.usageStatus === "unavailable") return;
           const previous = turn.messageUsage.get(turn.messageOrdinal);
-          const cost = piReportedCost(usage, driverKind === "omp");
+          const cost = piReportedCost(
+            usage,
+            driverKind === "omp" && isLocalPiModel(turn.servedModel),
+          );
           if (cost !== undefined) turn.messageCosts.set(turn.messageOrdinal, cost);
           turn.messageUsage.set(turn.messageOrdinal, messageUsage);
           if (previous !== undefined && sameTurnTokenUsage(previous, messageUsage)) return;

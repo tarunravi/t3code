@@ -17,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import {
   appendTokenRateSample,
+  chooseLiveTokenRate,
   completedTurnTokenRate,
   formatLiveTokenRate,
   formatTokenRate,
@@ -509,6 +510,25 @@ describe("liveTokenRateSource", () => {
     });
     expect(source).toEqual({ key: "run:one", estimatedTokens: 20 });
   });
+  it("retains a visible-text fallback alongside a static message-start counter", () => {
+    const current = turn({
+      status: "running",
+      completedAt: null,
+      turnTokenUsage: {
+        usageScope: "main_agent",
+        usageStatus: "partial",
+        outputTokens: 1,
+        hasSubagents: false,
+      },
+    });
+    expect(
+      liveTokenRateSource({
+        ...projection({ runs: [run({ status: "running" })], providerTurns: [current] }),
+        nodes: [],
+        turnItems: [item({ text: "x".repeat(400) })],
+      }),
+    ).toMatchObject({ measured: true, estimatedTokens: 1, fallbackEstimatedTokens: 100 });
+  });
   it("is absent when no run is active", () => {
     expect(
       liveTokenRateSource({ ...projection(), turnItems: [item({ text: "abcd" })] }),
@@ -567,4 +587,34 @@ it("measures native subagents that have provider turns but no application run", 
       nodes: [],
     }),
   ).toEqual({ key: `${native.id}:usage`, estimatedTokens: 42, measured: true });
+});
+
+describe("live counter sampling", () => {
+  it("falls back to text speed when Claude's initial output counter stays at one", () => {
+    const result = chooseLiveTokenRate(
+      [{ atMs: 0, tokens: 1 }],
+      [
+        { atMs: 0, tokens: 0 },
+        { atMs: 2000, tokens: 100 },
+      ],
+      2000,
+    );
+    expect(result).toEqual({ rate: 50, measured: false });
+    expect(formatLiveTokenRate(result.rate, !result.measured)).toBe("~50 tok/s");
+  });
+  it("prefers advancing native counters without adding a second text estimate", () => {
+    expect(
+      chooseLiveTokenRate(
+        [
+          { atMs: 0, tokens: 1 },
+          { atMs: 2000, tokens: 121 },
+        ],
+        [
+          { atMs: 0, tokens: 0 },
+          { atMs: 2000, tokens: 100 },
+        ],
+        2000,
+      ),
+    ).toEqual({ rate: 60, measured: true });
+  });
 });

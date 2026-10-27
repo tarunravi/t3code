@@ -106,9 +106,12 @@ export interface TokenRateSample {
 }
 
 /** Prefer live provider output counters; otherwise estimate streamed root-agent text. */
-export function liveTokenRateSource(
-  projection: TokenRateProjection | null | undefined,
-): { readonly key: string; readonly estimatedTokens: number; readonly measured?: boolean } | null {
+export function liveTokenRateSource(projection: TokenRateProjection | null | undefined): {
+  readonly key: string;
+  readonly estimatedTokens: number;
+  readonly measured?: boolean;
+  readonly fallbackEstimatedTokens?: number;
+} | null {
   if (!projection) return null;
   let run: TokenRateProjection["runs"][number] | null = null;
   for (const candidate of projection.runs) {
@@ -129,8 +132,6 @@ export function liveTokenRateSource(
       ? undefined
       : turn?.turnTokenUsage?.outputTokens;
   const key = run?.id ?? nativeTurn!.id;
-  if (turn?.status === "running" && output !== undefined && Number.isFinite(output) && output > 0)
-    return { key: `${key}:usage`, estimatedTokens: output, measured: true };
   const rootNodeIds = new Set<string>();
   if (run?.rootNodeId != null) rootNodeIds.add(run.rootNodeId);
   if (nativeTurn) rootNodeIds.add(nativeTurn.nodeId);
@@ -157,7 +158,15 @@ export function liveTokenRateSource(
     }
     if (rootNodeIds.has(nodeId)) chars += item.text.length;
   }
-  return { key, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
+  const estimatedTokens = chars / ESTIMATED_CHARS_PER_TOKEN;
+  if (turn?.status === "running" && output !== undefined && Number.isFinite(output) && output > 0)
+    return {
+      key: `${key}:usage`,
+      estimatedTokens: output,
+      measured: true,
+      ...(chars > 0 ? { fallbackEstimatedTokens: estimatedTokens } : {}),
+    };
+  return { key, estimatedTokens };
 }
 
 /** A sparse observation cannot establish when output arrived; start a fresh window. */
@@ -192,6 +201,18 @@ export function rollingTokenRate(
   const delta = newest.tokens - base.tokens;
   if (spanMs < MIN_LIVE_SPAN_MS || delta <= 0) return null;
   return (delta / spanMs) * 1000;
+}
+
+/** A message-start counter can stay fixed until settlement; it must not hide streaming text speed. */
+export function chooseLiveTokenRate(
+  reported: readonly TokenRateSample[] | undefined,
+  estimated: readonly TokenRateSample[],
+  nowMs: number,
+): { readonly rate: number | null; readonly measured: boolean } {
+  const rate = reported === undefined ? null : rollingTokenRate(reported, nowMs);
+  return rate === null
+    ? { rate: rollingTokenRate(estimated, nowMs), measured: false }
+    : { rate, measured: true };
 }
 
 export function formatLiveTokenRate(rate: number | null, estimated = true): string | null {
