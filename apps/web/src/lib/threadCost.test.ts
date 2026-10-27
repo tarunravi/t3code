@@ -321,16 +321,30 @@ describe("R1-F2 historical model attribution", () => {
         { ...first.attempts[0]!, providerThreadId },
         { id: "attempt:2", runId: "run:2", providerThreadId },
       ].slice(0, secondTurn ? 2 : 1),
-      providerThreads: [{ ...first.providerThreads[0]!, nativeMetadata: { modelSelection: { model: selected } } }],
+      providerThreads: [
+        { ...first.providerThreads[0]!, nativeMetadata: { modelSelection: { model: selected } } },
+      ],
       providerTurns: [
-        ...first.providerTurns.map((turn) => ({ ...turn, servedModel: firstModel === "default" ? undefined : firstModel })),
-        { ...first.providerTurns[0]!, id: "turn:2", nodeId: "root:2", runAttemptId: "attempt:2", servedModel: "provider/B" },
+        ...first.providerTurns.map((turn) => ({
+          ...turn,
+          servedModel: firstModel === "default" ? undefined : firstModel,
+        })),
+        {
+          ...first.providerTurns[0]!,
+          id: "turn:2",
+          nodeId: "root:2",
+          runAttemptId: "attempt:2",
+          servedModel: "provider/B",
+        },
       ].slice(0, secondTurn ? 2 : 1),
     } as unknown as ThreadCostProjection;
   }
 
   it("does not reprice T1 after selecting B without any new tokens", () => {
-    const before = estimateThreadCost([source("parent", 0, history(false, "provider/A", "provider/A"))], rates);
+    const before = estimateThreadCost(
+      [source("parent", 0, history(false, "provider/A", "provider/A"))],
+      rates,
+    );
     expect(before.totalUsd).toBe(1);
     const after = estimateThreadCost([source("parent", 0, history())], rates);
     expect(after.totalUsd).toBe(1);
@@ -357,7 +371,10 @@ describe("R1-F2 historical model attribution", () => {
       providerThreads: [],
       attempts: [],
       providerTurns: original.providerTurns.map((turn) => ({ ...turn, servedModel: undefined })),
-      runs: [original.runs[0]!, { ...original.runs[0]!, id: "ambiguous-run", modelSelection: { model: "provider/B" } }],
+      runs: [
+        original.runs[0]!,
+        { ...original.runs[0]!, id: "ambiguous-run", modelSelection: { model: "provider/B" } },
+      ],
     } as unknown as ThreadCostProjection;
     const estimate = estimateThreadCost([source("parent", 0, value)], rates);
     expect(estimate.partial).toBe(true);
@@ -366,28 +383,77 @@ describe("R1-F2 historical model attribution", () => {
 
   it("retains same-session parent and child subtotals without double-counting a mirror", () => {
     const parent = history(true);
-    const child = { ...parent, providerTurns: parent.providerTurns.map((turn) => ({ ...turn, id: `child:${turn.id}` })) } as unknown as ThreadCostProjection;
-    const estimate = estimateThreadCost([
-      source("parent", 0, parent),
-      source("child", 1, child),
-      source("mirror", 2, child),
-    ], rates);
+    const child = {
+      ...parent,
+      providerTurns: parent.providerTurns.map((turn) => ({ ...turn, id: `child:${turn.id}` })),
+    } as unknown as ThreadCostProjection;
+    const estimate = estimateThreadCost(
+      [source("parent", 0, parent), source("child", 1, child), source("mirror", 2, child)],
+      rates,
+    );
     expect(estimate.parent).toEqual({ usd: 11, partial: false });
     expect(estimate.subagents).toEqual({ usd: 11, partial: false });
     expect(estimate.totalUsd).toBe(22);
   });
 });
 
-
 describe("scoped served-model evidence", () => {
-  it.each([undefined, null])("leaves legacy or mixed evidence %s unknown even with requested/current prices", (servedModel) => {
-    const original = projection("requested-alias", [{ usage: { inputTokens: 0, outputTokens: 1_000_000 } }], "current-model");
-    const value = { ...original, providerTurns: original.providerTurns.map((turn) => ({ ...turn, servedModel })) };
-    const estimate = estimateThreadCost([source("parent", 0, value)], new Map([
-      ["requested-alias", perMillion(0, 1)], ["current-model", perMillion(0, 10)],
-    ]));
-    expect(estimate.totalUsd).toBe(0);
-    expect(estimate.partial).toBe(true);
-    expect(estimate.rows[0]?.costUsd).toBeNull();
-  });
+  it.each([undefined, null])(
+    "leaves legacy or mixed evidence %s unknown even with requested/current prices",
+    (servedModel) => {
+      const original = projection(
+        "requested-alias",
+        [{ usage: { inputTokens: 0, outputTokens: 1_000_000 } }],
+        "current-model",
+      );
+      const value = {
+        ...original,
+        providerTurns: original.providerTurns.map((turn) => ({ ...turn, servedModel })),
+      };
+      const estimate = estimateThreadCost(
+        [source("parent", 0, value)],
+        new Map([
+          ["requested-alias", perMillion(0, 1)],
+          ["current-model", perMillion(0, 10)],
+        ]),
+      );
+      expect(estimate.totalUsd).toBe(0);
+      expect(estimate.partial).toBe(true);
+      expect(estimate.rows[0]?.costUsd).toBeNull();
+    },
+  );
+});
+
+it.each(["claude-opus-5-5", "combo/gpt-6.1-sol", "gpt-6-luna"])(
+  "prices measured %s turns from their native model identity",
+  (model) => {
+    const history = projection(model, [{ usage: { inputTokens: 0, outputTokens: 1_000_000 } }]);
+    const native = {
+      ...history,
+      providerTurns: history.providerTurns.map((turn) => ({ ...turn, servedModel: model })),
+    };
+    const result = estimateThreadCost(
+      [source("native-cost", 0, native)],
+      new Map([[model, perMillion(0, 2)]]),
+    );
+    expect(result.totalUsd).toBe(2);
+    expect(result.partial).toBe(false);
+  },
+);
+
+it("shows tokens and zero local cost without requiring a public Spark model rate", () => {
+  const model = "sparksdirect/DeepSeek-V4.1-Flash-1017";
+  const history = projection(model, [{ usage: { inputTokens: 100, outputTokens: 20 } }]);
+  const native = {
+    ...history,
+    providerTurns: history.providerTurns.map((turn) => ({
+      ...turn,
+      servedModel: model,
+      reportedCostUsd: 0,
+    })),
+  };
+  const result = estimateThreadCost([source("local-cost", 0, native)], new Map());
+  expect(result.rows[0]).toMatchObject({ totalTokens: 120, costUsd: 0 });
+  expect(result.partial).toBe(false);
+  expect(threadCostModels([source("local-cost", 0, native)])).toEqual([]);
 });

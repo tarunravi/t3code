@@ -51,7 +51,19 @@ export function latestTokenRateTurn(
       currentRun = run;
   }
   const run = currentRun ?? latestUnheldRun(projection.runs);
-  if (!run) return null;
+  if (!run) {
+    return projection.providerTurns
+      .filter((turn) => turn.runAttemptId === null)
+      .reduce<OrchestrationV2ProviderTurn | null>(
+        (latest, turn) =>
+          latest === null ||
+          DateTime.toEpochMillis(turn.startedAt ?? turn.completedAt ?? DateTime.makeUnsafe(0)) >
+            DateTime.toEpochMillis(latest.startedAt ?? latest.completedAt ?? DateTime.makeUnsafe(0))
+            ? turn
+            : latest,
+        null,
+      );
+  }
   let attempt: OrchestrationV2ThreadProjection["attempts"][number] | null = null;
   for (const candidate of projection.attempts) {
     if (candidate.runId !== run.id) continue;
@@ -100,7 +112,7 @@ export interface TokenRateSample {
  */
 export function liveTokenRateSource(
   projection: TokenRateProjection | null | undefined,
-): { readonly key: string; readonly estimatedTokens: number } | null {
+): { readonly key: string; readonly estimatedTokens: number; readonly measured?: boolean } | null {
   if (!projection) return null;
   let run: TokenRateProjection["runs"][number] | null = null;
   for (const candidate of projection.runs) {
@@ -113,18 +125,30 @@ export function liveTokenRateSource(
     )
       run = candidate;
   }
-  if (!run) return null;
+  const nativeTurn = run === null ? latestTokenRateTurn(projection) : null;
+  if (run === null && nativeTurn?.status !== "running") return null;
+  const turn = nativeTurn ?? latestTokenRateTurn(projection);
+  const output =
+    turn?.turnTokenUsage?.usageStatus === "unavailable"
+      ? undefined
+      : turn?.turnTokenUsage?.outputTokens;
+  const key = run?.id ?? nativeTurn!.id;
+  if (turn?.status === "running" && output !== undefined && Number.isFinite(output) && output > 0)
+    return { key: `${key}:usage`, estimatedTokens: output, measured: true };
   const rootNodeIds = new Set<string>();
-  if (run.rootNodeId !== null) rootNodeIds.add(run.rootNodeId);
+  if (run?.rootNodeId != null) rootNodeIds.add(run.rootNodeId);
+  if (nativeTurn) rootNodeIds.add(nativeTurn.nodeId);
   for (const attempt of projection.attempts)
-    if (attempt.runId === run.id && attempt.rootNodeId !== null)
+    if (run !== null && attempt.runId === run.id && attempt.rootNodeId !== null)
       rootNodeIds.add(attempt.rootNodeId);
   const nodesById = new Map(
-    projection.nodes.filter((node) => node.runId === run.id).map((node) => [node.id, node]),
+    projection.nodes
+      .filter((node) => node.runId === (run?.id ?? null))
+      .map((node) => [node.id, node]),
   );
   let chars = 0;
   for (const item of projection.turnItems) {
-    if (item.runId !== run.id || item.nodeId === null) continue;
+    if (item.runId !== (run?.id ?? null) || item.nodeId === null) continue;
     if (item.type !== "assistant_message" && item.type !== "reasoning") continue;
     let nodeId = item.nodeId;
     const visited = new Set<string>();
@@ -137,7 +161,7 @@ export function liveTokenRateSource(
     }
     if (rootNodeIds.has(nodeId)) chars += item.text.length;
   }
-  return { key: run.id, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
+  return { key, estimatedTokens: chars / ESTIMATED_CHARS_PER_TOKEN };
 }
 
 /** A sparse observation cannot establish when output arrived; start a fresh window. */
@@ -174,14 +198,14 @@ export function rollingTokenRate(
   return (delta / spanMs) * 1000;
 }
 
-export function formatLiveTokenRate(rate: number | null): string | null {
+export function formatLiveTokenRate(rate: number | null, estimated = true): string | null {
   if (rate === null || !Number.isFinite(rate)) return null;
   if (rate <= 0) return null;
-  return `~${rate < 1 ? "<1" : Math.round(rate)} tok/s`;
+  return `${estimated ? "~" : ""}${rate < 1 ? "<1" : Math.round(rate)} tok/s`;
 }
 
 export const LIVE_TOKEN_RATE_EXPLANATION =
-  "Recent visible output speed, estimated from streamed text and reasoning (~4 characters per token). Tool-call arguments and unexposed reasoning are not counted. No recent visible output does not mean the provider is idle.";
+  "Recent output speed uses provider-reported output-token counters when available. ~ marks a streamed text/reasoning estimate (~4 characters per token), excluding tool-call arguments and unexposed reasoning. No recent visible output does not mean the provider is idle.";
 
 export function tokenRateExplanation(turn: OrchestrationV2ProviderTurn | null | undefined): string {
   if (completedTurnTokenRate(turn) !== null)

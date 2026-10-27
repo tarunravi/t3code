@@ -127,7 +127,7 @@ export function normalizeClaudeTurnTokenUsage(
       }
     | undefined,
   hasSubagents: boolean,
-  terminalStatus: RuntimeTurnState,
+  terminalStatus: RuntimeTurnState | "running",
   earlierSegmentUsage: ReadonlyArray<unknown> = [],
   observed: ClaudeTurnObservations = {},
 ): TurnTokenUsage {

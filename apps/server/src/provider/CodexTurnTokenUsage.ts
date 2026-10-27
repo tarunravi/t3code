@@ -143,6 +143,14 @@ export function completeCodexTurnTokenUsage(
   const usage = state.byTurnId.get(turnId);
   state.byTurnId.delete(turnId);
   if (state.activeTurnId === turnId) state.activeTurnId = undefined;
+  return snapshotCodexTurnTokenUsage(usage, completed, model);
+}
+
+export function snapshotCodexTurnTokenUsage(
+  usage: CodexTurnTokenUsageAccumulator | undefined,
+  completed = false,
+  model?: string,
+): TurnTokenUsage {
   const models = model === undefined ? {} : { models: [model] };
   if (!usage?.observed) {
     return {

@@ -1993,6 +1993,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const nativeId = adopted?.nativeId ?? host.connection.mintCommandId();
         const startedAt = yield* DateTime.now;
         const providerTurn: OrchestrationV2ProviderTurn = {
+          ...(session.model ? { servedModel: session.model } : {}),
           id: idAllocator.derive.providerTurn({
             driver: MUSE_PROVIDER,
             nativeTurnId: `${options.instanceId}:${nativeSessionId}:${nativeId}`,

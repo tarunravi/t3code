@@ -5,6 +5,7 @@ import type {
   UsageReadError,
   UsageSource,
   UsageTokenTotals,
+  TurnTokenUsage,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -128,3 +129,53 @@ export type ProviderUsageReader<Config, R> =
         input: ProviderUsageScanInput<Config>,
       ) => Effect.Effect<ReadonlyArray<ProviderUsageScan>, UsageReadError, R>;
     };
+
+/** A null attestation stays mixed; absent and synthetic frames cannot identify a billed model. */
+export function mergeServedModel(
+  previous: string | null | undefined,
+  incoming: string | null | undefined,
+): string | null | undefined {
+  const model = incoming?.trim();
+  if (!model || model === "<synthetic>") return previous;
+  return previous === undefined || previous === model ? model : null;
+}
+
+/** Inputs are per-message totals, not successive cumulative snapshots of the same message. */
+export function sumTurnTokenUsage(
+  messages: Iterable<TurnTokenUsage>,
+  completed = false,
+): TurnTokenUsage {
+  const rows = [...messages].filter((usage) => usage.usageStatus !== "unavailable");
+  if (rows.length === 0)
+    return { usageStatus: "unavailable", usageScope: "main_agent", hasSubagents: false };
+  const inputKnown = rows.every((usage) => usage.inputTokens !== undefined);
+  const outputKnown = rows.every((usage) => usage.outputTokens !== undefined);
+  const sum = (
+    field:
+      | "inputTokens"
+      | "outputTokens"
+      | "cachedInputTokens"
+      | "cacheCreationTokens"
+      | "reasoningTokens",
+  ) => rows.reduce((total, usage) => total + (usage[field] ?? 0), 0);
+  const common = {
+    usageScope: "main_agent" as const,
+    hasSubagents: rows.some((usage) => usage.hasSubagents),
+    cachedInputTokens: sum("cachedInputTokens"),
+    cacheCreationTokens: sum("cacheCreationTokens"),
+    reasoningTokens: sum("reasoningTokens"),
+  };
+  if (completed && inputKnown && outputKnown)
+    return {
+      ...common,
+      usageStatus: "complete",
+      inputTokens: sum("inputTokens"),
+      outputTokens: sum("outputTokens"),
+    };
+  return {
+    ...common,
+    usageStatus: "partial",
+    ...(inputKnown ? { inputTokens: sum("inputTokens") } : {}),
+    ...(outputKnown ? { outputTokens: sum("outputTokens") } : {}),
+  };
+}
