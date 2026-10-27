@@ -2342,6 +2342,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   params: {
                     threadId: nativeThreadId,
                     input: [],
+                    serviceTier: "default",
                     cwd: "/workspace",
                     model: "gpt-5.4",
                     approvalPolicy: "never",
@@ -2573,6 +2574,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             : outcome === "stop" || outcome === "stop-continued" || outcome === "stop-starting"
               ? "interrupted"
               : "failed",
+          terminal?.status === "failed" ? terminal.failure.message : undefined,
         );
         assert.lengthOf(starts, 1 + retries);
         assert.lengthOf(harness.terminalEvents(), 1);
@@ -5513,6 +5515,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 params: {
                   threadId: RESUME_NATIVE_THREAD,
                   input: [],
+                  serviceTier: "default",
                   cwd: "/workspace",
                   model: "gpt-5.4",
                   approvalPolicy: "never",
@@ -5656,6 +5659,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   params: {
                     threadId: RESUME_NATIVE_THREAD,
                     input: [],
+                    serviceTier: "default",
                     cwd: "/workspace",
                     model: "gpt-5.4",
                     approvalPolicy: "never",
