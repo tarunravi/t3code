@@ -5,9 +5,14 @@ import type {
   UsageDay,
   UsageResolution,
   UsageTokenTotals,
+  UsageFilters,
 } from "@t3tools/contracts";
 
-import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/usage";
+import {
+  EMPTY_TOTALS,
+  matchesUsageFilters,
+  type UsageRecord,
+} from "@t3tools/provider-core/server/usage";
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
 
 // en-CA gives ISO-ordered parts in the requested zone; Date getters are host-local.
@@ -61,6 +66,7 @@ interface MutableBucket {
 }
 
 export interface AggregateOptions {
+  readonly filters?: UsageFilters | undefined;
   readonly timeZone: string;
   readonly sinceDay: string;
   readonly untilDay: string;
@@ -130,6 +136,7 @@ export class UsageAggregator {
 
   add(input: UsageRecord, sourcePath?: string): boolean {
     const record = this.#mapModel(input);
+    if (!matchesUsageFilters(record, this.#options.filters)) return false;
     if (record.dedupeKey !== null) {
       if (this.#seen.has(record.dedupeKey)) {
         this.#duplicatesDropped += 1;

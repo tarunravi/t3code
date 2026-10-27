@@ -13,6 +13,7 @@ import {
   type UsageRecord,
 } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { OmpSettings } from "@t3tools/contracts";
 import type { PiSettings } from "../settings.ts";
 
 const PiScanState = Schema.Struct({ sessionId: Schema.mutableKey(Schema.String) });
@@ -50,7 +51,11 @@ const Entry = Schema.Union([
 ]);
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 
-function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly UsageRecord[] {
+function parseRecord(
+  parsed: unknown,
+  state: typeof PiScanState.Type,
+  provider: "pi" | "omp" = "pi",
+): readonly UsageRecord[] {
   const decoded = decodeEntry(parsed);
   if (Option.isNone(decoded)) return [];
   const entry = decoded.value;
@@ -82,11 +87,15 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
   const cost = usage.cost?.total;
   // Omitted Pi rates default to zero; use shared estimates without positive transcript cost.
   const reportedCostUsd =
-    typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null;
+    typeof cost === "number" &&
+    Number.isFinite(cost) &&
+    (cost > 0 || (provider === "omp" && cost === 0))
+      ? cost
+      : null;
   if (totalTokens(totals) === 0 && reportedCostUsd === null) return [];
   return [
     {
-      provider: "pi",
+      provider,
       timestampMs,
       model,
       ...(rateModel === undefined ? {} : { rateModel }),
@@ -95,7 +104,7 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
       reportedCostUsd,
       speed: "standard",
       // Forks preserve IDs/timestamps; short random IDs need timestamp/model to avoid cross-session collisions.
-      dedupeKey: JSON.stringify(["pi", entry.id, entry.timestamp, model]),
+      dedupeKey: JSON.stringify([provider, entry.id, entry.timestamp, model]),
     },
   ];
 }
@@ -138,6 +147,42 @@ export const piUsageReader: ProviderUsageReader<PiSettings, Path.Path> = {
       {
         dir: path.resolve(
           agentDir ? expandHomePath(agentDir, home) : path.join(home, ".pi", "agent"),
+          "sessions",
+        ),
+      },
+    ];
+  }),
+};
+
+const ompUsageFormat: TranscriptUsageFormat<typeof PiScanState.Type> = {
+  ...piUsageFormat,
+  parseLine: (line, state) => {
+    try {
+      return parseRecord(JSON.parse(line), state, "omp");
+    } catch {
+      return [];
+    }
+  },
+  parseProjected: (parsed, state) => parseRecord(parsed, state, "omp"),
+};
+
+export const ompUsageReader: ProviderUsageReader<OmpSettings, Path.Path> = {
+  kind: "transcripts",
+  provider: "omp",
+  format: ompUsageFormat,
+  directories: Effect.fn("ompUsageReader.directories")(function* ({ environment }) {
+    const path = yield* Path.Path;
+    const home = yield* HostProcess.HomeDirectory;
+    const sessionDir =
+      environment.OMP_CODING_AGENT_SESSION_DIR?.trim() ||
+      environment.PI_CODING_AGENT_SESSION_DIR?.trim();
+    if (sessionDir) return [{ dir: path.resolve(expandHomePath(sessionDir, home)) }];
+    const agentDir =
+      environment.OMP_CODING_AGENT_DIR?.trim() || environment.PI_CODING_AGENT_DIR?.trim();
+    return [
+      {
+        dir: path.resolve(
+          agentDir ? expandHomePath(agentDir, home) : path.join(home, ".omp", "agent"),
           "sessions",
         ),
       },

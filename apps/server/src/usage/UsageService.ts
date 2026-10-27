@@ -1,3 +1,4 @@
+import * as UsageProjectionSource from "./UsageProjectionSource.ts";
 import * as NodeOS from "node:os";
 
 import {
@@ -180,6 +181,7 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
   const cursorUsage = yield* CursorUsageSource.CursorUsage;
+  const projections = yield* UsageProjectionSource.UsageProjectionSource;
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -738,9 +740,14 @@ export const make = Effect.gen(function* () {
       rates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
+      filters: input.filters,
     });
 
     const sources: UsageSource[] = [];
+    const projected = yield* projections.read(input).pipe(Effect.option);
+    const projectionRecords = Option.isSome(projected) ? projected.value.records : [];
+    const owners = UsageProjectionSource.usageOwners(projectionRecords);
+    const historySessions = new Set<string>();
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
     const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
@@ -829,7 +836,9 @@ export const make = Effect.gen(function* () {
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
           const record = correctedRecord(rawRecord);
-          let usageRecord = record;
+          const sessionKey = encodeUsageRecordKey([record.provider, record.sessionId]);
+          const owner = owners.get(sessionKey);
+          let usageRecord = owner == null ? record : { ...record, thread: owner };
           if (
             sharedSessionProviders.has(record.provider) &&
             crossFileSessions.has(record.sessionId)
@@ -844,10 +853,11 @@ export const make = Effect.gen(function* () {
             ]);
             const occurrence = (eventOccurrences.get(key) ?? 0) + 1;
             eventOccurrences.set(key, occurrence);
-            usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
+            usageRecord = { ...usageRecord, dedupeKey: key + ":" + occurrence };
           }
           if (aggregator.add(usageRecord, dir) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
+            historySessions.add(sessionKey);
           }
         }
       }
@@ -885,6 +895,46 @@ export const make = Effect.gen(function* () {
     const pruned = pruneScanCache(fileCache, retentionCutoffMs);
     if (pruned > 0) cacheDirty = true;
 
+    const projectionVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(config.stateDir));
+    const fallbackSessions = new Map<UsageProviderKind, Set<string>>();
+    for (const record of projectionRecords) {
+      if (historySessions.has(encodeUsageRecordKey([record.provider, record.sessionId]))) continue;
+      if (!aggregator.add(record, config.dbPath)) continue;
+      const sessions = fallbackSessions.get(record.provider) ?? new Set<string>();
+      sessions.add(record.sessionId);
+      fallbackSessions.set(record.provider, sessions);
+    }
+    for (const [provider, sessions] of fallbackSessions)
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider,
+          resolvedHomePath: config.dbPath,
+          volumeId: projectionVolumeId,
+        },
+        status: "partial",
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: sessions.size,
+        message:
+          "Turn usage without a matching transcript; historical or unreported requests may be incomplete.",
+      });
+    if (Option.isNone(projected))
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider: "omp",
+          resolvedHomePath: config.dbPath,
+          volumeId: projectionVolumeId,
+        },
+        status: "failed",
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: 0,
+        message: "T3 thread attribution and turn usage could not be read.",
+      });
     const aggregated = aggregator.finish();
     const readAt = yield* DateTime.now;
     const finishedAtMs = yield* Clock.currentTimeMillis;
@@ -896,6 +946,8 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       buckets: aggregated.buckets,
+      threads: Option.isSome(projected) ? projected.value.threads : [],
+      ...(input.filters === undefined ? {} : { filtersApplied: true as const }),
       sources,
       pricing: pricing(),
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
@@ -914,6 +966,7 @@ export const make = Effect.gen(function* () {
       input.untilTime ?? null,
       settings,
       input.awaitRefresh === true,
+      input.filters ?? null,
     ]);
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -1020,4 +1073,6 @@ export const make = Effect.gen(function* () {
   return { readSummary, refreshRates, readSpeed, readModelRates, awaitPersisted } as const;
 });
 
-export const layer = Layer.effect(UsageService, make).pipe(Layer.provide(CursorUsageSource.layer));
+export const layer = Layer.effect(UsageService, make).pipe(
+  Layer.provide(Layer.mergeAll(CursorUsageSource.layer, UsageProjectionSource.layer)),
+);

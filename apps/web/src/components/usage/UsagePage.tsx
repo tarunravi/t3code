@@ -9,6 +9,7 @@ import {
   type EnvironmentId,
   type UsageProviderKind,
   type UsageSummaryInput,
+  type UsageFilters,
 } from "@t3tools/contracts";
 import { CircleAlertIcon, ChevronDownIcon, InfoIcon, SlidersHorizontalIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
@@ -43,6 +44,7 @@ import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { UsageDetailFilters } from "./UsageDetailFilters";
 import { UsageSpeedSection } from "./UsageSpeed";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -186,7 +188,10 @@ export function UsagePage() {
     });
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
-  const [windowSelection, setWindowSelection] = useState(() => ({
+  const [windowSelection, setWindowSelection] = useState<{
+    days: number;
+    window: UsageSummaryInput;
+  }>(() => ({
     days: preferences.windowDays,
     window: makeWindow(
       preferences.windowDays,
@@ -243,7 +248,10 @@ export function UsagePage() {
     updatePreferences({ windowDays: days });
     setWindowSelection({
       days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+      window: {
+        ...makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+        ...(window.filters === undefined ? {} : { filters: window.filters }),
+      },
     });
   };
   const selectMetric = (nextMetric: UsageMetric) => {
@@ -309,7 +317,10 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
+    const nextWindow = {
+      ...makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day"),
+      ...(window.filters === undefined ? {} : { filters: window.filters }),
+    };
     if (
       nextWindow.sinceDay !== window.sinceDay ||
       nextWindow.untilDay !== window.untilDay ||
@@ -514,6 +525,25 @@ export function UsagePage() {
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
+            {!showingLimits && metric !== "speed" ? (
+              <UsageDetailFilters
+                filters={window.filters ?? {}}
+                environments={selectedEnvironments}
+                models={merged.models.map(({ model }) => model)}
+                onChange={(filters: UsageFilters) =>
+                  setWindowSelection((previous) => {
+                    const { filters: _old, ...input } = previous.window;
+                    return {
+                      ...previous,
+                      window: {
+                        ...input,
+                        ...(Object.keys(filters).length === 0 ? {} : { filters }),
+                      },
+                    };
+                  })
+                }
+              />
+            ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0

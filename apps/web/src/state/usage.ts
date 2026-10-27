@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthDiagnosticsReadScope,
+  UsageReadError,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageBucket,
@@ -12,6 +13,9 @@ import {
 } from "@t3tools/contracts";
 import { needsCursorKeychainAccess, refreshUsage } from "@t3tools/client-runtime/state/usage";
 import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
+import * as Option from "effect/Option";
+import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
@@ -20,6 +24,8 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 import { environmentSession, readEnvironmentScope } from "./session";
+
+const isUsageReadError = Schema.is(UsageReadError);
 
 export interface EnvironmentUsageStatus {
   readonly environmentId: EnvironmentId;
@@ -58,14 +64,24 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         continue;
       }
       const result = get(serverEnvironment.usageSummary({ environmentId, input }));
-      const summary = AsyncResult.getOrElse(result, () => null);
+      const reported = Option.getOrNull(AsyncResult.value(result));
+      const unsupportedFilters =
+        input.filters !== undefined && reported !== null && reported.filtersApplied !== true;
+      const summary = unsupportedFilters ? null : reported;
+      const failure = result._tag === "Failure" ? Cause.squash(result.cause) : null;
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
         isPending: result.waiting,
         canReadDiagnostics: true,
         isConnected,
-        error: result._tag === "Failure" ? "This environment could not report usage." : null,
+        error: unsupportedFilters
+          ? "Update this instance to filter usage by model or thread."
+          : result._tag === "Failure"
+            ? isUsageReadError(failure)
+              ? failure.detail
+              : "This environment could not report usage."
+            : null,
         summary,
         needsCursorKeychainAccess: needsCursorKeychainAccess(
           summary,
@@ -163,6 +179,7 @@ export function useUsage(
     resolution: input.resolution,
     sinceTime: input.sinceTime,
     untilTime: input.untilTime,
+    filters: input.filters,
   });
   const atom = usageByWindowAtom(windowKey);
   const environments = useAtomValue(atom);
@@ -226,7 +243,9 @@ export function useUsage(
     });
   }
   const kept =
-    lastAnswered?.selection === selectedEnvironmentIds && lastAnswered.hidden === hiddenProviders
+    lastAnswered?.selection === selectedEnvironmentIds &&
+    lastAnswered.hidden === hiddenProviders &&
+    lastAnswered.window.filters === input.filters
       ? lastAnswered
       : null;
   const shown =
@@ -240,7 +259,15 @@ export function useUsage(
     selectedEnvironments,
     isPending,
     shown,
-    isPartial: answeredCount > 0 && stillReporting > 0,
+    isPartial:
+      answeredCount > 0 &&
+      selectedEnvironments.some(
+        (environment) =>
+          environment.summary === null ||
+          environment.isPending ||
+          environment.error !== null ||
+          environment.summary.sources.some((source) => source.refreshing),
+      ),
     refresh,
   };
 }

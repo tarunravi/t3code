@@ -45,6 +45,7 @@ export const PROVIDER_PRESENTATION = {
     color: "#0866ff",
     driverKind: ProviderDriverKind.make("muse"),
   },
+  omp: { label: "oh-my-pi", color: "#8b5cf6", driverKind: ProviderDriverKind.make("omp") },
   zcode: { label: "ZCode", color: "#14b8a6", driverKind: ProviderDriverKind.make("zcode") },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
