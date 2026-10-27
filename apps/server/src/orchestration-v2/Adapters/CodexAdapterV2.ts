@@ -1,3 +1,5 @@
+import { mergeServedModel } from "@t3tools/provider-core/server/usage";
+import { snapshotCodexTurnTokenUsage } from "../../provider/CodexTurnTokenUsage.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -1109,6 +1111,7 @@ function withCodexManagedFailure(
 }
 
 interface ActiveCodexTurnContext {
+  servedModel?: string | null | undefined;
   closedCommandItemIds?: ReadonlySet<string>;
   latestProviderFailure?: {
     readonly nativeMessage: string;
@@ -1332,7 +1335,10 @@ function codexThreadRuntimeParams(input: {
 }
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
-  Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
+  Schema.Struct({
+    thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }),
+    model: Schema.optional(Schema.String),
+  }),
 );
 
 const CodexChildSelection = Schema.Struct({
@@ -1918,6 +1924,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             input: input.turnInput,
             projectionAppThread: input.turnInput.appThread,
             projectionThreadId: input.turnInput.threadId,
+            ...(subagentSelections.get(
+              input.turnInput.providerThread.nativeThreadRef?.nativeId ?? "",
+            )?.model === undefined
+              ? {}
+              : {
+                  servedModel: subagentSelections.get(
+                    input.turnInput.providerThread.nativeThreadRef?.nativeId ?? "",
+                  )!.model,
+                }),
             projectionRunId: input.turnInput.runId,
             nativeTurnId: input.nativeTurnId,
             providerThread: input.turnInput.providerThread,
@@ -2609,6 +2624,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ) {
           const model = value?.trim();
           if (!model) return;
+          for (const context of (yield* Ref.get(activeTurns)).values()) {
+            if (context.providerThread.nativeThreadRef?.nativeId !== nativeThreadId) continue;
+            const observed = usageStateForThread(nativeThreadId).byTurnId.get(
+              context.nativeTurnId,
+            )?.observed;
+            context.servedModel = observed ? mergeServedModel(context.servedModel, model) : model;
+          }
           const previous = subagentSelections.get(nativeThreadId);
           const previousOptions = previous?.options;
           const options =
@@ -4300,6 +4322,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (context === undefined) {
               return;
             }
+            if (context.servedModel === undefined) context.servedModel = null;
             const now = yield* DateTime.now;
             yield* emitProviderEvent({
               type: "provider_turn.updated",
@@ -4319,6 +4342,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: "running",
                 startedAt: context.startedAt,
                 completedAt: null,
+                ...(context.servedModel === undefined ? {} : { servedModel: context.servedModel }),
+                turnTokenUsage: snapshotCodexTurnTokenUsage(
+                  usageStateForThread(payload.threadId).byTurnId.get(payload.turnId),
+                ),
                 tokenUsage: codexProviderTurnTokenUsage(
                   payload.tokenUsage,
                   DateTime.formatIso(now),
@@ -5889,6 +5916,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: input.status,
                 startedAt: input.context.startedAt,
                 completedAt: input.completedAt,
+                ...(input.context.servedModel === undefined
+                  ? {}
+                  : { servedModel: input.context.servedModel }),
                 turnTokenUsage: completeCodexTurnTokenUsage(
                   usageStateForThread(
                     input.context.providerThread.nativeThreadRef?.nativeId ??
@@ -6592,6 +6622,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
                 ),
               ),
+              Effect.tap((response) => updateSubagentSelection(response.thread.id, response.model)),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
@@ -6650,6 +6681,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 ),
                 Effect.flatMap(decodeCodexResumeMetadata),
+                Effect.tap((response) =>
+                  updateSubagentSelection(response.thread.id, response.model ?? null),
+                ),
               );
               return {
                 ...threadInput.providerThread,

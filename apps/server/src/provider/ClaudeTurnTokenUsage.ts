@@ -56,7 +56,7 @@ function withEarlierSegmentUsage(
 export function normalizeClaudeTurnTokenUsage(
   result: { readonly subtype: SDKResultMessage["subtype"]; readonly usage?: unknown } | undefined,
   hasSubagents: boolean,
-  terminalStatus: ProviderRuntimeTurnStatus,
+  terminalStatus: ProviderRuntimeTurnStatus | "running",
   earlierSegmentUsage: ReadonlyArray<unknown> = [],
 ): TurnTokenUsage {
   const finalUsage = result?.usage as Record<string, unknown> | undefined;

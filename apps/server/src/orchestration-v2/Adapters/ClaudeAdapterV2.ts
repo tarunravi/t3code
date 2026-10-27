@@ -1,3 +1,4 @@
+import { mergeServedModel, sumTurnTokenUsage } from "@t3tools/provider-core/server/usage";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
@@ -1333,11 +1334,8 @@ export const CLAUDE_NATIVE_SUBAGENT_DENY_REASON =
 // Workflow spawns native agents too.
 const CLAUDE_NATIVE_SUBAGENT_TOOLS: ReadonlyArray<string> = ["Agent", "Task", "Workflow"];
 
-// Native subagents run outside T3's task model, so T3 cannot show or cancel
-// them. disallowedTools removes their definitions from the model's context;
-// this PreToolUse hook is the backstop if a resumed transcript or settings
-// drift brings one back. A hook is used instead of canUseTool because the SDK
-// skips canUseTool under bypassPermissions (full-access threads).
+// Native agents bypass T3 task ownership. This hook backs up disallowedTools
+// after resume or settings drift; the SDK skips canUseTool in full-access mode.
 const CLAUDE_NATIVE_SUBAGENT_DENY_HOOKS: HookCallbackMatcher = {
   matcher: CLAUDE_NATIVE_SUBAGENT_TOOLS.join("|"),
   hooks: [
@@ -3792,6 +3790,9 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 }
 
 interface ActiveClaudeTurnContext {
+  servedModel?: string | null | undefined;
+  readonly messageUsage: Map<string, import("@t3tools/contracts").TurnTokenUsage>;
+  readonly messageModels: Map<string, string>;
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly nativeThreadId: string;
@@ -4828,7 +4829,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             adapterOptions.settings.autoCompactWindow,
             context.streamUsage?.requestedAt,
           );
-          if (tokenUsage.inputTokens <= 0) return;
+          if (context.streamUsage !== null) {
+            context.messageUsage.set(
+              context.streamUsage.messageId,
+              normalizeClaudeTurnTokenUsage({ subtype: "success", usage }, false, "running"),
+            );
+          }
+          const turnTokenUsage = sumTurnTokenUsage(context.messageUsage.values());
+          if (tokenUsage.inputTokens <= 0 && (turnTokenUsage.outputTokens ?? 0) <= 0) return;
           yield* emitProviderEvent({
             type: "provider_turn.updated",
             driver: CLAUDE_PROVIDER,
@@ -4847,7 +4855,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               status: "running",
               startedAt: context.startedAt,
               completedAt: null,
-              tokenUsage,
+              ...(tokenUsage.inputTokens > 0 ? { tokenUsage } : {}),
+              turnTokenUsage,
+              ...(context.servedModel === undefined ? {} : { servedModel: context.servedModel }),
             },
           });
         });
@@ -7308,6 +7318,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     status: input.status,
                     completedAt: input.completedAt,
                   }),
+                  ...(input.context.messageUsage.size > 0 &&
+                  [...input.context.messageUsage.keys()].some(
+                    (id) => !input.context.messageModels.has(id),
+                  )
+                    ? { servedModel: null }
+                    : input.context.servedModel === undefined
+                      ? {}
+                      : { servedModel: input.context.servedModel }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
                     input.result,
                     input.context.subagentsByTaskId.size > 0 ||
@@ -8143,6 +8161,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const event = message.event;
             const reasoning = context.reasoning;
             if (event.type === "message_start") {
+              context.servedModel = mergeServedModel(context.servedModel, event.message.model);
+              if (event.message.model && event.message.model !== "<synthetic>")
+                context.messageModels.set(event.message.id, event.message.model);
               reasoning.messageId = event.message.id;
               reasoning.streamBlocks.clear();
               const usage: ClaudeMessageUsage | undefined = event.message.usage;
@@ -8532,6 +8553,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message.message.usage !== undefined &&
               message.message.model !== "<synthetic>"
             ) {
+              context.servedModel = mergeServedModel(context.servedModel, message.message.model);
+              context.messageModels.set(message.message.id, message.message.model);
               const snapshotUsage = message.message.usage;
               const stream = context.streamUsage;
               if (stream === null || stream.messageId !== message.message.id) {
@@ -10106,6 +10129,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 blocks: new Map(),
               },
               streamUsage: null,
+              messageUsage: new Map(),
+              messageModels: new Map(),
               toolCalls: new Map(),
               compaction: null,
               ignoredTaskIds: new Set(),

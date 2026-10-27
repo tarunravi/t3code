@@ -48,7 +48,13 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
     const source = liveTokenRateSource(projection);
     return source === null
       ? []
-      : [{ key: `${key}:${source.key}`, estimatedTokens: source.estimatedTokens }];
+      : [
+          {
+            key: `${key}:${source.key}`,
+            estimatedTokens: source.estimatedTokens,
+            measured: source.measured === true,
+          },
+        ];
   });
   const [{ history, nowMs }, setSampling] = useState(() => ({
     history: new Map<string, readonly TokenRateSample[]>(),
@@ -56,6 +62,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   }));
   const live = liveSources.length > 0;
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Timestamp external provider counter changes after commit, not during render.
   useEffect(() => {
     if (liveSources.length === 0) return;
     const atMs = Date.now();
@@ -83,6 +90,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
     });
   }, [liveSources]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Age live samples against wall-clock time and release the timer when idle.
   useEffect(() => {
     if (!live) return;
     const id = setInterval(
@@ -106,7 +114,9 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
     return {
       live: true,
       rate,
-      text: formatLiveTokenRate(rate) ?? (noRecentOutput ? "No recent visible output" : "Measuring…"),
+      text:
+        formatLiveTokenRate(rate, !liveSources.every((source) => source.measured)) ??
+        (noRecentOutput ? "No recent visible output" : "Measuring…"),
     };
   }
   const rootProjection = sources[0]?.projection;

@@ -20,6 +20,7 @@ export interface ModelTokenUsage {
   readonly cachedInputTokens: number;
   readonly cacheCreationTokens: number;
   readonly outputTokens: number;
+  readonly reportedCostUsd?: number;
 }
 
 export interface ThreadCostRow {
@@ -75,15 +76,20 @@ export function threadUsageByModel(projection: ThreadCostProjection): {
       continue;
     }
     if (usage.usageStatus === "partial") incomplete = true;
-    const model = turn.servedModel;
+    const reported = turn.reportedCostUsd;
+    const reportedCostUsd =
+      reported !== undefined && Number.isFinite(reported) && reported >= 0 ? reported : undefined;
+    const model =
+      turn.servedModel ?? (reportedCostUsd === undefined ? undefined : "Provider-reported");
     if (model == null) {
       incomplete = true;
       continue;
     }
     const cached = usage.cachedInputTokens ?? 0;
     const cacheCreation = usage.cacheCreationTokens ?? 0;
-    const previous = byModel.get(model);
-    byModel.set(model, {
+    const key = JSON.stringify([model, reportedCostUsd !== undefined]);
+    const previous = byModel.get(key);
+    byModel.set(key, {
       model,
       // Normalized input includes cache reads and writes.
       uncachedInputTokens:
@@ -92,6 +98,9 @@ export function threadUsageByModel(projection: ThreadCostProjection): {
       cachedInputTokens: (previous?.cachedInputTokens ?? 0) + cached,
       cacheCreationTokens: (previous?.cacheCreationTokens ?? 0) + cacheCreation,
       outputTokens: (previous?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+      ...(reportedCostUsd === undefined
+        ? {}
+        : { reportedCostUsd: (previous?.reportedCostUsd ?? 0) + reportedCostUsd }),
     });
   }
   return { usage: [...byModel.values()], incomplete };
@@ -120,7 +129,8 @@ export function threadCostModels(sources: readonly ThreadCostSource[]): readonly
   const models = new Set<string>();
   for (const source of sources) {
     if (source.projection === null) continue;
-    for (const usage of threadUsageByModel(source.projection).usage) models.add(usage.model);
+    for (const usage of threadUsageByModel(source.projection).usage)
+      if (usage.reportedCostUsd === undefined) models.add(usage.model);
   }
   return [...models].toSorted();
 }
@@ -170,19 +180,25 @@ export function estimateThreadCost(
       });
       continue;
     }
+    const modelRows = new Map<string, ThreadCostRow>();
     for (const entry of usage) {
       const rate = rates.get(entry.model) ?? null;
-      const costUsd = rate === null ? null : modelUsageCost(entry, rate);
+      const costUsd = entry.reportedCostUsd ?? (rate === null ? null : modelUsageCost(entry, rate));
       if (costUsd === null) section.partial = true;
       else section.usd += costUsd;
-      rows.push({
+      const previous = modelRows.get(entry.model);
+      modelRows.set(entry.model, {
         ...base,
         model: entry.model,
-        totalTokens: totalTokens(entry),
-        costUsd,
+        totalTokens: (previous?.totalTokens ?? 0) + totalTokens(entry),
+        costUsd:
+          costUsd === null || previous?.costUsd === null
+            ? null
+            : (previous?.costUsd ?? 0) + costUsd,
         incompleteUsage: incomplete,
       });
     }
+    rows.push(...modelRows.values());
   }
   return {
     totalUsd: parent.usd + subagents.usd,

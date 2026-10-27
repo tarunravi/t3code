@@ -1070,6 +1070,7 @@ interface AcpNativeBuildConfiguration {
 }
 
 interface ActiveAcpTurn {
+  readonly servedModel?: string | undefined;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeThreadId: string;
@@ -6916,6 +6917,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           status,
           startedAt: context.startedAt,
           completedAt,
+          ...(context.servedModel === undefined ? {} : { servedModel: context.servedModel }),
           ...(context.promptUsage === null || flavor.promptTurnTokenUsage === undefined
             ? {}
             : {
@@ -7470,7 +7472,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 new Map(current).set(requestedSessionId, initialNativeMetadata),
               );
             }
+            const setup = yield* Ref.get(activeSessionSetup);
+            const confirmedModel = setup?.sessionSetupResult.models?.currentModelId;
             const context: ActiveAcpTurn = {
+              ...(confirmedModel ? { servedModel: confirmedModel } : {}),
               input: turnInput,
               providerTurnId,
               nativeThreadId: requestedSessionId,

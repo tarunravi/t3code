@@ -5862,6 +5862,75 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       uuid,
       session_id: WAKE_NATIVE_SESSION,
     });
+  it.effect.each(["claude-opus-5-5", "claude-haiku-5-5"])(
+    "attests %s and emits cumulative live output before settlement",
+    (model) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`usage-${model}`),
+            text: "Count usage",
+            attachments: [],
+          }),
+        );
+        const usage = {
+          input_tokens: 10,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        };
+        for (const frame of [
+          usageStreamFrame({
+            type: "message_start",
+            message: { id: "billable-message", model, usage },
+          }),
+          usageStreamFrame({
+            type: "message_delta",
+            delta: { stop_reason: null, stop_sequence: null },
+            usage: { output_tokens: 25 },
+          }),
+          makeResultFrame({
+            uuid: `usage-result-${model}`,
+            result: "Counted",
+            usage: { ...usage, output_tokens: 25 },
+          }),
+        ])
+          yield* Queue.offer(harness.sdkMessages, frame);
+        yield* Queue.take(harness.terminalReceipts);
+        const live = harness.events.filter(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.status === "running" &&
+            event.providerTurn.turnTokenUsage?.outputTokens === 25,
+        );
+        assert.isNotEmpty(live);
+        const completed = harness.events.findLast(
+          (event) => event.type === "provider_turn.updated",
+        );
+        assert.equal(
+          completed?.type === "provider_turn.updated"
+            ? completed.providerTurn.servedModel
+            : undefined,
+          model,
+        );
+        assert.equal(
+          completed?.type === "provider_turn.updated"
+            ? completed.providerTurn.turnTokenUsage?.outputTokens
+            : undefined,
+          25,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   const zeroUsage = {
     input_tokens: 0,
     output_tokens: 0,

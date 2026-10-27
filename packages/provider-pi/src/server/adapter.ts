@@ -1,3 +1,5 @@
+import { mergeServedModel, sumTurnTokenUsage } from "@t3tools/provider-core/server/usage";
+import { piMessageUsage, piReportedCost, piServedModel } from "./turnUsage.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -405,6 +407,9 @@ function compactionTitle(status: PiCompactionStatus): string {
 }
 
 interface ActivePiTurn {
+  servedModel?: string | null | undefined;
+  readonly messageUsage: Map<number, import("@t3tools/contracts").TurnTokenUsage>;
+  readonly messageCosts: Map<number, number>;
   readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurn: OrchestrationV2ProviderTurn;
   readonly startedAt: DateTime.Utc;
@@ -773,17 +778,15 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       const reportLiveUsage =
         /* Provider events include streaming deltas; avoid a span for each update. */
         Effect.fnUntraced(function* (turn: ActivePiTurn, usage: unknown) {
-          const usedTokens = nonNegativeInteger(usage, "totalTokens");
-          if (
-            usedTokens === undefined ||
-            usedTokens === 0 ||
-            usedTokens === turn.lastLiveUsedTokens ||
-            contextWindow === null ||
-            contextWindow === 0
-          ) {
+          const messageUsage = piMessageUsage(usage);
+          if (messageUsage.usageStatus === "unavailable") return;
+          const previous = turn.messageUsage.get(turn.messageOrdinal);
+          const cost = piReportedCost(usage, driverKind === "omp");
+          if (cost !== undefined) turn.messageCosts.set(turn.messageOrdinal, cost);
+          turn.messageUsage.set(turn.messageOrdinal, messageUsage);
+          if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(messageUsage))
             return;
-          }
-          turn.lastLiveUsedTokens = usedTokens;
+          const usedTokens = nonNegativeInteger(usage, "totalTokens");
           const inputTokens = nonNegativeInteger(usage, "input");
           const cachedInputTokens = nonNegativeInteger(usage, "cacheRead");
           const outputTokens = nonNegativeInteger(usage, "output");
@@ -794,14 +797,20 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             threadId: turn.turnInput.threadId,
             providerTurn: {
               ...turn.providerTurn,
-              tokenUsage: {
-                usedTokens,
-                maxTokens: contextWindow,
-                ...(inputTokens === undefined ? {} : { inputTokens }),
-                ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-                ...(outputTokens === undefined ? {} : { outputTokens }),
-                updatedAt: DateTime.formatIso(updatedAt),
-              },
+              ...(turn.servedModel === undefined ? {} : { servedModel: turn.servedModel }),
+              turnTokenUsage: sumTurnTokenUsage(turn.messageUsage.values()),
+              ...(usedTokens === undefined || contextWindow === null || contextWindow === 0
+                ? {}
+                : {
+                    tokenUsage: {
+                      usedTokens,
+                      maxTokens: contextWindow,
+                      ...(inputTokens === undefined ? {} : { inputTokens }),
+                      ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+                      ...(outputTokens === undefined ? {} : { outputTokens }),
+                      updatedAt: DateTime.formatIso(updatedAt),
+                    },
+                  }),
             },
           });
         });
@@ -1581,6 +1590,19 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
             completedAt,
             ...(tokenUsage === undefined ? {} : { tokenUsage }),
+            ...(turn.servedModel === undefined ? {} : { servedModel: turn.servedModel }),
+            turnTokenUsage: sumTurnTokenUsage(
+              turn.messageUsage.values(),
+              !interrupted && failure === null,
+            ),
+            ...(turn.messageCosts.size > 0 && turn.messageCosts.size === turn.messageUsage.size
+              ? {
+                  reportedCostUsd: [...turn.messageCosts.values()].reduce(
+                    (sum, cost) => sum + cost,
+                    0,
+                  ),
+                }
+              : {}),
           },
         });
         const settledGoal =
@@ -1887,13 +1909,18 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (turn !== null && recordString(event["message"], "role") === "assistant") {
               turn.sawAgentActivity = true;
               turn.messageOrdinal += 1;
+              turn.servedModel = mergeServedModel(
+                turn.servedModel,
+                piServedModel(event["message"]),
+              );
             }
             return;
           }
           case "message_update": {
             if (turn === null) return;
             turn.sawAgentActivity = true;
-            yield* reportLiveUsage(turn, event["usage"]);
+            turn.servedModel = mergeServedModel(turn.servedModel, piServedModel(event["message"]));
+            yield* reportLiveUsage(turn, recordField(event["message"], "usage") ?? event["usage"]);
             const delta = event["assistantMessageEvent"];
             const deltaType = recordString(delta, "type");
             const contentIndex = recordNumber(delta, "contentIndex") ?? 0;
@@ -1926,6 +1953,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (turn === null) return;
             const message = event["message"];
             if (recordString(message, "role") !== "assistant") return;
+            turn.servedModel = mergeServedModel(turn.servedModel, piServedModel(message));
+            yield* reportLiveUsage(turn, recordField(message, "usage"));
             yield* completeOpenStreamItems(turn);
             if (recordString(message, "stopReason") === "error" && turn.failure === null) {
               turn.failure = makeProviderFailure({
@@ -2714,6 +2743,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               itemOrdinals: new Map(),
               nextItemOrdinal: turnInput.providerTurnOrdinal * 100 + 1,
               messageOrdinal: 0,
+              messageUsage: new Map(),
+              messageCosts: new Map(),
               streamItems: new Map(),
               toolArgs: new Map(),
               toolStartedAt: new Map(),

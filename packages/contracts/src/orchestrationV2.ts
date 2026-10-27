@@ -1103,6 +1103,7 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  reportedCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
   /** Provider-reported model for this turn's entire usage; null means mixed or unattested steps. */
   servedModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(512)))),
 });

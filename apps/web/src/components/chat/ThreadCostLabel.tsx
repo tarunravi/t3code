@@ -30,7 +30,9 @@ export function ThreadCostLabel(props: {
   const subagentRows = estimate.rows.filter((row) => row.depth > 0);
   const subagentCount = new Set(subagentRows.map((row) => row.threadId)).size;
   const text =
-    estimate.partial && estimate.totalUsd === 0
+    estimate.partial &&
+    estimate.totalUsd === 0 &&
+    estimate.rows.every((row) => row.costUsd === null)
       ? "Cost unknown"
       : `${estimate.partial ? "≥ " : "≈ "}${formatUsd(estimate.totalUsd)}`;
   return (
