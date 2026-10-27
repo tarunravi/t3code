@@ -2,13 +2,13 @@ import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 import {
   appendTokenRateSample,
+  chooseLiveTokenRate,
   completedTurnTokenRate,
   formatLiveTokenRate,
   formatTokenRate,
   latestTokenRateTurn,
   liveTokenRateSource,
   LIVE_TOKEN_RATE_WINDOW_MS,
-  rollingTokenRate,
   type TokenRateSample,
 } from "../lib/tokenRate";
 
@@ -53,9 +53,16 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
             key: `${key}:${source.key}`,
             estimatedTokens: source.estimatedTokens,
             measured: source.measured === true,
+            fallbackEstimatedTokens: source.fallbackEstimatedTokens,
           },
         ];
   });
+  const sampleSources = liveSources.flatMap((source) => [
+    source,
+    ...(source.fallbackEstimatedTokens === undefined
+      ? []
+      : [{ key: `${source.key}:text`, estimatedTokens: source.fallbackEstimatedTokens }]),
+  ]);
   const [{ history, nowMs }, setSampling] = useState(() => ({
     history: new Map<string, readonly TokenRateSample[]>(),
     nowMs: Date.now(),
@@ -64,20 +71,20 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
 
   // oxlint-disable-next-line t3code/react-effect-budget -- Timestamp external provider counter changes after commit, not during render.
   useEffect(() => {
-    if (liveSources.length === 0) return;
+    if (sampleSources.length === 0) return;
     const atMs = Date.now();
     // oxlint-disable-next-line react/set-state-in-effect -- Each token update is a timestamped sample, and render must not read the clock.
     setSampling((previous) => {
       // Equivalent projections and timer renders must not create another sampling update.
       if (
-        previous.history.size === liveSources.length &&
-        liveSources.every(
+        previous.history.size === sampleSources.length &&
+        sampleSources.every(
           (source) => previous.history.get(source.key)?.at(-1)?.tokens === source.estimatedTokens,
         )
       )
         return previous;
       const next = new Map<string, readonly TokenRateSample[]>();
-      for (const source of liveSources) {
+      for (const source of sampleSources) {
         next.set(
           source.key,
           appendTokenRateSample(previous.history.get(source.key) ?? [], {
@@ -88,7 +95,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
       }
       return { history: next, nowMs: atMs };
     });
-  }, [liveSources]);
+  }, [sampleSources]);
 
   // oxlint-disable-next-line t3code/react-effect-budget -- Age live samples against wall-clock time and release the timer when idle.
   useEffect(() => {
@@ -102,12 +109,18 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
 
   if (liveSources.length > 0) {
     const rates = liveSources.map((source) =>
-      rollingTokenRate(history.get(source.key) ?? [], nowMs),
+      chooseLiveTokenRate(
+        source.measured ? history.get(source.key) : undefined,
+        history.get(source.measured ? `${source.key}:text` : source.key) ?? [],
+        nowMs,
+      ),
     );
-    const availableRates = rates.filter((rate): rate is number => rate !== null);
+    const availableRates = rates
+      .map(({ rate }) => rate)
+      .filter((rate): rate is number => rate !== null);
     const rate =
       availableRates.length === 0 ? null : availableRates.reduce((sum, value) => sum + value, 0);
-    const noRecentOutput = liveSources.every((source) => {
+    const noRecentOutput = sampleSources.every((source) => {
       const newest = history.get(source.key)?.at(-1);
       return newest !== undefined && nowMs - newest.atMs >= LIVE_TOKEN_RATE_WINDOW_MS;
     });
@@ -115,8 +128,10 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
       live: true,
       rate,
       text:
-        formatLiveTokenRate(rate, !liveSources.every((source) => source.measured)) ??
-        (noRecentOutput ? "No recent visible output" : "Measuring…"),
+        formatLiveTokenRate(
+          rate,
+          rates.some((sample) => sample.rate !== null && !sample.measured),
+        ) ?? (noRecentOutput ? "No recent visible output" : "Measuring…"),
     };
   }
   const rootProjection = sources[0]?.projection;

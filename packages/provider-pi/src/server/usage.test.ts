@@ -25,6 +25,9 @@ describe("omp usage history", () => {
       reportedCostUsd: 0,
       totals: { uncachedInputTokens: 100, cachedInputTokens: 20, outputTokens: 50 },
     });
+    expect(
+      format.parseLine(line.replace("sparksdirect", "openai"), state)[0]?.reportedCostUsd,
+    ).toBeNull();
     expect(piUsageFormat.parseLine(line, { sessionId: "pi-session" })[0]).toMatchObject({
       provider: "pi",
       reportedCostUsd: null,
