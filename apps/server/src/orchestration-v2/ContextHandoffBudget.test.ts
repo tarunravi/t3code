@@ -209,6 +209,16 @@ describe("handoff budget", () => {
     assert.isBelow(handoffBudget(base), 16_000);
     assert.isBelow(handoffBudget({ ...base, nativeContextEstimate: 8_000 }), handoffBudget(base));
     assert.equal(handoffBudget({ ...base, userText: "界".repeat(30_000) }), 0);
+    const exhausted = {
+      ...base,
+      providerThread: {
+        ...providerThread,
+        contextUsage: { usedTokens: 32_000, maxTokens: 32_000 },
+      },
+    };
+    assert.equal(handoffBudget(exhausted), HANDOFF_RECOVERY_BUDGET);
+    assert.equal(handoffBudget({ ...exhausted, reserveRecoveryPointer: false }), 0);
+
     // 23k of a 24k window cannot hold the normal transcript. The user message
     // still fits, so the allowance stays large enough for the recovery pointer.
     assert.equal(

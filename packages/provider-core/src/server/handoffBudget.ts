@@ -97,23 +97,13 @@ export function attachmentTokenAllowance(attachments: ReadonlyArray<ChatAttachme
 
 const WORKING_RESERVE = 16_000;
 
-/**
- * Pointer used when the selected transcript cannot fit in the free context.
- * The model rereads the saved thread instead of failing the user's turn.
- * The sample id is longer than app thread ids so the budget floor covers them.
- */
+/** Keep work space when available; normal delivery can fall back to a saved-history pointer. */
 export function handoffRecoveryContext(threadId: string): string {
   return `Context handoff. Recover this conversation with t3_thread_read({threadId:${JSON.stringify(threadId)},view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For a long item pass itemId and textOffset=nextTextOffset until null. Prior context is not a new request.`;
 }
 
-// One UTF-8 byte per token is deliberately pessimistic for byte-based tokenizers,
-// including multilingual text. It is not a tokenizer or a guarantee for arbitrary
-// custom models. Unknown windows use a 128k allowance. 16k is reserved for tools
-// and later work when the known window still has that much free. A quarter of the
-// window used to be reserved as well, which refused handoffs that fit: a thread
-// at 212k of 258k has ~45k free, enough for the capped transcript. Current input
-// is never truncated. When that input itself fits, occupancy cannot consume the
-// recovery pointer.
+// Byte-based estimates are conservative, not tokenizer guarantees. Normal delivery keeps
+// a recovery pointer when the current input fits; preflight checks physical capacity.
 export function handoffBudget(input: {
   readonly tokenCap: number;
   readonly userText: string;
@@ -121,6 +111,8 @@ export function handoffBudget(input: {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly nativeContextEstimate: number;
   readonly modelContextWindow?: number | undefined;
+  /** Preflight recovery against physical occupancy, before applying the pointer fallback. */
+  readonly reserveRecoveryPointer?: boolean;
 }): number {
   const usage = input.providerThread.contextUsage;
   const window = Math.min(
@@ -132,15 +124,20 @@ export function handoffBudget(input: {
     Buffer.byteLength(JSON.stringify(input.userText)) + attachmentTokenAllowance(input.attachments);
   const userSlack = window - current;
   const recoveryFloor = userSlack >= HANDOFF_RECOVERY_BUDGET ? HANDOFF_RECOVERY_BUDGET : 0;
-  const native = Math.min(
-    usage?.usedTokens ?? input.nativeContextEstimate,
-    Math.max(0, userSlack - recoveryFloor),
-  );
+  const occupancy = usage?.usedTokens ?? input.nativeContextEstimate;
+  const native =
+    input.reserveRecoveryPointer === false
+      ? occupancy
+      : Math.min(occupancy, Math.max(0, userSlack - recoveryFloor));
   const slack = userSlack - native;
   // Flat once free space can no longer hold both the reserve and the pointer,
   // so adding occupancy never increases the allowance.
   const room =
-    slack >= recoveryFloor ? Math.max(recoveryFloor, slack - WORKING_RESERVE) : Math.max(0, slack);
+    input.reserveRecoveryPointer === false
+      ? Math.max(0, slack - WORKING_RESERVE)
+      : slack >= recoveryFloor
+        ? Math.max(recoveryFloor, slack - WORKING_RESERVE)
+        : Math.max(0, slack);
   return Math.max(
     0,
     Math.min(
