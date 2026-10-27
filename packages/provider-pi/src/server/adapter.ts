@@ -7,6 +7,7 @@ import { readToolOutputImage } from "@t3tools/shared/toolOutput";
 import * as Predicate from "effect/Predicate";
 import {
   ProviderDriverKind,
+  TurnTokenUsage,
   type ChatAttachment,
   type ModelSelection,
   type OrchestrationV2ExecutionNode,
@@ -86,6 +87,7 @@ import { PI_FILE_CHANGE_TOOLS } from "./mcpExtensionSource.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
+const sameTurnTokenUsage = Schema.toEquivalence(TurnTokenUsage);
 const DEFAULT_PI_SETTINGS = Schema.decodeSync(PiSettings)({});
 
 // Inherit Pi's configured defaultProvider/defaultModel without calling set_model.
@@ -784,8 +786,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           const cost = piReportedCost(usage, driverKind === "omp");
           if (cost !== undefined) turn.messageCosts.set(turn.messageOrdinal, cost);
           turn.messageUsage.set(turn.messageOrdinal, messageUsage);
-          if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(messageUsage))
-            return;
+          if (previous !== undefined && sameTurnTokenUsage(previous, messageUsage)) return;
           const usedTokens = nonNegativeInteger(usage, "totalTokens");
           const inputTokens = nonNegativeInteger(usage, "input");
           const cachedInputTokens = nonNegativeInteger(usage, "cacheRead");

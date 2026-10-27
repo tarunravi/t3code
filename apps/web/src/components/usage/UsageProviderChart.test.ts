@@ -43,6 +43,7 @@ describe("buildPeriodColumns", () => {
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
       { provider: "muse", value: 7 },
+      { provider: "omp", value: 0 },
       { provider: "zcode", value: 0 },
     ]);
   });
@@ -54,5 +55,4 @@ describe("fork usage chart", () => {
       "zcode",
     ]);
   });
-
 });
