@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ArchiveIcon,
+  AudioLinesIcon,
   FlaskConicalIcon,
   BotIcon,
   createLucideIcon,
@@ -108,6 +109,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/about": InfoIcon,
   "/settings/machines": LaptopIcon,
   "/settings/devbox": ServerIcon,
+  "/settings/voice-recordings": AudioLinesIcon,
   "/settings/archived": ArchiveIcon,
 };
 
@@ -384,25 +386,31 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       </h3>
                     ) : null}
                     <SidebarMenu>
-                      {group.paths.map((to) => {
-                        const Icon = SETTINGS_SECTION_ICONS[to];
-                        const isActive = activePath === to || activePath.startsWith(`${to}/`);
-                        return (
-                          <SidebarMenuItem key={to}>
-                            <SidebarMenuButton
-                              isActive={isActive}
-                              onClick={() => handleSectionClick(to)}
-                            >
-                              <Icon />
-                              <span
-                                className={cn("truncate", !compactSearchOpen && "max-md:sr-only")}
+                      {group.paths
+                        .filter(
+                          (to) =>
+                            (to !== "/settings/devbox" || devboxPanelEnabled) &&
+                            (to !== "/settings/machines" || isElectron),
+                        )
+                        .map((to) => {
+                          const Icon = SETTINGS_SECTION_ICONS[to];
+                          const isActive = activePath === to || activePath.startsWith(`${to}/`);
+                          return (
+                            <SidebarMenuItem key={to}>
+                              <SidebarMenuButton
+                                isActive={isActive}
+                                onClick={() => handleSectionClick(to)}
                               >
-                                {SETTINGS_SECTION_LABELS[to]}
-                              </span>
-                            </SidebarMenuButton>
-                          </SidebarMenuItem>
-                        );
-                      })}
+                                <Icon />
+                                <span
+                                  className={cn("truncate", !compactSearchOpen && "max-md:sr-only")}
+                                >
+                                  {SETTINGS_SECTION_LABELS[to]}
+                                </span>
+                              </SidebarMenuButton>
+                            </SidebarMenuItem>
+                          );
+                        })}
                     </SidebarMenu>
                   </div>
                 ))}

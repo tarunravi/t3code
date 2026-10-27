@@ -163,7 +163,7 @@ export const layerFromServices: Layer.Layer<
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
-        readonly admit: () => Effect.Effect<boolean, unknown>;
+        readonly admit: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
       }) {
         const { cwd, worktreePath, branch } = input;
         if (!(yield* input.admit())) return;
@@ -193,17 +193,25 @@ export const layerFromServices: Layer.Layer<
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const currentAttemptInStatus = (
-      input: { readonly threadId: ThreadId; readonly runId: RunId; readonly attemptId: OrchestrationV2RunAttempt["id"] },
+      input: {
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+        readonly attemptId: OrchestrationV2RunAttempt["id"];
+      },
       expectedStatus: OrchestrationV2Run["status"],
-    ) => projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
-      Effect.map((current) => {
-        const run = current.runs.find((candidate) => candidate.id === input.runId);
-        return current.thread.id === input.threadId &&
-          current.thread.preservationOnly !== true &&
-          run?.threadId === input.threadId &&
-          run.activeAttemptId === input.attemptId && run.status === expectedStatus;
-      }),
-    );
+    ) =>
+      projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
+        Effect.map((current) => {
+          const run = current.runs.find((candidate) => candidate.id === input.runId);
+          return (
+            current.thread.id === input.threadId &&
+            current.thread.preservationOnly !== true &&
+            run?.threadId === input.threadId &&
+            run.activeAttemptId === input.attemptId &&
+            run.status === expectedStatus
+          );
+        }),
+      );
     // Serialize admission with dispatch, never Git/provider I/O. Already-admitted
     // OS work cannot be undone by a later freeze.
     const admitCurrentAttemptInStatus = (
@@ -391,9 +399,15 @@ export const layerFromServices: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
-      const admitPreparation = () => admitCurrentAttemptInStatus({
-        threadId: input.threadId, runId, attemptId: attempt.id,
-      }, "starting");
+      const admitPreparation = () =>
+        admitCurrentAttemptInStatus(
+          {
+            threadId: input.threadId,
+            runId,
+            attemptId: attempt.id,
+          },
+          "starting",
+        );
       if (!(yield* admitPreparation())) return;
       const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
         function* (input: {
@@ -793,7 +807,10 @@ export const layerFromServices: Layer.Layer<
       const session = sessionResult.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
-        load: () => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
+        load: () => Effect.Effect<
+          OrchestrationV2ProviderThread,
+          ProviderAdapter.ProviderAdapterV2Error
+        >,
       ) {
         if (!(yield* admitPreparation())) return undefined;
         const loaded = yield* Effect.result(Effect.suspend(load));
@@ -1347,14 +1364,15 @@ export const layerFromServices: Layer.Layer<
             ...(session.injectHistory === undefined
               ? {}
               : {
-                  inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
-                    Effect.gen(function* () {
-                      if (!(yield* isCurrentAttemptInStatus("running"))) return false;
-                      return yield* session.injectHistory!({
-                        providerThread: runningProviderThread,
-                        ...history,
-                      });
-                    }),
+                  inject: Effect.fn("ProviderTurnStartService.inject")(function* (
+                    history: ProviderAdapter.ProviderAdapterV2HistoricalContext,
+                  ) {
+                    if (!(yield* isCurrentAttemptInStatus("running"))) return false;
+                    return yield* session.injectHistory!({
+                      providerThread: runningProviderThread,
+                      ...history,
+                    });
+                  }),
                 }),
             persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
               if (!(yield* isCurrentAttemptInStatus("running"))) return;

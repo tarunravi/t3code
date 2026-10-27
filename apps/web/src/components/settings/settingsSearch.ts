@@ -37,6 +37,7 @@ export type SettingsPath =
   | "/settings/labs"
   | "/settings/about"
   | "/settings/machines"
+  | "/settings/voice-recordings"
   | "/settings/devbox"
   | "/settings/archived";
 
@@ -106,6 +107,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/about": "About",
   "/settings/machines": "Machines",
   "/settings/devbox": "Devbox",
+  "/settings/voice-recordings": "Voice recordings",
   "/settings/archived": "Archive",
 };
 
@@ -118,6 +120,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: null,
     paths: [
       "/settings/general",
+      "/settings/voice-recordings",
       "/settings/appearance",
       "/settings/chat",
       "/settings/diffs",
@@ -139,7 +142,10 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: "Code",
     paths: ["/settings/projects", "/settings/source-control", "/settings/worktrees"],
   },
-  { heading: "Connections", paths: ["/settings/connections", "/settings/access"] },
+  {
+    heading: "Connections",
+    paths: ["/settings/connections", "/settings/access", "/settings/machines", "/settings/devbox"],
+  },
   {
     heading: null,
     paths: ["/settings/maintenance", "/settings/labs", "/settings/about", "/settings/archived"],
@@ -1200,6 +1206,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/access": "connections",
   "/settings/machines": null,
   "/settings/devbox": null,
+  "/settings/voice-recordings": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

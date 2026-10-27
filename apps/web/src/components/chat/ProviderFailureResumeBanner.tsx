@@ -14,7 +14,6 @@ export function providerFailureResumeBannerItem(props: {
   return {
     id: `provider-failure-resume:${props.runId}`,
     variant: "warning",
-    priority: "urgent",
     icon: <RotateCcwIcon />,
     title: PROVIDER_FAILURE_RESUME_TITLE,
     actions: (

@@ -1410,125 +1410,269 @@ it.effect("dispatch records the command outcome and its duration", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-
-it.effect.each(["interrupted", "running"] as const)("preserves %s history while allowing retirement but denying execution", (status) =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const threadId = ThreadId.make("thread:durable-preservation");
-    yield* orchestrator.dispatch({ type: "thread.create", commandId: CommandId.make("create-preserved"),
-      threadId, projectId: ProjectId.make("project:preserved"), title: "Preserved source", modelSelection,
-      runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
-      createdBy: "user", creationSource: "web" });
-    const now = yield* DateTime.now;
-    const preservedRun = {
-      id: RunId.make("run:preserved-history"), threadId, ordinal: 1,
-      providerInstanceId: instanceId, modelSelection, providerThreadId: null,
-      userMessageId: MessageId.make("message:preserved-history"), rootNodeId: NodeId.make("node:preserved-history"),
-      activeAttemptId: null, status, requestedAt: now, startedAt: now,
-      completedAt: status === "interrupted" ? now : null, checkpointId: null, contextHandoffId: null,
-    };
-    yield* projections.apply({ id: EventId.make("preserved-history"), type: "run.created",
-      threadId, occurredAt: now, payload: preservedRun });
-    const before = yield* projections.getThread(threadId);
-    assert.isUndefined(before.preservationOnly);
-    yield* orchestrator.dispatch({ type: "thread.metadata.update", threadId,
-      commandId: CommandId.make("freeze-preserved"), preservationOnly: true });
-    assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    yield* outbox.enqueue([{ id: "effect:frozen-capture", commandId: CommandId.make("frozen-capture"),
-      threadId, request: { type: "checkpoint.capture", runId: RunId.make("frozen-run"),
-        scopeId: "scope:frozen" as never } }]);
-    for (let i = 0; i < 2; i++) {
-      yield* outbox.reconcileAfterProcessLoss;
-      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "frozen-test", leaseDurationMs: 1000 })));
-    }
-    assert.equal(Option.getOrThrow(yield* outbox.get("effect:frozen-capture")).status, "pending");
-    // A late event carrying a pre-freeze snapshot must not clear durable intent.
-    yield* projections.apply({ id: EventId.make("late-pre-freeze-metadata"),
-      type: "thread.metadata-updated", threadId, occurredAt: yield* DateTime.now,
-      payload: before });
-    assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
-    const command = { type: "message.dispatch" as const, commandId: CommandId.make("automatic-preserved"),
-      threadId, messageId: MessageId.make("message:automatic-preserved"), text: "Must not run",
-      attachments: [], dispatchMode: { type: "queue_after_active" as const },
-      createdBy: "agent" as const, creationSource: "server" as const };
-    for (let i = 0; i < 2; i++) {
-      const result = yield* orchestrator.dispatch(command).pipe(Effect.result);
-      assert.isTrue(Result.isFailure(result));
-    }
-    yield* orchestrator.dispatch({ type: "thread.visit", threadId,
-      commandId: CommandId.make("preserved-visit"), visitedAt: DateTime.formatIso(yield* DateTime.now) });
-    for (const type of ["thread.settle", "thread.archive"] as const) {
-      if (type === "thread.archive") {
-        for (const [index, queuedStatus] of (["queued", "preparing"] as const).entries()) {
-          yield* projections.apply({ id: EventId.make(`preserved-${queuedStatus}`), type: "run.created",
-            threadId, occurredAt: now, payload: { ...preservedRun,
-              id: RunId.make(`run:preserved-${queuedStatus}`), ordinal: index + 2,
-              status: queuedStatus, startedAt: null, completedAt: null } });
-        }
-      }
-      yield* orchestrator.dispatch({ type, threadId, commandId: CommandId.make(`preserved-${type}`) });
+it.effect.each(["interrupted", "running"] as const)(
+  "preserves %s history while allowing retirement but denying execution",
+  (status) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:durable-preservation");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-preserved"),
+        threadId,
+        projectId: ProjectId.make("project:preserved"),
+        title: "Preserved source",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const now = yield* DateTime.now;
+      const preservedRun = {
+        id: RunId.make("run:preserved-history"),
+        threadId,
+        ordinal: 1,
+        providerInstanceId: instanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message:preserved-history"),
+        rootNodeId: NodeId.make("node:preserved-history"),
+        activeAttemptId: null,
+        status,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: status === "interrupted" ? now : null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* projections.apply({
+        id: EventId.make("preserved-history"),
+        type: "run.created",
+        threadId,
+        occurredAt: now,
+        payload: preservedRun,
+      });
+      const before = yield* projections.getThread(threadId);
+      assert.isUndefined(before.preservationOnly);
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        threadId,
+        commandId: CommandId.make("freeze-preserved"),
+        preservationOnly: true,
+      });
       assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
-      assert.deepEqual(yield* outbox.listByCommandId(CommandId.make(`preserved-${type}`)), []);
-    }
-    assert.deepEqual(yield* outbox.listByCommandId(CommandId.make("preserved-visit")), []);
-    assert.isTrue(Result.isFailure(yield* orchestrator.dispatch({ type: "queue.resume", threadId,
-      commandId: CommandId.make("blocked-preserved-resume") }).pipe(Effect.result)));
-    assert.isTrue(Result.isFailure(yield* orchestrator.dispatch({ type: "checkpoint.rollback", threadId,
-      commandId: CommandId.make("blocked-preserved-rollback"), scopeId: "scope:preserved" as never,
-      checkpointId: "checkpoint:preserved" as never }).pipe(Effect.result)));
-    assert.isTrue(Result.isFailure(yield* orchestrator.dispatch({ type: "thread.metadata.update", threadId,
-      commandId: CommandId.make("blocked-preserved-title-provider"), regenerateTitle: true }).pipe(Effect.result)));
-    for (const type of ["thread.delete", "thread.unarchive"] as const) {
-      assert.isTrue(Result.isFailure(yield* orchestrator.dispatch({ type, threadId,
-        commandId: CommandId.make(`blocked-preserved-${type}`) }).pipe(Effect.result)));
-    }
-    const frozenShell = yield* projections.getThread(threadId);
-    assert.isNotNull(frozenShell.archivedAt);
-    assert.equal(frozenShell.settledOverride, "settled");
-    assert.isNotNull(frozenShell.lastVisitedAt);
-    const sql = yield* SqlClient.SqlClient;
-    const pending = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox`;
-    assert.equal(pending[0]?.count, 1); // Only the pre-existing denied checkpoint, no external work.
-    const records = yield* projections.getThreadRecords(threadId, ["runs", "messages"]);
-    assert.deepEqual(records.runs.find((run) => run.id === preservedRun.id), preservedRun);
-    assert.equal(records.runs.length, 3);
-    assert.deepEqual(records.runs.filter((run) => run.id !== preservedRun.id).map((run) => run.status),
-      ["cancelled", "cancelled"]);
-    assert.equal(records.messages.length, 0);
-    assert.equal(records.thread.id, before.id);
-    assert.equal(records.thread.title, before.title);
-    assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
-  }).pipe(Effect.provide(layerTest)),
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* outbox.enqueue([
+        {
+          id: "effect:frozen-capture",
+          commandId: CommandId.make("frozen-capture"),
+          threadId,
+          request: {
+            type: "checkpoint.capture",
+            runId: RunId.make("frozen-run"),
+            scopeId: "scope:frozen" as never,
+          },
+        },
+      ]);
+      for (let i = 0; i < 2; i++) {
+        yield* outbox.reconcileAfterProcessLoss;
+        assert.isTrue(
+          Option.isNone(
+            yield* outbox.claimNext({ workerId: "frozen-test", leaseDurationMs: 1000 }),
+          ),
+        );
+      }
+      assert.equal(Option.getOrThrow(yield* outbox.get("effect:frozen-capture")).status, "pending");
+      // A late event carrying a pre-freeze snapshot must not clear durable intent.
+      yield* projections.apply({
+        id: EventId.make("late-pre-freeze-metadata"),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: yield* DateTime.now,
+        payload: before,
+      });
+      assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
+      const command = {
+        type: "message.dispatch" as const,
+        commandId: CommandId.make("automatic-preserved"),
+        threadId,
+        messageId: MessageId.make("message:automatic-preserved"),
+        text: "Must not run",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" as const },
+        createdBy: "agent" as const,
+        creationSource: "server" as const,
+      };
+      for (let i = 0; i < 2; i++) {
+        const result = yield* orchestrator.dispatch(command).pipe(Effect.result);
+        assert.isTrue(Result.isFailure(result));
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.visit",
+        threadId,
+        commandId: CommandId.make("preserved-visit"),
+        visitedAt: DateTime.formatIso(yield* DateTime.now),
+      });
+      for (const type of ["thread.settle", "thread.archive"] as const) {
+        if (type === "thread.archive") {
+          for (const [index, queuedStatus] of (["queued", "preparing"] as const).entries()) {
+            yield* projections.apply({
+              id: EventId.make(`preserved-${queuedStatus}`),
+              type: "run.created",
+              threadId,
+              occurredAt: now,
+              payload: {
+                ...preservedRun,
+                id: RunId.make(`run:preserved-${queuedStatus}`),
+                ordinal: index + 2,
+                status: queuedStatus,
+                startedAt: null,
+                completedAt: null,
+              },
+            });
+          }
+        }
+        yield* orchestrator.dispatch({
+          type,
+          threadId,
+          commandId: CommandId.make(`preserved-${type}`),
+        });
+        assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
+        assert.deepEqual(yield* outbox.listByCommandId(CommandId.make(`preserved-${type}`)), []);
+      }
+      assert.deepEqual(yield* outbox.listByCommandId(CommandId.make("preserved-visit")), []);
+      assert.isTrue(
+        Result.isFailure(
+          yield* orchestrator
+            .dispatch({
+              type: "queue.resume",
+              threadId,
+              commandId: CommandId.make("blocked-preserved-resume"),
+            })
+            .pipe(Effect.result),
+        ),
+      );
+      assert.isTrue(
+        Result.isFailure(
+          yield* orchestrator
+            .dispatch({
+              type: "checkpoint.rollback",
+              threadId,
+              commandId: CommandId.make("blocked-preserved-rollback"),
+              scopeId: "scope:preserved" as never,
+              checkpointId: "checkpoint:preserved" as never,
+            })
+            .pipe(Effect.result),
+        ),
+      );
+      assert.isTrue(
+        Result.isFailure(
+          yield* orchestrator
+            .dispatch({
+              type: "thread.metadata.update",
+              threadId,
+              commandId: CommandId.make("blocked-preserved-title-provider"),
+              regenerateTitle: true,
+            })
+            .pipe(Effect.result),
+        ),
+      );
+      for (const type of ["thread.delete", "thread.unarchive"] as const) {
+        assert.isTrue(
+          Result.isFailure(
+            yield* orchestrator
+              .dispatch({ type, threadId, commandId: CommandId.make(`blocked-preserved-${type}`) })
+              .pipe(Effect.result),
+          ),
+        );
+      }
+      const frozenShell = yield* projections.getThread(threadId);
+      assert.isNotNull(frozenShell.archivedAt);
+      assert.equal(frozenShell.settledOverride, "settled");
+      assert.isNotNull(frozenShell.lastVisitedAt);
+      const sql = yield* SqlClient.SqlClient;
+      const pending = yield* sql<{
+        count: number;
+      }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox`;
+      assert.equal(pending[0]?.count, 1); // Only the pre-existing denied checkpoint, no external work.
+      const records = yield* projections.getThreadRecords(threadId, ["runs", "messages"]);
+      assert.deepEqual(
+        records.runs.find((run) => run.id === preservedRun.id),
+        preservedRun,
+      );
+      assert.equal(records.runs.length, 3);
+      assert.deepEqual(
+        records.runs.filter((run) => run.id !== preservedRun.id).map((run) => run.status),
+        ["cancelled", "cancelled"],
+      );
+      assert.equal(records.messages.length, 0);
+      assert.equal(records.thread.id, before.id);
+      assert.equal(records.thread.title, before.title);
+      assert.isTrue((yield* projections.getThread(threadId)).preservationOnly);
+    }).pipe(Effect.provide(layerTest)),
 );
-
 
 it.effect("claims a recovery command once and rechecks admission inside the dispatch gate", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const threadId = ThreadId.make("thread:atomic-recovery-admission");
-    yield* orchestrator.dispatch({ type: "thread.create", commandId: CommandId.make("create-atomic-recovery"),
-      threadId, projectId: ProjectId.make("project:atomic-recovery"), title: "Atomic admission", modelSelection,
-      runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
-      createdBy: "user", creationSource: "web" });
-    const command = { type: "message.dispatch" as const, commandId: CommandId.make("same-recovery-episode"),
-      threadId, messageId: MessageId.make("same-recovery-message"), text: "Resume only if eligible",
-      attachments: [], dispatchMode: { type: "queue_after_active" as const },
-      createdBy: "agent" as const, creationSource: "server" as const };
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-atomic-recovery"),
+      threadId,
+      projectId: ProjectId.make("project:atomic-recovery"),
+      title: "Atomic admission",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const command = {
+      type: "message.dispatch" as const,
+      commandId: CommandId.make("same-recovery-episode"),
+      threadId,
+      messageId: MessageId.make("same-recovery-message"),
+      text: "Resume only if eligible",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" as const },
+      createdBy: "agent" as const,
+      creationSource: "server" as const,
+    };
     let gateReads = 0;
     const denied = yield* orchestrator.dispatch(command).pipe(
-      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate,
-        { check: Effect.sync(() => { gateReads++; return false; }) }), Effect.result);
+      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate, {
+        check: Effect.sync(() => {
+          gateReads++;
+          return false;
+        }),
+      }),
+      Effect.result,
+    );
     assert.isTrue(Result.isFailure(denied));
     assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 0);
     const first = yield* orchestrator.dispatch(command).pipe(
-      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate,
-        { check: Effect.sync(() => { gateReads++; return true; }) }));
-    const replay = yield* orchestrator.dispatch(command).pipe(
-      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate,
-        { check: Effect.die("Durable receipt must coalesce this episode after restart") }));
-    assert.deepEqual(replay, first);
+      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate, {
+        check: Effect.sync(() => {
+          gateReads++;
+          return true;
+        }),
+      }),
+    );
+    const replay = yield* orchestrator
+      .dispatch(command)
+      .pipe(
+        Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate, {
+          check: Effect.die("Durable receipt must coalesce this episode after restart"),
+        }),
+      );
+    assert.deepEqual(replay, { ...first, replayed: true });
     assert.equal(gateReads, 2);
     assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
   }).pipe(Effect.provide(layerTest)),

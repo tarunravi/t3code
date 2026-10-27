@@ -399,8 +399,6 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     const thread = { threadId: "thread-null-arguments" };
     yield* callTool("t3_thread_read", thread);
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
-    yield* callTool("delegate_task", { task: "Inspect", target: {} });
-    yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
     // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
     // delegate_task advertises raw JSON Schema and its service decodes the arguments.

@@ -40,7 +40,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -7553,10 +7552,14 @@ it.layer(layerTest)("provider fallback", (it) => {
   );
 });
 
-
-it.layer(Layer.mergeAll(layerTest, layerServerConfig, layerGitWorkflowTest, layerProjectServiceTest).pipe(Layer.provideMerge(layerPlatformTest)))(
-  "R1-F1 real runtime startup assembly", (it) => {
-    it.effect.each(["exists", "policy"] as const)("committed freeze during %s prevents new startup IO", boundary =>
+it.layer(
+  Layer.mergeAll(layerTest, layerServerConfig, layerGitWorkflowTest, layerProjectServiceTest).pipe(
+    Layer.provideMerge(layerPlatformTest),
+  ),
+)("R1-F1 real runtime startup assembly", (it) => {
+  it.effect.each(["exists", "policy"] as const)(
+    "committed freeze during %s prevents new startup IO",
+    (boundary) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -7571,52 +7574,112 @@ it.layer(Layer.mergeAll(layerTest, layerServerConfig, layerGitWorkflowTest, laye
         const projectId = ProjectId.make(`${threadId}:project`);
         const worktreePath = `${config.worktreesDir}/project/freeze`;
         yield* orchestrator.dispatch({
-          type: "thread.create", commandId: CommandId.make(`${threadId}:create`),
-          threadId, projectId, title: "Late freeze", modelSelection,
-          runtimeMode: "full-access", interactionMode: "default", branch: "feature/freeze",
-          worktreePath, createdBy: "user", creationSource: "web",
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId,
+          title: "Late freeze",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/freeze",
+          worktreePath,
+          createdBy: "user",
+          creationSource: "web",
         });
         yield* orchestrator.dispatch({
-          type: "message.dispatch", commandId: CommandId.make(`${threadId}:message`),
-          threadId, messageId: MessageId.make(`${threadId}:message`), text: "Continue",
-          attachments: [], dispatchMode: {type: "start_immediately"},
-          createdBy: "user", creationSource: "web",
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
         });
         const entered = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        const gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
+        const gate = Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
         const oldSnapshot = providerInstance.snapshot.getSnapshot;
-        const exists = vi.spyOn(fs, "exists").mockImplementation(() =>
-          boundary === "exists" ? gate.pipe(Effect.as(false)) : Effect.succeed(true));
-        const realPath = vi.spyOn(fs, "realPath").mockImplementation(target => Effect.succeed(target));
+        const exists = vi
+          .spyOn(fs, "exists")
+          .mockImplementation(() =>
+            boundary === "exists" ? gate.pipe(Effect.as(false)) : Effect.succeed(true),
+          );
+        const realPath = vi
+          .spyOn(fs, "realPath")
+          .mockImplementation((target) => Effect.succeed(target));
         const prune = vi.spyOn(git, "pruneWorktrees").mockReturnValue(Effect.void);
         const create = vi.spyOn(git, "createWorktree").mockReturnValue(Effect.succeed({} as never));
-        const getProject = vi.spyOn(projects, "getById").mockReturnValue(Effect.succeed(Option.some({workspaceRoot: "/fake/project"} as never)));
-        const open = vi.spyOn(sessions, "open").mockReturnValue(Effect.die("New provider open after freeze"));
+        const getProject = vi
+          .spyOn(projects, "getById")
+          .mockReturnValue(Effect.succeedSome({ workspaceRoot: "/fake/project" } as never));
+        const open = vi
+          .spyOn(sessions, "open")
+          .mockReturnValue(Effect.die("New provider open after freeze"));
         const withLock = executor.withLock;
         const observeLock: typeof withLock = (key, effect) => withLock(key, effect);
         const lock = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
-        if (boundary === "policy") Object.defineProperty(providerInstance.snapshot, "getSnapshot", {value: gate.pipe(Effect.as({})), configurable: true});
+        if (boundary === "policy")
+          Object.defineProperty(providerInstance.snapshot, "getSnapshot", {
+            value: gate.pipe(Effect.as({})),
+            configurable: true,
+          });
         yield* Effect.gen(function* () {
-          const startup = yield* worker.runOnce.pipe(Effect.forkChild({startImmediately: true}));
-          yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(startup).pipe(Effect.andThen(Effect.die("Real startup did not reach barrier"))));
+          const startup = yield* worker.runOnce.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(
+            Deferred.await(entered),
+            Fiber.join(startup).pipe(
+              Effect.andThen(Effect.die("Real startup did not reach barrier")),
+            ),
+          );
           const admissionsBeforeFreeze = lock.mock.calls.filter(([key]) => key === threadId).length;
-          yield* orchestrator.dispatch({type: "thread.metadata.update", commandId: CommandId.make(`${threadId}:freeze`), threadId, preservationOnly: true});
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${threadId}:freeze`),
+            threadId,
+            preservationOnly: true,
+          });
           const frozen = yield* projections.getThreadProjection(threadId);
           yield* Deferred.succeed(release, undefined);
           yield* Fiber.join(startup);
-          assert.deepEqual({prune: prune.mock.calls.length, create: create.mock.calls.length, open: open.mock.calls.length}, {prune: 0, create: 0, open: 0});
-          assert.isAbove(admissionsBeforeFreeze, 0, "startup must use the actual shared dispatch executor");
+          assert.deepEqual(
+            {
+              prune: prune.mock.calls.length,
+              create: create.mock.calls.length,
+              open: open.mock.calls.length,
+            },
+            { prune: 0, create: 0, open: 0 },
+          );
+          assert.isAbove(
+            admissionsBeforeFreeze,
+            0,
+            "startup must use the actual shared dispatch executor",
+          );
           const after = yield* projections.getThreadProjection(threadId);
           assert.deepEqual(after.runs, frozen.runs);
           assert.deepEqual(after.attempts, frozen.attempts);
           assert.isTrue(after.thread.preservationOnly);
-        }).pipe(Effect.ensuring(Effect.sync(() => {
-          exists.mockRestore(); realPath.mockRestore(); prune.mockRestore(); create.mockRestore();
-          getProject.mockRestore(); open.mockRestore(); lock.mockRestore();
-          Object.defineProperty(providerInstance.snapshot, "getSnapshot", {value: oldSnapshot, configurable: true});
-        })));
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              exists.mockRestore();
+              realPath.mockRestore();
+              prune.mockRestore();
+              create.mockRestore();
+              getProject.mockRestore();
+              open.mockRestore();
+              lock.mockRestore();
+              Object.defineProperty(providerInstance.snapshot, "getSnapshot", {
+                value: oldSnapshot,
+                configurable: true,
+              });
+            }),
+          ),
+        );
       }),
-    );
-  },
-);
+  );
+});

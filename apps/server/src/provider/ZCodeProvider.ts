@@ -88,7 +88,7 @@ export const readZCodeConfiguredModel = Effect.fn("readZCodeConfiguredModel")(fu
         ? { ...ZCODE_DEFAULT_MODEL, name: `${providerId}/${modelId} (configured)` }
         : ZCODE_DEFAULT_MODEL;
     }),
-    Effect.catch(() => Effect.succeed(ZCODE_DEFAULT_MODEL)),
+    Effect.orElseSucceed(() => ZCODE_DEFAULT_MODEL),
     Effect.timeoutOption(2_000),
   );
   return Option.getOrElse(discovered, () => ZCODE_DEFAULT_MODEL);

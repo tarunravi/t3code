@@ -3,7 +3,7 @@ import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-e
 import { PencilIcon } from "lucide-react";
 import { useSideChatActions } from "./chat/SideChatPanel";
 import { messageRewriteDraftTarget } from "./ChatView.logic";
-import { Button, InlineButton } from "./ui/button";
+import { Button } from "./ui/button";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -44,7 +44,6 @@ import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
-import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   isResumableProviderFailure,
@@ -142,7 +141,6 @@ import {
   findRevertCheckpoint,
   hasActionableProposedPlan,
   isLatestRunSettled,
-  canRestoreFilesForRun,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import { useWorkspaceMutationRefresh } from "../hooks/useWorkspaceMutationRefresh";
@@ -494,7 +492,7 @@ export default function ChatView(props: ChatViewProps) {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
         });
-  const {discard: discardSideChat} = useSideChatActions(environmentId);
+  const { discard: discardSideChat } = useSideChatActions(environmentId);
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
@@ -2669,7 +2667,9 @@ export default function ChatView(props: ChatViewProps) {
     onRevertTimelineTurnStable,
     onTimelineRollbackCheckpointStable,
   } = useTimelineRewind({
-    turnDiffSummaries, cancelQueuedEdit: queuedRunEdit.cancelEdit, setRewritingMessage,
+    turnDiffSummaries,
+    cancelQueuedEdit: queuedRunEdit.cancelEdit,
+    setRewritingMessage,
     environmentId,
     routeThreadRef,
     routeThreadKey,
@@ -2747,16 +2747,17 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   });
   const onProviderFailureResume = useStableCallback(() => void onResume());
-  const composerBannerItemsWithResume = providerFailureResumeRunId === null
-    ? composerBannerItems
-    : [
-        providerFailureResumeBannerItem({
-          runId: providerFailureResumeRunId,
-          disabled: isSendBusy || isResuming || isConnecting,
-          onResume: onProviderFailureResume,
-        }),
-        ...composerBannerItems,
-      ];
+  const composerBannerItemsWithResume =
+    providerFailureResumeRunId === null
+      ? composerBannerItems
+      : [
+          providerFailureResumeBannerItem({
+            runId: providerFailureResumeRunId,
+            disabled: isSendBusy || isResuming || isConnecting,
+            onResume: onProviderFailureResume,
+          }),
+          ...composerBannerItems,
+        ];
   const onImplementPlanInNewThread = useImplementPlanInNewThread({
     environmentId,
     routeThreadKey,
@@ -2774,7 +2775,9 @@ export default function ChatView(props: ChatViewProps) {
     defaultRuntimeMode,
   });
   const { onSend } = useComposerSend({
-    routeThreadRef, rewritingMessage, setRewritingMessage,
+    routeThreadRef,
+    rewritingMessage,
+    setRewritingMessage,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3329,7 +3332,7 @@ export default function ChatView(props: ChatViewProps) {
                 workflowOpening={workflowOpening}
                 onForkFromRun={onForkFromRunStable}
                 onRollbackCheckpoint={onTimelineRollbackCheckpointStable}
-                supportsConversationRollback={supportsConversationRollback}
+                supportsConversationRollback={canOperateThread}
                 threadStartCheckpointReady={threadStartCheckpointReady}
                 availableRevertTurnCounts={availableRevertTurnCounts}
                 onRevertToTurnCount={onRevertTimelineTurnStable}

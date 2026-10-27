@@ -38,13 +38,19 @@ export function matchComposerThreadItems(input: {
       shell.archivedAt === null &&
       shell.lineage.relationshipToParent !== "subagent",
   );
-  return rankSearchItems(candidates, (shell, options) =>
-    scoreThreadSearch(query, threadSearchSubject(shell, null), input.now, {
-      ...options,
-      picks: false,
-    }),
-  )
-    .sort((left, right) => Number(right.item.environmentId === input.environmentId) - Number(left.item.environmentId === input.environmentId))
+  return [
+    ...rankSearchItems(candidates, (shell, options) =>
+      scoreThreadSearch(query, threadSearchSubject(shell, null), input.now, {
+        ...options,
+        picks: false,
+      }),
+    ),
+  ]
+    .sort(
+      (left, right) =>
+        Number(right.item.environmentId === input.environmentId) -
+        Number(left.item.environmentId === input.environmentId),
+    )
     .slice(0, COMPOSER_THREAD_RESULT_LIMIT)
     .map(({ item: shell }) => ({
       id: `thread:${shell.environmentId}:${shell.id}`,

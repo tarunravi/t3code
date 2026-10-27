@@ -856,9 +856,7 @@ function threadTitle(input: {
 }
 
 export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.role === undefined || input.role === "general"
-    ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
+  return input.task;
 }
 
 function threadSettlement(
@@ -1616,24 +1614,41 @@ const make = Effect.gen(function* () {
     const workState =
       task.result !== null ? "result_available" : heldForRestart ? "working" : taskWorkState;
     const observedRun = taskResultRun ?? childRun;
-    const attempt = childControls.attempts?.find((candidate) =>
-      candidate.id === observedRun?.activeAttemptId && candidate.runId === observedRun?.id &&
-      candidate.providerInstanceId === observedRun?.providerInstanceId &&
-      candidate.providerThreadId === observedRun?.providerThreadId);
-    const turn = childControls.providerTurns?.find((candidate) =>
-      candidate.id === attempt?.providerTurnId && candidate.runAttemptId === attempt?.id &&
-      candidate.providerThreadId === attempt?.providerThreadId);
-    const providerThread = childControls.providerThreads.find((candidate) =>
-      candidate.id === attempt?.providerThreadId && candidate.appThreadId === task.childThreadId &&
-      candidate.providerInstanceId === observedRun?.providerInstanceId);
-    const session = childControls.providerSessions?.find((candidate) =>
-      candidate.id === providerThread?.providerSessionId &&
-      candidate.providerInstanceId === observedRun?.providerInstanceId);
-    const ownsStartedTurn = observedRun?.threadId === task.childThreadId &&
-      observedRun?.startedAt != null && attempt?.startedAt != null &&
-      attempt.status === "running" && turn?.status === "running" &&
-      providerThread?.status === "active" && session !== undefined &&
-      session.status !== "starting" && session.status !== "error" && session.status !== "stopped" &&
+    const attempt = childControls.attempts?.find(
+      (candidate) =>
+        candidate.id === observedRun?.activeAttemptId &&
+        candidate.runId === observedRun?.id &&
+        candidate.providerInstanceId === observedRun?.providerInstanceId &&
+        candidate.providerThreadId === observedRun?.providerThreadId,
+    );
+    const turn = childControls.providerTurns?.find(
+      (candidate) =>
+        candidate.id === attempt?.providerTurnId &&
+        candidate.runAttemptId === attempt?.id &&
+        candidate.providerThreadId === attempt?.providerThreadId,
+    );
+    const providerThread = childControls.providerThreads.find(
+      (candidate) =>
+        candidate.id === attempt?.providerThreadId &&
+        candidate.appThreadId === task.childThreadId &&
+        candidate.providerInstanceId === observedRun?.providerInstanceId,
+    );
+    const session = childControls.providerSessions?.find(
+      (candidate) =>
+        candidate.id === providerThread?.providerSessionId &&
+        candidate.providerInstanceId === observedRun?.providerInstanceId,
+    );
+    const ownsStartedTurn =
+      observedRun?.threadId === task.childThreadId &&
+      observedRun?.startedAt != null &&
+      attempt?.startedAt != null &&
+      attempt.status === "running" &&
+      turn?.status === "running" &&
+      providerThread?.status === "active" &&
+      session !== undefined &&
+      session.status !== "starting" &&
+      session.status !== "error" &&
+      session.status !== "stopped" &&
       threadManagement.isProviderSessionLive !== undefined &&
       (yield* threadManagement.isProviderSessionLive(session.id));
     const status =
@@ -1649,10 +1664,13 @@ const make = Effect.gen(function* () {
         : workState === "result_available"
           ? taskStatusForRun(taskResultRun ?? childRun)
           : observedRun?.status === "queued" ||
-              (observedRun !== undefined && observedRun.startedAt === null &&
+              (observedRun !== undefined &&
+                observedRun.startedAt === null &&
                 ["preparing", "starting", "running"].includes(observedRun.status))
             ? "queued"
-            : ownsStartedTurn ? "running" : "waiting";
+            : ownsStartedTurn
+              ? "running"
+              : "waiting";
     const derivedResult =
       task.result !== null
         ? task.result

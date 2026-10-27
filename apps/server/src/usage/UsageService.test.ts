@@ -1132,7 +1132,7 @@ describe("UsageService", () => {
           assert.strictEqual(
             summary.sources.find((source) => source.fingerprint.provider === "pi")?.fingerprint
               .resolvedHomePath,
-            dir,
+            yield* Effect.promise(() => NodeFSP.realpath(dir)),
           );
         }).pipe(
           Effect.scoped,
@@ -2133,14 +2133,26 @@ describe("UsageService", () => {
           yield* Effect.addFinalizer(() => Effect.sync(() => open.mockRestore()));
           const first = yield* UsageService.make;
           const cold = yield* first.readSummary(WINDOW);
-          assert.isTrue(open.mock.calls.some(([path]) => path === transcript));
+          assert.isTrue(
+            open.mock.calls.some(
+              ([path]) =>
+                NodePath.resolve(String(path)).replace(/^\/private\//, "/") ===
+                transcript.replace(/^\/private\//, "/"),
+            ),
+          );
           verify(cold, 20, 20, 1);
           yield* first.awaitPersisted;
           const restarted = yield* UsageService.make;
           open.mockClear();
           verify(yield* first.readSummary(WINDOW), 20, 20, 1);
           verify(yield* restarted.readSummary(WINDOW), 20, 20, 1);
-          assert.isFalse(open.mock.calls.some(([path]) => path === transcript));
+          assert.isFalse(
+            open.mock.calls.some(
+              ([path]) =>
+                NodePath.resolve(String(path)).replace(/^\/private\//, "/") ===
+                transcript.replace(/^\/private\//, "/"),
+            ),
+          );
           open.mockRestore();
 
           const append = "\n" + counted(10, 2, 140, 30) + "\n";
