@@ -22,12 +22,15 @@ agent-written summary.
 A handoff must leave room for existing provider context, your request and attachments, instructions,
 tools, and subsequent work. T3 Code sizes the imported transcript to the selected model's known
 context window, leaving 16,000 tokens for tools and later work when that much is free. Messages that
-still do not fit are omitted whole. If even a short transcript does not fit, the handoff is a pointer
-that tells the model to reread the saved thread with `t3_thread_read` instead of failing the turn.
+still do not fit are omitted whole. If a short transcript does not fit, the handoff can point the
+agent to saved history through `t3_thread_read` instead.
 
-T3 Code reports an error only when your current request and attachments do not fit in the known
-window. That request is not truncated. Compact the target conversation or select a larger-context
-model before trying again.
+If the target conversation has no room for the request and handoff, T3 Code starts a fresh provider
+conversation with bounded saved history and sends your request automatically. If the request and
+attachments leave too little room even there, shorten the request or select a larger-context model.
+T3 Code never shortens your request to make it fit.
+
+Recovery leaves running background work intact. Let it finish or stop it before retrying the handoff.
 
 Server operators can set `T3CODE_CONTEXT_HANDOFF_TOKEN_CAP` to change the initial history allowance
 (default 16,000; clamped to 1,024–64,000). This is an upper bound, not a provider context-window
