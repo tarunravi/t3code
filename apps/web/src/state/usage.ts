@@ -235,7 +235,9 @@ export function useUsage(
     });
   }
   const kept =
-    lastAnswered?.selection === selectedEnvironmentIds && lastAnswered.hidden === hiddenProviders
+    lastAnswered?.selection === selectedEnvironmentIds &&
+    lastAnswered.hidden === hiddenProviders &&
+    lastAnswered.window.filters === input.filters
       ? lastAnswered
       : null;
   const shown =
