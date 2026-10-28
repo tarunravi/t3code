@@ -643,34 +643,43 @@ describe("latestProviderTurnForAttempt", () => {
   });
 });
 
-
 describe("explicit preservation compatibility", () => {
   it("defaults legacy absence to executable and round-trips opt-in intent", () => {
     for (const thread of [OrchestrationV2AppThread, OrchestrationV2AppThreadJson]) {
       const codec = Schema.Struct({ preservationOnly: thread.fields.preservationOnly });
       const decode = Schema.decodeUnknownSync(codec);
       expect(decode({})).toEqual({});
-      expect(Schema.encodeSync(codec)(decode({ preservationOnly: true }))).toEqual({ preservationOnly: true });
+      expect(Schema.encodeSync(codec)(decode({ preservationOnly: true }))).toEqual({
+        preservationOnly: true,
+      });
       expect(() => decode({ preservationOnly: false })).toThrow();
       expect(() => decode({ preservationOnly: "true" })).toThrow();
     }
   });
 });
 
-
 describe("provider turn served-model compatibility", () => {
   const payload = {
-    id: "turn:model", providerThreadId: "provider-thread:model", nodeId: "node:model",
-    runAttemptId: "attempt:model", nativeTurnRef: null, ordinal: 1, status: "completed",
-    startedAt: null, completedAt: null,
+    id: "turn:model",
+    providerThreadId: "provider-thread:model",
+    nodeId: "node:model",
+    runAttemptId: "attempt:model",
+    nativeTurnRef: null,
+    ordinal: 1,
+    status: "completed",
+    startedAt: null,
+    completedAt: null,
   };
   const decode = Schema.decodeUnknownSync(OrchestrationV2ProviderTurn);
   it("decodes old payloads without inventing served-model evidence", () => {
     expect(decode(payload)).not.toHaveProperty("servedModel");
   });
-  it.each(["provider/A", null])("retains reported or explicitly mixed evidence %s", (servedModel) => {
-    expect(decode({ ...payload, servedModel })).toHaveProperty("servedModel", servedModel);
-  });
+  it.each(["provider/A", null])(
+    "retains reported or explicitly mixed evidence %s",
+    (servedModel) => {
+      expect(decode({ ...payload, servedModel })).toHaveProperty("servedModel", servedModel);
+    },
+  );
   it("rejects empty and oversized served-model identifiers", () => {
     expect(() => decode({ ...payload, servedModel: "" })).toThrow();
     expect(() => decode({ ...payload, servedModel: "x".repeat(513) })).toThrow();

@@ -1271,7 +1271,6 @@ it("excludes side chats from navigation, search and ordering while retaining use
   ).toEqual([fork.id, root.id]);
 });
 
-
 const BASE_MS = Date.parse(NOW);
 const isoAt = (ms: number) => new Date(ms).toISOString();
 const MINUTE_MS = 60_000;

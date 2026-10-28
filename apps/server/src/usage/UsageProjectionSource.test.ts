@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as UsageProjectionSource from "./UsageProjectionSource.ts";
-import usageIndex from "../persistence/Migrations/070_UsageProjectionIndex.ts";
+import usageIndex from "../persistence/Migrations/073_UsageProjectionIndex.ts";
 
 const window = {
   sinceDay: UsageDay.make("2026-10-27"),

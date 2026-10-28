@@ -625,26 +625,35 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
     }),
 );
 
-
 it.effect("denies delayed provider and checkpoint effects after explicit preservation", () =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
     let reads = 0;
-    const layer = layerExecutorFor({ events, continueAfterRestart: true, threads: {
-      getThreadRecords: () => Effect.sync(() => {
-        reads++;
-        return { thread: { preservationOnly: true } } as never;
-      }),
-    }});
+    const layer = layerExecutorFor({
+      events,
+      continueAfterRestart: true,
+      threads: {
+        getThreadRecords: () =>
+          Effect.sync(() => {
+            reads++;
+            return { thread: { preservationOnly: true } } as never;
+          }),
+      },
+    });
     yield* Effect.gen(function* () {
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
       const original = restartEffect(now, { type: "detach" });
       const requests: EffectOutbox.OrchestrationEffectV2["request"][] = [
         original.request,
         { type: "provider-turn.start", runId },
-        { type: "provider-turn.steer", providerSessionId: oldSessionId, providerThreadId,
-          providerTurnId, messageId: "message:late" as never },
+        {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId: "message:late" as never,
+        },
         { type: "provider-runtime.continue", sourceRunId: runId },
         { type: "checkpoint.capture", runId, scopeId: CheckpointScopeId.make("scope:frozen") },
       ];

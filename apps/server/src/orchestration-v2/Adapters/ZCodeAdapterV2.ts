@@ -32,7 +32,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
-import { t3OrchestrationPromptForFirstRun } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { t3OrchestrationPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
 import {
   ProviderAdapterForkThreadError,
@@ -828,10 +828,12 @@ export function makeZCodeAdapterV2(options: ZCodeAdapterV2Options): ProviderAdap
               ? yield* mcpSessions.read(turnInput.threadId)
               : undefined;
             const promptArgs = {
-              prompt: t3OrchestrationPromptForFirstRun({
+              prompt: t3OrchestrationPrompt({
                 prompt: turnInput.message.text,
-                runOrdinal: turnInput.runOrdinal,
                 hasT3Mcp: mcpSession !== undefined,
+                hasDeviceTools: false,
+                orchestrationDelivered: turnInput.runOrdinal > 1,
+                deviceInstructionsDelivered: true,
               }),
               mode: zcodePermissionMode(turnInput.runtimePolicy),
               resumeSessionId: providerThread.nativeThreadRef?.nativeId ?? null,

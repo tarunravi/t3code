@@ -55,7 +55,9 @@ function describeModelCapabilities(model: ServerProviderModel): string[] {
   return labels;
 }
 
-export function groupModelsForDisplay<T extends { readonly slug: string; readonly isCustom: boolean }>(
+export function groupModelsForDisplay<
+  T extends { readonly slug: string; readonly isCustom: boolean },
+>(
   models: ReadonlyArray<T>,
   options: {
     readonly favoriteModels: ReadonlySet<string>;

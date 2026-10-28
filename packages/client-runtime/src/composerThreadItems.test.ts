@@ -51,16 +51,21 @@ it("ranks thread mentions like the palette and leaves out subagent threads", () 
     query: "model",
     now: Date.parse("2026-10-23T00:00:00.000Z"),
   });
-  expect(items.map((item) => item.thread.threadId)).toEqual(["word", "newer-mid-word", "other-environment"]);
+  expect(items.map((item) => item.thread.threadId)).toEqual([
+    "word",
+    "newer-mid-word",
+    "other-environment",
+  ]);
 });
 
-it("also offers threads on linked machines, naming the machine, but no other machine's", () => {
+it("names a linked machine's threads and still offers an unlinked machine's", () => {
   const vps = EnvironmentId.make("env-vps");
+  const unlinked = EnvironmentId.make("env-unlinked");
   const items = matchComposerThreadItems({
     shells: [
       shell("here", "Deploy script"),
       shell("there", "Deploy script", { environmentId: vps }),
-      shell("unlinked", "Deploy notes", { environmentId: EnvironmentId.make("env-unlinked") }),
+      shell("unlinked", "Deploy notes", { environmentId: unlinked }),
     ],
     environmentId,
     linkedEnvironments: new Map([[vps, "Hetzner VPS"]]),
@@ -68,14 +73,27 @@ it("also offers threads on linked machines, naming the machine, but no other mac
     query: "deploy",
     now: Date.parse("2026-10-23T00:00:00.000Z"),
   });
-  expect(items.map(({ thread, label, description }) => ({ thread, label, description }))).toEqual([
-    { thread: { environmentId, threadId: "here" }, label: "Deploy script", description: "Thread" },
-    {
-      thread: { environmentId: vps, threadId: "there" },
-      label: "Deploy script",
-      description: "Thread on Hetzner VPS",
-    },
-  ]);
+  const summary = items.map(({ thread, label, description }) => ({ thread, label, description }));
+  expect(summary[0]).toEqual({
+    thread: { environmentId, threadId: "here" },
+    label: "Deploy script",
+    description: "Thread",
+  });
+  // The fork attaches an unlinked machine's thread with an inline snapshot instead.
+  expect(summary).toEqual(
+    expect.arrayContaining([
+      {
+        thread: { environmentId: vps, threadId: "there" },
+        label: "Deploy script",
+        description: "Thread on Hetzner VPS",
+      },
+      {
+        thread: { environmentId: unlinked, threadId: "unlinked" },
+        label: "Deploy notes",
+        description: "Thread",
+      },
+    ]),
+  );
 });
 
 describe("matchComposerEnvironmentItems", () => {

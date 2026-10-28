@@ -50,7 +50,6 @@ import { newMessageId, newThreadId } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { ChatCanvas } from "./ChatCanvas";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
-import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerSurface } from "./ComposerSurface";
 import { MessagesTimeline } from "./MessagesTimeline";
@@ -253,7 +252,10 @@ export function SideChatPanel(props: {
       className="flex h-full min-h-0 flex-col overflow-x-clip bg-background"
       data-side-chat-panel="true"
     >
-      <div className="surface-subheader gap-2 px-3 text-xs" data-surface-subheader>
+      <div
+        className="flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 text-xs"
+        data-surface-subheader
+      >
         <span className="font-medium text-foreground">Side chat</span>
         {parentStatus === null ? null : (
           <span className="text-muted-foreground" data-side-chat-parent-status="true">
@@ -275,7 +277,6 @@ export function SideChatPanel(props: {
           <MessagesTimeline
             emptyPlaceholderInset={0}
             isWorking={isWorking}
-            activeTurnInProgress={isWorking}
             listRef={listRef}
             timelineEntries={timelineEntries}
             latestRun={activityRun}
@@ -284,7 +285,6 @@ export function SideChatPanel(props: {
             onOpenTurnDiff={noop}
             onOpenThread={noop}
             onSendToParent={sendToParent}
-            onRollbackCheckpoint={noop}
             supportsConversationRollback={false}
             onRevertToTurnCount={noop}
             isRevertingCheckpoint={false}
@@ -307,7 +307,9 @@ export function SideChatPanel(props: {
       <div className="chat-composer-lane shrink-0 pt-1.5 pb-3 sm:pt-2 sm:pb-4">
         {pendingApproval !== null ? (
           <div className="mb-2 flex flex-col gap-2 rounded-lg border border-warning/40 p-2">
-            <ComposerPendingApprovalPanel approval={pendingApproval} pendingCount={1} />
+            <code className="block max-h-40 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 wrap-anywhere">
+              {pendingApproval.detail || "The side agent is waiting for approval."}
+            </code>
             <div className="flex justify-end gap-1.5">
               <ComposerPendingApprovalActions
                 requestId={pendingApproval.requestId}
@@ -392,7 +394,6 @@ export function SideChatPanel(props: {
                     promptHasText={prompt.trim().length > 0}
                     isSendBusy={false}
                     sendDisabledReason={null}
-                    isConnecting={false}
                     isEnvironmentUnavailable={sideShell === null}
                     isPreparingWorktree={false}
                     hasSendableContent={

@@ -641,7 +641,10 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
       }
     : {
         usageScope: "main_agent" as const,
-        usageStatus: status === "completed" && !turn.usageIncomplete ? ("complete" as const) : ("partial" as const),
+        usageStatus:
+          status === "completed" && !turn.usageIncomplete
+            ? ("complete" as const)
+            : ("partial" as const),
         inputTokens: turn.usage.input,
         cachedInputTokens: turn.usage.cached,
         cacheCreationTokens: turn.usage.cacheWrite,
@@ -2115,8 +2118,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           turn.providerTurn = {
             ...turn.providerTurn,
             servedModel:
-              !turn.stepModelReported || previous === null ||
-              (previous !== undefined && previous !== model) ? null : model,
+              !turn.stepModelReported ||
+              previous === null ||
+              (previous !== undefined && previous !== model)
+                ? null
+                : model,
           };
           return;
         }
@@ -2125,7 +2131,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const modelReported = turn.stepModelReported;
           turn.stepModelReported = false;
           const tokens = event.data.tokens;
-          if (!modelReported || tokens === undefined) turn.providerTurn = { ...turn.providerTurn, servedModel: null };
+          if (!modelReported || tokens === undefined)
+            turn.providerTurn = { ...turn.providerTurn, servedModel: null };
           if (tokens === undefined) return;
           turn.steps += 1;
           turn.lastStep = tokens;
@@ -2670,15 +2677,17 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           Effect.gen(function* () {
             streamFailure = "The OpenCode event stream was lost. Reconnecting.";
             // A volatile gap can hide both a step boundary and usage, even if the execution survives.
-            yield* lock.withPermit(Effect.sync(() => {
-              for (const state of threads.values()) {
-                const turn = state.active;
-                if (turn === undefined) continue;
-                turn.stepModelReported = false;
-                turn.usageIncomplete = true;
-                turn.providerTurn = { ...turn.providerTurn, servedModel: null };
-              }
-            }));
+            yield* lock.withPermit(
+              Effect.sync(() => {
+                for (const state of threads.values()) {
+                  const turn = state.active;
+                  if (turn === undefined) continue;
+                  turn.stepModelReported = false;
+                  turn.usageIncomplete = true;
+                  turn.providerTurn = { ...turn.providerTurn, servedModel: null };
+                }
+              }),
+            );
             yield* Effect.logWarning("Lost the OpenCode event stream; reconnecting.");
             // Failures may contain URLs or response text; annotate only the tag and keep details in cause.
             const next = yield* reconnect.pipe(

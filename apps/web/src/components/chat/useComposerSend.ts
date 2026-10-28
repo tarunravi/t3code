@@ -166,9 +166,9 @@ type UsageLimitsPanel = ReturnType<typeof useUsageLimitsPanel>;
 type TimelineFollow = ReturnType<typeof useTimelineFollow>;
 
 interface ComposerSendInput {
- readonly routeThreadRef: ScopedThreadRef;
- readonly rewritingMessage: MessageRewriteState | null;
- readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
+  readonly routeThreadRef: ScopedThreadRef;
+  readonly rewritingMessage: MessageRewriteState | null;
+  readonly setRewritingMessage: Dispatch<SetStateAction<MessageRewriteState | null>>;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
@@ -262,7 +262,10 @@ interface ComposerSendInput {
  * when it fails.
  */
 export function useComposerSend(input: ComposerSendInput) {
-  const { routeThreadRef, rewritingMessage, setRewritingMessage,
+  const {
+    routeThreadRef,
+    rewritingMessage,
+    setRewritingMessage,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -345,7 +348,9 @@ export function useComposerSend(input: ComposerSendInput) {
     reportFailure: false,
   });
   const { open: openSideChat } = useSideChatActions(environmentId);
-  const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {reportFailure: false});
+  const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {
+    reportFailure: false,
+  });
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
@@ -971,23 +976,18 @@ export function useComposerSend(input: ComposerSendInput) {
       }));
       const commandId = CommandId.make(randomUUID());
       const rewound = await settlePromise(() =>
-        waitForRevertedMessage(
-          routeThreadRef,
-          rewritingMessage.turnCount,
-          commandId,
-          async () => {
-            const result = await revertThreadCheckpoint({
-              environmentId,
-              input: {
-                commandId,
-                threadId: threadIdForSend,
-                turnCount: rewritingMessage.turnCount,
-                restoreFiles: rewritingMessage.restoreFiles,
-              },
-            });
-            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-          },
-        ),
+        waitForRevertedMessage(routeThreadRef, rewritingMessage.turnCount, commandId, async () => {
+          const result = await revertThreadCheckpoint({
+            environmentId,
+            input: {
+              commandId,
+              threadId: threadIdForSend,
+              turnCount: rewritingMessage.turnCount,
+              restoreFiles: rewritingMessage.restoreFiles,
+            },
+          });
+          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        }),
       );
       useComposerDraftStore.setState((store) => {
         const remaining = new Set(store.rewindingThreadKeys);

@@ -16,6 +16,7 @@ import ProjectionThreadTitleState from "./Migrations/052_ProjectionThreadTitleSt
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
 import ScheduledTaskWebhooks from "./Migrations/057_ScheduledTaskWebhooks.ts";
 import WebhookRelayDeliveries from "./Migrations/058_WebhookRelayDeliveries.ts";
+import UsageProjectionIndex from "./Migrations/073_UsageProjectionIndex.ts";
 
 // Ledger names recorded by an early orchestration V2 build on 2026-09-08.
 const divergentLedger = [
@@ -312,6 +313,34 @@ const v2TableCount = Effect.gen(function* () {
 
 // Unlike upstream, this fork refuses any unrecognized history before writing,
 // including site-local and newer-build ids that upstream tolerates.
+describe("fork migration 70", () => {
+  it.effect("upgrades a fork ledger that recorded UsageProjectionIndex at 70", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 69 });
+      yield* UsageProjectionIndex;
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (70, 'UsageProjectionIndex')
+      `;
+
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [71, "PeerLinkFence"],
+        [72, "WaitingLinkRequestIndex"],
+        [73, "UsageProjectionIndex"],
+      ]);
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(peer_environment_links)
+      `;
+      assert.include(
+        columns.map((column) => column.name),
+        "fenced",
+      );
+      yield* verifyMigrationHistory();
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+});
+
 describe("V2 migration id clashes", () => {
   it.effect("upgrades a database at exactly 54", () =>
     Effect.gen(function* () {

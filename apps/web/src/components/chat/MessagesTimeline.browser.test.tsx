@@ -159,8 +159,12 @@ async function renderElement(element: ReactElement, options: { router?: false } 
 }
 
 function work(id: string, entry: Record<string, unknown>): Entry {
-  return { id, kind: "work", createdAt: CREATED_AT,
-    entry: { id, createdAt: CREATED_AT, ...entry } } as Entry;
+  return {
+    id,
+    kind: "work",
+    createdAt: CREATED_AT,
+    entry: { id, createdAt: CREATED_AT, ...entry },
+  } as Entry;
 }
 
 function renderTimeline(entries: ReadonlyArray<Entry>, props: Partial<TimelineProps> = {}) {

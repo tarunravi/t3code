@@ -7,7 +7,7 @@ import {
   type ThreadContextRecord,
 } from "@t3tools/contracts";
 
-import { threadContextRecord } from "./composerContextRecords";
+import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 
 // Matches the per-item cap agents use when paging t3_thread_read history.
 const SNAPSHOT_MESSAGE_MAX_CHARS = 4_000;

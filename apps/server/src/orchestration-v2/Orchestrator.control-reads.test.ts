@@ -1480,11 +1480,7 @@ it.effect.each(["interrupted", "running"] as const)(
       ]);
       for (let i = 0; i < 2; i++) {
         yield* outbox.reconcileAfterProcessLoss;
-        assert.isTrue(
-          Option.isNone(
-            yield* outbox.claimNext({ workerId: "frozen-test", leaseDurationMs: 1000 }),
-          ),
-        );
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "frozen-test" })));
       }
       assert.equal(Option.getOrThrow(yield* outbox.get("effect:frozen-capture")).status, "pending");
       // A late event carrying a pre-freeze snapshot must not clear durable intent.
@@ -1665,13 +1661,11 @@ it.effect("claims a recovery command once and rechecks admission inside the disp
         }),
       }),
     );
-    const replay = yield* orchestrator
-      .dispatch(command)
-      .pipe(
-        Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate, {
-          check: Effect.die("Durable receipt must coalesce this episode after restart"),
-        }),
-      );
+    const replay = yield* orchestrator.dispatch(command).pipe(
+      Effect.provideService(Orchestrator.IdleStallRecoveryDispatchGate, {
+        check: Effect.die("Durable receipt must coalesce this episode after restart"),
+      }),
+    );
     assert.deepEqual(replay, { ...first, replayed: true });
     assert.equal(gateReads, 2);
     assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);

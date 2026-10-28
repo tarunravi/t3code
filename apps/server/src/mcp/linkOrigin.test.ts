@@ -34,6 +34,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import { usageSourcesTestLayer } from "../usage/UsageLimitSources.testkit.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -130,6 +131,7 @@ const layerTools = Layer.mergeAll(
     }),
   ),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+  Layer.provide(usageSourcesTestLayer),
   Layer.provide(
     Layer.mock(ProjectService.ProjectService)({
       getById: () => Effect.succeedNone,
@@ -309,6 +311,7 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
             canonicalSourcePoint: { threadId: launched },
             transferId: ContextTransferId.make("transfer:fork"),
             targetThreadId: ThreadId.make("thread:fork"),
+            relationshipToParent: "fork",
             createdBy: "agent",
             creationSource: "mcp",
             createdAt: thread.createdAt,

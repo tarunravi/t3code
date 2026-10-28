@@ -98,327 +98,407 @@ export const layerExecutor: Layer.Layer<
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function* (effect, options) {
         const current = yield* threads.getThreadRecords(effect.threadId, []).pipe(
-          Effect.tapError(() => effect.request.type === "provider-runtime.continue" &&
-            options?.willRetry !== true
-            ? threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId)
-            : Effect.void),
-          Effect.mapError((cause) => new OrchestrationEffectExecutionError({
-            effectId: effect.id, effectType: effect.request.type, cause,
-          })),
+          Effect.tapError(() =>
+            effect.request.type === "provider-runtime.continue" && options?.willRetry !== true
+              ? threads.recoverDelegatedTask(effect.threadId, effect.request.sourceRunId)
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationEffectExecutionError({
+                effectId: effect.id,
+                effectType: effect.request.type,
+                cause,
+              }),
+          ),
         );
         if (current.thread.preservationOnly === true) return;
         const execute = () => {
-        const willRetry = options?.willRetry ?? false;
-        switch (effect.request.type) {
-          case "provider-runtime.continue": {
-            const sourceRunId = effect.request.sourceRunId;
-            return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
-              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-              Effect.provideService(ServerSettings.ServerSettingsService, settings),
-              Effect.tapError(() =>
-                willRetry
-                  ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
-              ),
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
-          }
-          case "provider-session.detach":
-            return providerSessions
-              .detach({
-                providerSessionId: effect.request.providerSessionId,
-                threadId: effect.threadId,
-                ...(effect.request.detail === undefined ? {} : { detail: effect.request.detail }),
-                ...(effect.request.revokeMcpCredential === undefined
-                  ? {}
-                  : { revokeMcpCredential: effect.request.revokeMcpCredential }),
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-          case "provider-turn.start":
-            return providerTurnStart
-              .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-          case "provider-turn.interrupt": {
-            const request = effect.request;
-            return providerTurnControl
-              .interrupt({
-                threadId: effect.threadId,
-                providerSessionId: request.providerSessionId,
-                providerThreadId: request.providerThreadId,
-                providerTurnId: request.providerTurnId,
-                ...(request.subagent === undefined
-                  ? {}
-                  : {
-                      subagent: {
-                        ...request.subagent,
-                        requestedAt: DateTime.makeUnsafe(effect.createdAt),
-                      },
-                    }),
-              })
-              .pipe(
-                Effect.tapError((cause) =>
-                  request.subagent === undefined
+          const willRetry = options?.willRetry ?? false;
+          switch (effect.request.type) {
+            case "provider-runtime.continue": {
+              const sourceRunId = effect.request.sourceRunId;
+              return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
+                Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+                Effect.provideService(ServerSettings.ServerSettingsService, settings),
+                Effect.tapError(() =>
+                  willRetry
                     ? Effect.void
-                    : Effect.logWarning("orchestration-v2.subagent-stop-failed", {
+                    : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+            }
+            case "provider-session.detach":
+              return providerSessions
+                .detach({
+                  providerSessionId: effect.request.providerSessionId,
+                  threadId: effect.threadId,
+                  ...(effect.request.detail === undefined ? {} : { detail: effect.request.detail }),
+                  ...(effect.request.revokeMcpCredential === undefined
+                    ? {}
+                    : { revokeMcpCredential: effect.request.revokeMcpCredential }),
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
                         effectId: effect.id,
+                        effectType: effect.request.type,
                         cause,
                       }),
-                ),
-                Effect.catchIf(
-                  (cause) =>
-                    request.subagent === undefined &&
-                    isNonRetryableProviderTurnControlFailure(
-                      request.type,
-                      Cause.pretty(Cause.fail(cause)),
-                    ),
-                  () => Effect.void,
-                ),
-                Effect.andThen((outcome) =>
-                  request.subagent !== undefined && outcome === undefined
-                    ? Effect.void
-                    : threads.dispatch({
-                        type: "thread.background-work.settle",
-                        commandId: CommandId.make(`${effect.id}:background-work-settled`),
-                        ...(request.subagent === undefined || outcome === undefined
-                          ? {}
-                          : {
-                              subagent: {
-                                id: request.subagent.id,
-                                stoppedAt: DateTime.makeUnsafe(effect.createdAt),
-                                outcome,
-                              },
-                            }),
-                        threadId: effect.threadId,
-                        providerThreadId: request.providerThreadId,
-                        providerTurnId: request.providerTurnId,
+                  ),
+                );
+            case "provider-turn.start":
+              return providerTurnStart
+                .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
                       }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: request.type,
-                      cause,
-                    }),
-                ),
-              );
-          }
-          case "provider-turn.steer":
-            return providerTurnControl
-              .steer({
-                threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
-                messageId: effect.request.messageId,
-              })
-              .pipe(
-                Effect.tap(() =>
-                  Effect.gen(function* () {
-                    if (effect.request.type !== "provider-turn.steer") return;
-                    const messageId = effect.request.messageId;
-                    const projection = yield* threads.getThreadRecords(
-                      effect.threadId,
-                      ["messages", "runs"],
-                      { messageIds: [effect.request.messageId] },
-                    );
-                    const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
-                    yield* threads.dispatch({
-                      type: "notification.delivery.accept",
-                      commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
-                      threadId: effect.threadId,
-                      messageId: message.id,
-                    });
-                  }),
-                ),
-                Effect.catch((error) =>
-                  Effect.gen(function* () {
-                    if (
-                      !("turnCompleted" in error) ||
-                      !error.turnCompleted ||
-                      effect.request.type !== "provider-turn.steer"
-                    ) {
-                      return yield* error;
-                    }
-                    const projection = yield* threads.getThreadRecords(
-                      effect.threadId,
-                      ["messages", "runs"],
-                      { messageIds: [effect.request.messageId] },
-                    );
-                    const messageId = effect.request.messageId;
-                    const message = projection.messages.find((item) => item.id === messageId);
-                    const run = projection.runs.find((item) => item.id === message?.runId);
-                    if (message === undefined || run === undefined) return yield* error;
-                    // Reuse message ids and receipts so retries cannot duplicate messages or follow-ups.
-                    yield* threads
-                      .dispatch({
-                        type: "message.dispatch",
-                        commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
+                  ),
+                );
+            case "provider-turn.interrupt": {
+              const request = effect.request;
+              return providerTurnControl
+                .interrupt({
+                  threadId: effect.threadId,
+                  providerSessionId: request.providerSessionId,
+                  providerThreadId: request.providerThreadId,
+                  providerTurnId: request.providerTurnId,
+                  ...(request.subagent === undefined
+                    ? {}
+                    : {
+                        subagent: {
+                          ...request.subagent,
+                          requestedAt: DateTime.makeUnsafe(effect.createdAt),
+                        },
+                      }),
+                })
+                .pipe(
+                  Effect.tapError((cause) =>
+                    request.subagent === undefined
+                      ? Effect.void
+                      : Effect.logWarning("orchestration-v2.subagent-stop-failed", {
+                          effectId: effect.id,
+                          cause,
+                        }),
+                  ),
+                  Effect.catchIf(
+                    (cause) =>
+                      request.subagent === undefined &&
+                      isNonRetryableProviderTurnControlFailure(
+                        request.type,
+                        Cause.pretty(Cause.fail(cause)),
+                      ),
+                    () => Effect.void,
+                  ),
+                  Effect.andThen((outcome) =>
+                    request.subagent !== undefined && outcome === undefined
+                      ? Effect.void
+                      : threads.dispatch({
+                          type: "thread.background-work.settle",
+                          commandId: CommandId.make(`${effect.id}:background-work-settled`),
+                          ...(request.subagent === undefined || outcome === undefined
+                            ? {}
+                            : {
+                                subagent: {
+                                  id: request.subagent.id,
+                                  stoppedAt: DateTime.makeUnsafe(effect.createdAt),
+                                  outcome,
+                                },
+                              }),
+                          threadId: effect.threadId,
+                          providerThreadId: request.providerThreadId,
+                          providerTurnId: request.providerTurnId,
+                        }),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            }
+            case "provider-turn.steer":
+              return providerTurnControl
+                .steer({
+                  threadId: effect.threadId,
+                  providerSessionId: effect.request.providerSessionId,
+                  providerThreadId: effect.request.providerThreadId,
+                  providerTurnId: effect.request.providerTurnId,
+                  messageId: effect.request.messageId,
+                })
+                .pipe(
+                  Effect.tap(() =>
+                    Effect.gen(function* () {
+                      if (effect.request.type !== "provider-turn.steer") return;
+                      const messageId = effect.request.messageId;
+                      const projection = yield* threads.getThreadRecords(
+                        effect.threadId,
+                        ["messages", "runs"],
+                        { messageIds: [effect.request.messageId] },
+                      );
+                      const message = projection.messages.find((row) => row.id === messageId);
+                      if (message?.delegatedCompletion === undefined) return;
+                      yield* threads.dispatch({
+                        type: "notification.delivery.accept",
+                        commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
                         threadId: effect.threadId,
                         messageId: message.id,
-                        text: message.text,
-                        ...(message.context ? { context: message.context } : {}),
-                        attachments: message.attachments,
-                        ...(message.delegatedCompletion === undefined
-                          ? {}
-                          : { modelSelection: run.modelSelection }),
-                        dispatchMode: {
-                          type:
-                            message.delegatedCompletion === undefined
-                              ? "start_immediately"
-                              : "queue_after_active",
-                        },
-                        createdBy: message.createdBy,
-                        creationSource: message.creationSource,
-                        ...(message.delegatedCompletion === undefined
-                          ? {}
-                          : { delegatedCompletion: message.delegatedCompletion }),
-                        ...(message.notification === undefined
-                          ? {}
-                          : { notification: message.notification }),
-                        ...(message.scheduledTaskId === undefined
-                          ? {}
-                          : { scheduledTaskId: message.scheduledTaskId }),
-                        ...(message.senderThreadId === undefined
-                          ? {}
-                          : { senderThreadId: message.senderThreadId }),
-                      })
-                      .pipe(
-                        // A disabled instance cannot retry this completed turn; its result stands.
-                        Effect.catchTags({
-                          ThreadManagementProviderInstanceDisabledError: (disabledError) =>
-                            Effect.logInfo(
-                              "orchestration-v2.effect-worker.steer-follow-up-disabled",
-                              {
-                                threadId: effect.threadId,
-                                messageId: message.id,
-                                projectId: disabledError.projectId,
-                                instanceId: disabledError.instanceId,
-                              },
-                            ),
-                        }),
-                      );
-                  }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
+                      });
                     }),
-                ),
-              );
-          case "provider-turn.restart":
-            return providerTurnControl
-              .interruptAndAwaitTerminal({
-                threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
-                interruptedAttemptId: effect.request.interruptedAttemptId,
-                ...(effect.request.sessionTransition?.type === "replace"
-                  ? {
-                      replacementProviderSessionId:
-                        effect.request.sessionTransition.replacementProviderSessionId,
-                    }
-                  : {}),
-              })
-              .pipe(
-                Effect.andThen(
-                  effect.request.sessionTransition?.type === "replace"
-                    ? providerSessions.detach({
-                        providerSessionId: effect.request.providerSessionId,
-                        threadId: effect.threadId,
-                        detail: "Selection change requires a provider session restart.",
-                      })
-                    : effect.request.sessionTransition?.type === "detach"
+                  ),
+                  Effect.catch((error) =>
+                    Effect.gen(function* () {
+                      if (
+                        !("turnCompleted" in error) ||
+                        !error.turnCompleted ||
+                        effect.request.type !== "provider-turn.steer"
+                      ) {
+                        return yield* error;
+                      }
+                      const projection = yield* threads.getThreadRecords(
+                        effect.threadId,
+                        ["messages", "runs"],
+                        { messageIds: [effect.request.messageId] },
+                      );
+                      const messageId = effect.request.messageId;
+                      const message = projection.messages.find((item) => item.id === messageId);
+                      const run = projection.runs.find((item) => item.id === message?.runId);
+                      if (message === undefined || run === undefined) return yield* error;
+                      // Reuse message ids and receipts so retries cannot duplicate messages or follow-ups.
+                      yield* threads
+                        .dispatch({
+                          type: "message.dispatch",
+                          commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
+                          threadId: effect.threadId,
+                          messageId: message.id,
+                          text: message.text,
+                          ...(message.context ? { context: message.context } : {}),
+                          attachments: message.attachments,
+                          ...(message.delegatedCompletion === undefined
+                            ? {}
+                            : { modelSelection: run.modelSelection }),
+                          dispatchMode: {
+                            type:
+                              message.delegatedCompletion === undefined
+                                ? "start_immediately"
+                                : "queue_after_active",
+                          },
+                          createdBy: message.createdBy,
+                          creationSource: message.creationSource,
+                          ...(message.delegatedCompletion === undefined
+                            ? {}
+                            : { delegatedCompletion: message.delegatedCompletion }),
+                          ...(message.notification === undefined
+                            ? {}
+                            : { notification: message.notification }),
+                          ...(message.scheduledTaskId === undefined
+                            ? {}
+                            : { scheduledTaskId: message.scheduledTaskId }),
+                          ...(message.senderThreadId === undefined
+                            ? {}
+                            : { senderThreadId: message.senderThreadId }),
+                        })
+                        .pipe(
+                          // A disabled instance cannot retry this completed turn; its result stands.
+                          Effect.catchTags({
+                            ThreadManagementProviderInstanceDisabledError: (disabledError) =>
+                              Effect.logInfo(
+                                "orchestration-v2.effect-worker.steer-follow-up-disabled",
+                                {
+                                  threadId: effect.threadId,
+                                  messageId: message.id,
+                                  projectId: disabledError.projectId,
+                                  instanceId: disabledError.instanceId,
+                                },
+                              ),
+                          }),
+                        );
+                    }),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            case "provider-turn.restart":
+              return providerTurnControl
+                .interruptAndAwaitTerminal({
+                  threadId: effect.threadId,
+                  providerSessionId: effect.request.providerSessionId,
+                  providerThreadId: effect.request.providerThreadId,
+                  providerTurnId: effect.request.providerTurnId,
+                  interruptedAttemptId: effect.request.interruptedAttemptId,
+                  ...(effect.request.sessionTransition?.type === "replace"
+                    ? {
+                        replacementProviderSessionId:
+                          effect.request.sessionTransition.replacementProviderSessionId,
+                      }
+                    : {}),
+                })
+                .pipe(
+                  Effect.andThen(
+                    effect.request.sessionTransition?.type === "replace"
                       ? providerSessions.detach({
                           providerSessionId: effect.request.providerSessionId,
                           threadId: effect.threadId,
-                          detail: "Provider thread handoff replaced this session binding.",
+                          detail: "Selection change requires a provider session restart.",
                         })
-                      : Effect.void,
-                ),
-                Effect.andThen(
-                  providerTurnStart.start({
-                    threadId: effect.threadId,
-                    runId: effect.request.runId,
-                    willRetry,
-                  }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
+                      : effect.request.sessionTransition?.type === "detach"
+                        ? providerSessions.detach({
+                            providerSessionId: effect.request.providerSessionId,
+                            threadId: effect.threadId,
+                            detail: "Provider thread handoff replaced this session binding.",
+                          })
+                        : Effect.void,
+                  ),
+                  Effect.andThen(
+                    providerTurnStart.start({
+                      threadId: effect.threadId,
+                      runId: effect.request.runId,
+                      willRetry,
                     }),
-                ),
-              );
-          case "runtime-request.respond": {
-            const requestId = effect.request.requestId;
-            return runtimeRequests
-              .respond({
-                threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                requestId: effect.request.requestId,
-                ...(effect.request.decision === undefined
-                  ? {}
-                  : { decision: effect.request.decision }),
-                ...(effect.request.feedback === undefined
-                  ? {}
-                  : { feedback: effect.request.feedback }),
-                ...(effect.request.answers === undefined
-                  ? {}
-                  : { answers: effect.request.answers }),
-              })
-              .pipe(
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "runtime-request.delivery.fail",
-                          commandId: CommandId.make(`${effect.commandId}:delivery-failed`),
-                          threadId: effect.threadId,
-                          requestId,
-                        })
-                        .pipe(
-                          Effect.catchCause((recordCause) =>
-                            Effect.logWarning("Failed to record answer delivery failure", {
-                              effectId: effect.id,
-                              cause: recordCause,
-                            }),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            case "runtime-request.respond": {
+              const requestId = effect.request.requestId;
+              return runtimeRequests
+                .respond({
+                  threadId: effect.threadId,
+                  providerSessionId: effect.request.providerSessionId,
+                  requestId: effect.request.requestId,
+                  ...(effect.request.decision === undefined
+                    ? {}
+                    : { decision: effect.request.decision }),
+                  ...(effect.request.feedback === undefined
+                    ? {}
+                    : { feedback: effect.request.feedback }),
+                  ...(effect.request.answers === undefined
+                    ? {}
+                    : { answers: effect.request.answers }),
+                })
+                .pipe(
+                  Effect.tapCause((cause) =>
+                    willRetry || Cause.hasInterruptsOnly(cause)
+                      ? Effect.void
+                      : threads
+                          .dispatch({
+                            type: "runtime-request.delivery.fail",
+                            commandId: CommandId.make(`${effect.commandId}:delivery-failed`),
+                            threadId: effect.threadId,
+                            requestId,
+                          })
+                          .pipe(
+                            Effect.catchCause((recordCause) =>
+                              Effect.logWarning("Failed to record answer delivery failure", {
+                                effectId: effect.id,
+                                cause: recordCause,
+                              }),
+                            ),
                           ),
-                        ),
-                ),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            }
+            case "provider-thread.rollback":
+              return checkpointRollback
+                .execute({
+                  threadId: effect.threadId,
+                  providerThreadId: effect.request.providerThreadId,
+                  checkpointId: effect.request.checkpointId,
+                  scopeId: effect.request.scopeId,
+                  ...(effect.request.restoreFiles === undefined
+                    ? {}
+                    : { restoreFiles: effect.request.restoreFiles }),
+                })
+                .pipe(
+                  Effect.tapCause((cause) =>
+                    willRetry || Cause.hasInterruptsOnly(cause)
+                      ? Effect.void
+                      : threads
+                          .dispatch({
+                            type: "checkpoint.rollback.fail",
+                            commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+                            threadId: effect.threadId,
+                            requestId: effect.commandId,
+                            message: Option.match(Cause.findErrorOption(cause), {
+                              onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                              onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                            }),
+                          })
+                          .pipe(
+                            Effect.catchCause((recordCause) =>
+                              Effect.logWarning("Failed to record rollback failure", {
+                                effectId: effect.id,
+                                cause: recordCause,
+                              }),
+                            ),
+                          ),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            case "checkpoint.capture":
+              return runFinalization
+                .finalize({
+                  threadId: effect.threadId,
+                  runId: effect.request.runId,
+                  scopeId: effect.request.scopeId,
+                  historicalRefOnly: effect.request.historicalRefOnly,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            case "scheduled-tasks.cleanup":
+              return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -428,148 +508,74 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+            case "terminal.cleanup":
+              return resourceCleanup.cleanupTerminals(effect.threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+            case "preview.cleanup":
+              return resourceCleanup.cleanupPreviews(effect.threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+            case "attachment.cleanup":
+              return resourceCleanup.cleanupAttachments(effect.request.attachmentIds).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+            case "thread-title.generate":
+              return threadTitleRegeneration
+                .execute({
+                  threadId: effect.threadId,
+                  requestId: effect.commandId,
+                  kind: effect.request.kind,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
+            case "delegated-tasks.stop":
+              return threads
+                .stopDelegatedTasks({
+                  threadId: effect.threadId,
+                  commandId: effect.commandId,
+                  reason: effect.request.reason,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                );
           }
-          case "provider-thread.rollback":
-            return checkpointRollback
-              .execute({
-                threadId: effect.threadId,
-                providerThreadId: effect.request.providerThreadId,
-                checkpointId: effect.request.checkpointId,
-                scopeId: effect.request.scopeId,
-                ...(effect.request.restoreFiles === undefined
-                  ? {}
-                  : { restoreFiles: effect.request.restoreFiles }),
-              })
-              .pipe(
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "checkpoint.rollback.fail",
-                          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                          threadId: effect.threadId,
-                          requestId: effect.commandId,
-                          message: Option.match(Cause.findErrorOption(cause), {
-                            onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                            onSome: CheckpointRollbackService.rollbackFailureClientMessage,
-                          }),
-                        })
-                        .pipe(
-                          Effect.catchCause((recordCause) =>
-                            Effect.logWarning("Failed to record rollback failure", {
-                              effectId: effect.id,
-                              cause: recordCause,
-                            }),
-                          ),
-                        ),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-          case "checkpoint.capture":
-            return runFinalization
-              .finalize({
-                threadId: effect.threadId,
-                runId: effect.request.runId,
-                scopeId: effect.request.scopeId,
-                historicalRefOnly: effect.request.historicalRefOnly,
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-          case "scheduled-tasks.cleanup":
-            return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
-          case "terminal.cleanup":
-            return resourceCleanup.cleanupTerminals(effect.threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
-          case "preview.cleanup":
-            return resourceCleanup.cleanupPreviews(effect.threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
-          case "attachment.cleanup":
-            return resourceCleanup.cleanupAttachments(effect.request.attachmentIds).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
-          case "thread-title.generate":
-            return threadTitleRegeneration
-              .execute({
-                threadId: effect.threadId,
-                requestId: effect.commandId,
-                kind: effect.request.kind,
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-          case "delegated-tasks.stop":
-            return threads
-              .stopDelegatedTasks({
-                threadId: effect.threadId,
-                commandId: effect.commandId,
-                reason: effect.request.reason,
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
-        }
         };
         yield* execute();
       }),

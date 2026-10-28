@@ -341,7 +341,6 @@ describe("fork pricing search", () => {
       expect(searchSettings(query).map((item) => item.id)).toContain("usage-model-prices");
     },
   );
-
 });
 
 describe("fork notification search", () => {
@@ -359,9 +358,11 @@ describe("fork notification search", () => {
       });
     },
   );
-
 });
 
 it("finds provider fallback", () => {
- expect(searchSettings("provider fallback")[0]).toMatchObject({ id: "fallback-model", to: "/settings/general" });
+  expect(searchSettings("provider fallback")[0]).toMatchObject({
+    id: "fallback-model",
+    to: "/settings/general",
+  });
 });

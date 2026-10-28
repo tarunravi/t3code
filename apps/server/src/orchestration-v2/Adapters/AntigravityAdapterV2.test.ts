@@ -108,7 +108,6 @@ describe("AntigravityAdapterV2 flavor", () => {
     assert.equal(explicitModelUpdate?.model, "gemini-2.5-pro");
   });
 
-
   it("keeps a successful subagent launch running until the parent turn becomes idle", () => {
     const batch = flavor.extractSubagentUpdate?.({
       toolCallId: "trajectory:4",
