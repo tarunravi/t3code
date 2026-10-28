@@ -11,7 +11,9 @@ T3 runs `dsh --profile acp` over standard ACP stdio. This opt-in provider reuses
 
 The example targets a fresh profile. DSH patches replace the entire entry config: merge any existing routes before applying it to a customized profile. The `acp` profile disables hot reload, so changed patches apply to the next provider process.
 
-For omp, merge `examples/omp-models.yml` into `~/.omp/agent/models.yml`, retaining existing GLM providers. Add `sparksdeepseek/DeepSeek-V4.1-Flash-1017` to the omp instance's `config.customModels` in T3 settings. The model uses a 1,000,000-token context, `reasoning_content`, and `chat_template_kwargs.enable_thinking` via omp's `qwen-chat-template` compatibility mode. The existing GLM entry and default launch model remain unchanged.
+For omp, merge `examples/omp-models.yml` into `~/.omp/agent/models.yml`, retaining existing GLM providers. Add `sparksdeepseek/DeepSeek-V4.1-Flash-1017` to the omp instance's `config.customModels` in T3 settings. The model is capped at the serving API's 262,144-token context and 16,384 output tokens, and uses `reasoning_content` plus `chat_template_kwargs.enable_thinking` via omp's `qwen-chat-template` compatibility mode. The existing GLM entry and default launch model remain unchanged.
+
+Keep that context cap in sync with the server: omp starts automatic compaction at 85% of its configured context, so advertising 1,000,000 tokens would defer it until about 850,000—well past this server's 262,144-token limit. At 262,144, the threshold is about 222,823 tokens, leaving room for the next request and output.
 
 ## Limits
 

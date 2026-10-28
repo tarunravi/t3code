@@ -1,15 +1,15 @@
 # Merge this provider into ~/.omp/agent/models.yml; leave GLM providers unchanged.
 providers:
   sparksdeepseek:
-    baseUrl: http://spark-20d3:8888/v1
+    baseUrl: http://10.0.0.58:8888/v1
     api: openai-completions
     apiKey: local
     models:
       - id: DeepSeek-V4.1-Flash-1017
         name: DeepSeek V4.1 Flash 1017 (Spark, local)
         reasoning: true
-        contextWindow: 1000000
-        maxTokens: 32768
+        contextWindow: 262144
+        maxTokens: 16384
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
         thinking:
           mode: effort
