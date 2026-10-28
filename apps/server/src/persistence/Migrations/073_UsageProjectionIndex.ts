@@ -5,7 +5,7 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // Cover usage reads without fetching each turn's potentially large JSON payload from disk.
   yield* sql`
-    CREATE INDEX orchestration_v2_provider_turns_usage_idx
+    CREATE INDEX IF NOT EXISTS orchestration_v2_provider_turns_usage_idx
     ON orchestration_v2_projection_provider_turns (
       COALESCE(completed_at, started_at),
       thread_id, provider_thread_id, provider_turn_id,

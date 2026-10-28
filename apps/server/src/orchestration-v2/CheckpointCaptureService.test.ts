@@ -702,7 +702,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                     assert.isFalse(yield* outbox.recoverFailedCheckpoint(recovered));
                     // Simulate process loss after requeue, before retry.
                     const claimed = Option.getOrThrow(
-                      yield* outbox.claimNext({ workerId: "lost-worker", leaseDurationMs: 1000 }),
+                      yield* outbox.claimNext({ workerId: "lost-worker" }),
                     );
                     assert.equal(claimed.id, recovered.id);
                     assert.equal((yield* recovery.recover).requeuedEffects, 1);
