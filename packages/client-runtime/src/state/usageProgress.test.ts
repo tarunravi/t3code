@@ -109,6 +109,15 @@ describe("usageProgress", () => {
 });
 
 describe("usageLoadingState", () => {
+  it("keeps answered figures readable while another environment scans", () => {
+    expect(
+      usageLoadingState([
+        environment("ready"),
+        environment("slow", { summary: null, isPending: true }),
+      ]),
+    ).toEqual({ partial: true, everyProvider: false, providers: new Set() });
+  });
+
   it("ignores environments that cannot answer and settles once all have", () => {
     const state = usageLoadingState([
       environment("a"),
