@@ -75,6 +75,7 @@ import Migration0069 from "./Migrations/069_ThreadMessageSearch.ts";
 import Migration0070 from "./Migrations/070_PeerLinks.ts";
 import Migration0071 from "./Migrations/071_PeerLinkFence.ts";
 import Migration0072 from "./Migrations/072_WaitingLinkRequestIndex.ts";
+import Migration0073 from "./Migrations/073_UsageProjectionIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -150,6 +151,7 @@ const migrationEntries = [
   [70, "PeerLinks", Migration0070],
   [71, "PeerLinkFence", Migration0071],
   [72, "WaitingLinkRequestIndex", Migration0072],
+  [73, "UsageProjectionIndex", Migration0073],
 ] as const;
 
 // Safe to replay over the recognized legacy schema: every change is guarded by a
@@ -159,6 +161,14 @@ const replayableMigrationIds: ReadonlySet<number> = new Set([
 ]);
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+// Fork builds before the 2026-10-28 upstream sync recorded UsageProjectionIndex
+// at 70, where upstream has PeerLinks. Keep that recorded slot, and create the
+// PeerLinks table before the migrator runs 71 onward; 073 re-creates the index
+// idempotently.
+const FORK_SLOT_70_NAME = "UsageProjectionIndex";
+const hasForkSlot70 = (
+  history: ReadonlyArray<{ readonly migration_id: number; readonly name: string }>,
+) => history.some((row) => row.migration_id === 70 && row.name === FORK_SLOT_70_NAME);
 
 // September 8 split V2 migrations are equivalent to today's bundled 055.
 // Keep their original ids/names: rewriting them would erase peer history.
@@ -320,6 +330,7 @@ export const verifyMigrationHistory = Effect.fn("verifyMigrationHistory")(functi
     (row) => row.migration_id === 33 && row.name === legacyV2Names.get(33),
   );
   if (legacySlot33) expected.set(33, "ProjectionThreadsRunningBackgroundTaskCount");
+  if (hasForkSlot70(history)) expected.set(70, FORK_SLOT_70_NAME);
   const legacy = history.some(
     (row) => row.migration_id >= 50 && legacyV2Names.get(row.migration_id) === row.name,
   );
@@ -421,7 +432,7 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
     )
       return [];
     const recordedName = recordedNames.get(id);
-    if (recordedName === name) return [];
+    if (recordedName === name || (id === 70 && recordedName === FORK_SLOT_70_NAME)) return [];
     return [`${id}_${name} (recorded: ${recordedName ?? "nothing"})`];
   });
   if (skipped.length === 0) return;
@@ -448,6 +459,31 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   // guarded replay below fills the schema it skips.
   if (includesV2 && !legacyHistory) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
+  }
+  if (includesV2 && (toMigrationInclusive === undefined || toMigrationInclusive >= 70)) {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+    `;
+    const history =
+      tables.length === 0
+        ? []
+        : yield* sql<{
+            readonly migration_id: number;
+            readonly name: string;
+          }>`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id = 70`;
+    if (hasForkSlot70(history)) {
+      yield* Migration0070.pipe(
+        Effect.mapError(
+          (cause) =>
+            new Migrator.MigrationError({
+              kind: "Failed",
+              message: "Creating PeerLinks over the fork's migration 70 failed",
+              cause,
+            }),
+        ),
+      );
+    }
   }
   const executedMigrations = [
     ...previewMigrations,
