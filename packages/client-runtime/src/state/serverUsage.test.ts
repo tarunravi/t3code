@@ -14,6 +14,8 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Clock from "effect/Clock";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -21,6 +23,7 @@ import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
@@ -81,13 +84,14 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     input: UsageSummaryInput,
   ) => Effect.Effect<void, UsageReadError> = () => Effect.void,
   sources: (input: UsageSummaryInput) => readonly UsageSource[] = () => [],
+  ratesRefresh: Effect.Effect<typeof PRICING> = Effect.succeed(PRICING),
 ) {
   const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
   let settings = DEFAULT_SERVER_SETTINGS;
   let requests = 0;
   const inputs: UsageSummaryInput[] = [];
   const client = {
-    [WS_METHODS.serverRefreshUsageRates]: () => Effect.succeed(PRICING),
+    [WS_METHODS.serverRefreshUsageRates]: () => ratesRefresh,
     [WS_METHODS.subscribeServerConfig]: () =>
       Stream.concat(
         Stream.make({ version: 1 as const, type: "snapshot" as const, config: CONFIG }),
@@ -170,8 +174,10 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     clearVcsRefs: () => Effect.void,
     clear: () => Effect.void,
   });
+  const clock = yield* Clock.Clock;
   const runtime = Atom.runtime(
-    Layer.merge(
+    Layer.mergeAll(
+      Layer.succeed(Clock.Clock, clock),
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
       Layer.succeed(Persistence.EnvironmentCacheStore, cache),
     ),
@@ -319,6 +325,70 @@ it.effect("forwards model, instance and delegated-thread filters over the remote
       yield* settledSummary(harness.registry, atom);
       expect(harness.inputs()[0]?.filters).toEqual(input.filters);
       unmount();
+    }),
+  ),
+);
+
+it.effect("times out an unresponsive usage RPC", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(() =>
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("15 seconds");
+      const result = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((value) => value._tag === "Failure" && !value.waiting),
+        Stream.runHead,
+      );
+      const failure = Option.getOrThrow(result);
+      expect(failure._tag).toBe("Failure");
+      if (failure._tag === "Failure") {
+        expect(Cause.squash(failure.cause)).toMatchObject({
+          detail: expect.stringContaining("timed out after 15 seconds"),
+        });
+      }
+      unmount();
+    }),
+  ),
+);
+
+it.effect("settles a slow refresh with the already emitted summary", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeRefreshingHarness(Effect.never);
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(harness.followUpStarted);
+      yield* TestClock.adjust("15 seconds");
+      expect((yield* settledSummary(harness.registry, summary)).sources).toEqual([
+        cursorSource(true),
+      ]);
+      unmount();
+    }),
+  ),
+);
+
+it.effect("bounds pricing refresh so one slow environment cannot hold the refresh button", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        undefined,
+        undefined,
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const pending = harness.atoms.refreshUsageRates.run(harness.registry, {
+        environmentId: TARGET.environmentId,
+        input: {},
+      });
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("15 seconds");
+      const result = yield* Effect.promise(() => pending);
+      expect(result._tag).toBe("Failure");
     }),
   ),
 );

@@ -82,5 +82,10 @@ export function usageLoadingState(
     if (progress.phase === "partway")
       for (const provider of progress.providers) providers.add(provider);
   }
-  return { partial: everyProvider || providers.size > 0, everyProvider, providers };
+  return {
+    partial: everyProvider || providers.size > 0,
+    everyProvider:
+      everyProvider && !environments.some((environment) => environment.summary !== null),
+    providers,
+  };
 }
