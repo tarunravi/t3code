@@ -20,6 +20,9 @@ import {
   chooseLiveTokenRate,
   completedTurnTokenRate,
   formatLiveTokenRate,
+  estimatedVisibleTurnTokenRate,
+  firstOutputLatencyMs,
+  formatEstimatedTokenRate,
   formatTokenRate,
   latestTokenRateTurn,
   liveTokenRateSource,
@@ -161,6 +164,10 @@ describe("formatTokenRate", () => {
     expect(formatTokenRate(0)).toBe("0 tok/s (turn avg)");
     expect(formatTokenRate(null)).toBeNull();
     expect(formatTokenRate(NaN)).toBeNull();
+  });
+  it("marks fallback throughput as estimated", () => {
+    expect(formatEstimatedTokenRate(41.6)).toBe("~42 tok/s (turn avg)");
+    expect(formatEstimatedTokenRate(null)).toBeNull();
   });
 });
 
@@ -440,6 +447,29 @@ describe("liveTokenRateSource", () => {
       ...overrides,
     } as unknown as OrchestrationV2TurnItem;
   }
+  it("measures first streamed output and estimates completed turns without native counters", () => {
+    const output = {
+      ...item({ text: "x".repeat(400) }),
+      providerTurnId: turn().id,
+      startedAt: DateTime.makeUnsafe(1250),
+    } as OrchestrationV2TurnItem;
+    const data = { ...projection({ turnItems: [output] }), nodes: [] };
+    expect(firstOutputLatencyMs(data)).toBe(1250);
+    expect(
+      estimatedVisibleTurnTokenRate({
+        ...data,
+        providerTurns: [
+          turn({
+            turnTokenUsage: {
+              usageStatus: "partial",
+              usageScope: "main_agent",
+              hasSubagents: false,
+            },
+          }),
+        ],
+      }),
+    ).toBe(25);
+  });
   it("estimates root-agent assistant and reasoning output for the active run only", () => {
     const source = liveTokenRateSource({
       ...projection({

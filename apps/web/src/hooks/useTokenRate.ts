@@ -4,6 +4,9 @@ import {
   appendTokenRateSample,
   chooseLiveTokenRate,
   completedTurnTokenRate,
+  estimatedVisibleTurnTokenRate,
+  firstOutputLatencyMs,
+  formatEstimatedTokenRate,
   formatLiveTokenRate,
   formatTokenRate,
   latestTokenRateTurn,
@@ -32,6 +35,7 @@ export function useTokenRate(projection: Projection | null | undefined): {
   readonly live: boolean;
   readonly rate: number | null;
   readonly text: string | null;
+  readonly timeToFirstTokenMs: number | null;
 } {
   return useTokenRateSources([{ key: "thread", projection }]);
 }
@@ -40,6 +44,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   readonly live: boolean;
   readonly rate: number | null;
   readonly text: string | null;
+  readonly timeToFirstTokenMs: number | null;
 } {
   const seen = new Set<string>();
   const liveSources = sources.flatMap(({ key, projection }) => {
@@ -132,9 +137,19 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
           rate,
           rates.some((sample) => sample.rate !== null && !sample.measured),
         ) ?? (noRecentOutput ? "No recent visible output" : "Measuring…"),
+      timeToFirstTokenMs: firstOutputLatencyMs(
+        liveSources.length === 0 ? undefined : sources[0]?.projection,
+      ),
     };
   }
   const rootProjection = sources[0]?.projection;
-  const rate = completedTurnTokenRate(latestTokenRateTurn(rootProjection));
-  return { live: false, rate, text: formatTokenRate(rate) };
+  const exactRate = completedTurnTokenRate(latestTokenRateTurn(rootProjection));
+  const estimatedRate = exactRate === null ? estimatedVisibleTurnTokenRate(rootProjection) : null;
+  const rate = exactRate ?? estimatedRate;
+  return {
+    live: false,
+    rate,
+    text: exactRate === null ? formatEstimatedTokenRate(estimatedRate) : formatTokenRate(exactRate),
+    timeToFirstTokenMs: firstOutputLatencyMs(rootProjection),
+  };
 }
