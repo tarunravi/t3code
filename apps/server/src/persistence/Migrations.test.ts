@@ -19,7 +19,7 @@ import ProjectionThreadTitleState from "./Migrations/052_ProjectionThreadTitleSt
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
 import ScheduledTaskWebhooks from "./Migrations/057_ScheduledTaskWebhooks.ts";
 import WebhookRelayDeliveries from "./Migrations/058_WebhookRelayDeliveries.ts";
-import UsageProjectionIndex from "./Migrations/078_UsageProjectionIndex.ts";
+import UsageProjectionIndex from "./Migrations/079_UsageProjectionIndex.ts";
 
 // Ledger names recorded by an early orchestration V2 build on 2026-09-08.
 const divergentLedger = [
