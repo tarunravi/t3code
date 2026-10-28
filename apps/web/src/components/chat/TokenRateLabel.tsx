@@ -23,7 +23,7 @@ export function TokenRateLabel(props: {
   readonly className?: string | undefined;
 }) {
   const sources = props.sources ?? [{ key: "thread", projection: props.projection }];
-  const { live, rate, text } = useTokenRateSources(sources);
+  const { live, rate, text, timeToFirstTokenMs } = useTokenRateSources(sources);
   const rootProjection = sources[0]?.projection;
   const explanation = live
     ? props.sources === undefined
@@ -50,7 +50,11 @@ export function TokenRateLabel(props: {
         }
         aria-description={explanation}
       >
-        {text ?? "tok/s N/A"}
+        {text === null
+          ? "tok/s N/A"
+          : timeToFirstTokenMs === null
+            ? text
+            : `TTFT ${timeToFirstTokenMs < 1_000 ? `${timeToFirstTokenMs} ms` : `${(timeToFirstTokenMs / 1_000).toFixed(1)} s`} · ${text}`}
       </TooltipTrigger>
       <TooltipPopup>{explanation}</TooltipPopup>
     </Tooltip>

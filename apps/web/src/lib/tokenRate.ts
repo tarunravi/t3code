@@ -31,6 +31,67 @@ export function formatTokenRate(rate: number | null): string | null {
   return `${rate > 0 && rate < 1 ? "<1" : Math.max(0, Math.round(rate))} tok/s (turn avg)`;
 }
 
+export function formatEstimatedTokenRate(rate: number | null): string | null {
+  const formatted = formatTokenRate(rate);
+  return formatted === null ? null : `~${formatted}`;
+}
+
+/** First streamed message/reasoning item is the closest common TTFT signal across ACP, Pi and omp. */
+export function firstOutputLatencyMs(
+  projection:
+    | Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns" | "turnItems">
+    | null
+    | undefined,
+): number | null {
+  if (!projection) return null;
+  const turn = latestTokenRateTurn(projection);
+  if (!turn?.startedAt) return null;
+  const first = projection.turnItems
+    .filter(
+      (item) =>
+        item.providerTurnId === turn.id &&
+        (item.type === "assistant_message" || item.type === "reasoning") &&
+        item.text.length > 0 &&
+        item.startedAt !== null,
+    )
+    .toSorted(
+      (a, b) => DateTime.toEpochMillis(a.startedAt!) - DateTime.toEpochMillis(b.startedAt!),
+    )[0];
+  if (!first?.startedAt) return null;
+  const elapsed = DateTime.toEpochMillis(first.startedAt) - DateTime.toEpochMillis(turn.startedAt);
+  return elapsed >= 0 ? elapsed : null;
+}
+
+/** Approximate completed-turn rate when an ACP/Pi-family provider omits output counters. */
+export function estimatedVisibleTurnTokenRate(
+  projection:
+    | Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns" | "turnItems">
+    | null
+    | undefined,
+): number | null {
+  if (!projection) return null;
+  const turn = latestTokenRateTurn(projection);
+  if (
+    turn?.status !== "completed" ||
+    turn.startedAt === null ||
+    turn.completedAt === null ||
+    turn.turnTokenUsage?.usageStatus === "complete"
+  )
+    return null;
+  const elapsedMs =
+    DateTime.toEpochMillis(turn.completedAt) - DateTime.toEpochMillis(turn.startedAt);
+  if (elapsedMs <= 0) return null;
+  const chars = projection.turnItems.reduce(
+    (sum, item) =>
+      item.providerTurnId === turn.id &&
+      (item.type === "assistant_message" || item.type === "reasoning")
+        ? sum + item.text.length
+        : sum,
+    0,
+  );
+  return chars > 0 ? (chars / ESTIMATED_CHARS_PER_TOKEN / elapsedMs) * 1_000 : null;
+}
+
 /** Provider turns are grouped by provider thread, not chronological order. */
 export function latestTokenRateTurn(
   projection:
