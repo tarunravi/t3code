@@ -27,6 +27,7 @@ import {
 } from "@t3tools/client-runtime/state/usage-progress";
 
 import {
+  mergeUsage,
   isCompatibleUsageContractVersion,
   isModelCostUnknown,
   type DailyTotals,
@@ -381,6 +382,8 @@ export function UsagePage() {
             selectedEnvironments={selectedEnvironments}
             selectedEnvironmentIds={selectedEnvironmentIds}
             onSelectionChange={setSelectedEnvironmentIds}
+            metric={metric === "tokens" ? "tokens" : "cost"}
+            hiddenProviders={hiddenProviders}
             showUsageStatus={!showingLimits}
             refreshing={refreshingUsage}
             isPartial={isPartial}
@@ -740,14 +743,14 @@ function UsageOverview({
             <span
               className={cn(
                 "text-4xl font-semibold text-foreground tabular-nums",
-                figureClass(loadingPartial),
+                figureClass(loading.everyProvider),
               )}
             >
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
             </span>
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <span>
-                <span className={figureClass(loadingPartial)}>
+                <span className={figureClass(loading.everyProvider)}>
                   {formatCount(merged.sessions)} sessions
                 </span>
                 {metric === "cost" && " · API estimate"}
@@ -905,7 +908,7 @@ function UsageOverview({
 
       {merged.totalTokens > 0 ? (
         <section
-          className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}
+          className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loading.everyProvider))}
         >
           {metric === "tokens" ? (
             <UsageShareBar
@@ -1090,7 +1093,7 @@ function UsageOverview({
                       <td
                         className={cn(
                           "py-2 pl-4 text-right text-foreground tabular-nums",
-                          figureClass(loadingPartial),
+                          figureClass(loading.everyProvider),
                         )}
                       >
                         {formatUsd(period.costUsd)}
@@ -1098,7 +1101,7 @@ function UsageOverview({
                       <td
                         className={cn(
                           "py-2 pl-4 text-right text-muted-foreground tabular-nums",
-                          figureClass(loadingPartial),
+                          figureClass(loading.everyProvider),
                         )}
                       >
                         {formatTokens(period.totalTokens)}
@@ -1334,6 +1337,8 @@ function UsageEnvironmentFilter({
   selectedEnvironmentIds,
   onSelectionChange,
   showUsageStatus,
+  metric,
+  hiddenProviders,
   refreshing,
   isPartial,
   duplicateSources,
@@ -1345,6 +1350,8 @@ function UsageEnvironmentFilter({
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly onSelectionChange: (ids: ReadonlySet<EnvironmentId> | null) => void;
   readonly showUsageStatus: boolean;
+  readonly metric: "cost" | "tokens";
+  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly refreshing: boolean;
   readonly isPartial: boolean;
   readonly duplicateSources: readonly string[];
@@ -1393,6 +1400,29 @@ function UsageEnvironmentFilter({
             selectedEnvironmentIds === null ||
             selectedEnvironmentIds.has(environment.environmentId);
           const progress = usageEnvironmentProgress(environment, refreshing);
+          const summary = environment.summary;
+          const figures =
+            summary === null ||
+            !isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION)
+              ? null
+              : mergeUsage(
+                  [
+                    {
+                      environmentId: environment.environmentId,
+                      label: environment.label,
+                      summary: {
+                        ...summary,
+                        buckets: summary.buckets.filter(
+                          (bucket) => !hiddenProviders.has(bucket.provider),
+                        ),
+                        sources: summary.sources.filter(
+                          (source) => !hiddenProviders.has(source.fingerprint.provider),
+                        ),
+                      },
+                    },
+                  ],
+                  USAGE_CONTRACT_VERSION,
+                );
           const status =
             environment.error !== null
               ? "Unavailable"
@@ -1410,7 +1440,9 @@ function UsageEnvironmentFilter({
                       ? "Refreshing…"
                       : progress.phase === "partway"
                         ? updatingProvidersLabel(progress.providers, providerLabel)
-                        : "Ready";
+                        : environment.summary?.sources.some((source) => source.refreshing)
+                          ? "Cached"
+                          : "Ready";
           return (
             <MenuCheckboxItem
               key={environment.environmentId}
@@ -1425,6 +1457,15 @@ function UsageEnvironmentFilter({
             >
               <span className="flex min-w-0 items-center gap-3">
                 <span className="min-w-0 flex-1 truncate">{environment.label}</span>
+                {showUsageStatus && figures !== null ? (
+                  <span className="shrink-0 text-xs tabular-nums">
+                    {metric === "cost"
+                      ? formatUsd(figures.costUsd)
+                      : formatTokens(figures.totalTokens)}
+                    {" · "}
+                    {formatCount(figures.sessions)} sessions
+                  </span>
+                ) : null}
                 {showUsageStatus ? (
                   <span
                     className={cn(
@@ -1444,7 +1485,7 @@ function UsageEnvironmentFilter({
         ) : null}
         {showUsageStatus && isPartial ? (
           <p className="px-2 py-2 text-xs text-muted-foreground">
-            Totals are partial while selected environments scan.
+            Totals are partial. Scanning or unavailable environments do not block available numbers.
           </p>
         ) : null}
         {showUsageStatus ? (

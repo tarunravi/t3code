@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthDiagnosticsReadScope,
+  UsageReadError,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageBucket,
@@ -13,6 +14,7 @@ import {
 import { needsCursorKeychainAccess, refreshUsage } from "@t3tools/client-runtime/state/usage";
 import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
 import * as Option from "effect/Option";
+import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
@@ -63,6 +65,7 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
       const unsupportedFilters =
         input.filters !== undefined && reported !== null && reported.filtersApplied !== true;
       const summary = unsupportedFilters ? null : reported;
+      const failure = result._tag === "Failure" ? Cause.squash(result.cause) : null;
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
@@ -72,7 +75,9 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         error: unsupportedFilters
           ? "Update this instance to filter usage by model or thread."
           : result._tag === "Failure"
-            ? "This environment could not report usage."
+            ? failure instanceof UsageReadError
+              ? failure.detail
+              : "This environment could not report usage."
             : null,
         summary,
         needsCursorKeychainAccess: needsCursorKeychainAccess(
@@ -251,7 +256,15 @@ export function useUsage(
     selectedEnvironments,
     isPending,
     shown,
-    isPartial: answeredCount > 0 && stillReporting > 0,
+    isPartial:
+      answeredCount > 0 &&
+      selectedEnvironments.some(
+        (environment) =>
+          environment.summary === null ||
+          environment.isPending ||
+          environment.error !== null ||
+          environment.summary.sources.some((source) => source.refreshing),
+      ),
     refresh,
   };
 }

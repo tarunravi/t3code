@@ -10,6 +10,7 @@ import {
   type ServerSelfUpdateResult,
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
+  UsageReadError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -44,6 +45,7 @@ import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import {
   isRpcClientError,
+  EnvironmentRpcUnavailableError,
   request,
   requestGuarded,
   runStream,
@@ -59,6 +61,24 @@ import {
   type ServerConfigProjection,
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
+
+const readUsageSummary = Effect.fn("server.usageSummary")(function (
+  input: EnvironmentRpcInput<typeof WS_METHODS.serverGetUsageSummary>,
+) {
+  return request(WS_METHODS.serverGetUsageSummary, input).pipe(
+    Effect.timeoutOrElse({
+      duration: "15 seconds",
+      orElse: () =>
+        Effect.fail(
+          new UsageReadError({
+            reason: "scanFailed",
+            detail:
+              "Usage request timed out after 15 seconds. Retry when this environment is responsive.",
+          }),
+        ),
+    }),
+  );
+});
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -1274,14 +1294,12 @@ export function createServerEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
       execute: (input, emit) =>
-        request(WS_METHODS.serverGetUsageSummary, input).pipe(
+        readUsageSummary(input).pipe(
           Effect.filterOrElse(
             (summary) => !summary.sources.some((source) => source.refreshing === true),
             (summary) =>
               emit(summary).pipe(
-                Effect.andThen(
-                  request(WS_METHODS.serverGetUsageSummary, { ...input, awaitRefresh: true }),
-                ),
+                Effect.andThen(readUsageSummary({ ...input, awaitRefresh: true })),
                 Effect.catch((error) =>
                   Effect.logWarning("Could not refresh slow usage sources.").pipe(
                     Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
@@ -1539,6 +1557,21 @@ export function createServerEnvironmentAtoms<R, E>(
     refreshUsageRates: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-usage-rates",
       tag: WS_METHODS.serverRefreshUsageRates,
+      execute: Effect.fn("server.refreshUsageRates")(function* (input) {
+        const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+        return yield* requestGuarded(WS_METHODS.serverRefreshUsageRates, input).pipe(
+          Effect.timeoutOrElse({
+            duration: "15 seconds",
+            orElse: () =>
+              Effect.fail(
+                new EnvironmentRpcUnavailableError({
+                  environmentId: supervisor.target.environmentId,
+                  message: "Usage pricing refresh timed out after 15 seconds.",
+                }),
+              ),
+          }),
+        );
+      }),
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
