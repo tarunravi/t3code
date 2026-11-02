@@ -48,7 +48,8 @@ const shared = {
 };
 const ProjectListTool = Tool.make("t3_project_list", {
   ...shared,
-  description: "List projects. Pages can shift.",
+  description:
+    "List registered projects and their workspace roots in one environment. Before launching from an external assistant, choose the project that matches the task and pass its id as projectId. Project ids belong to that environment. Pages can shift.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     cursor: Schema.optional(NonNegativeInt),
@@ -120,14 +121,14 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Inside a thread, omit `projectId`, model and modes to inherit yours; modes cannot exceed yours. Outside a thread, first use `t3_project_list` in the target environment and pass the matching `projectId`. Use `scratch:true` only for deliberately independent scratch work; it starts outside project folders and their local instructions. If the project is ambiguous, ask which project. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
     scratch: Schema.optional(
       Schema.Boolean.annotate({
         description:
-          "No project: a new Scratch folder. Not with `projectId` or `workspaceStrategy`.",
+          "Only for deliberately independent scratch work: a new folder under No project, outside registered project roots and their local instructions. Otherwise select projectId from t3_project_list. Not with projectId or workspaceStrategy.",
       }),
     ),
     title: TrimmedNonEmptyString,
