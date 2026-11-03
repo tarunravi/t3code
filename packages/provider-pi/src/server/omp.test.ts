@@ -185,7 +185,10 @@ const makeFakeOmp = (options: {
 
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.sync(() => {
-        if (ChildProcess.isStandardCommand(command)) spawnArgs = command.args;
+        if (ChildProcess.isStandardCommand(command))
+          spawnArgs = command.args.map((arg) =>
+            typeof arg === "string" ? arg : Redacted.value(arg),
+          );
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(999_999_999),
           exitCode: Effect.never,
