@@ -211,7 +211,7 @@ export function backgroundWorkNowItem(input: {
       />
     ),
     description: only ? (
-      only.activity
+      (only.activity ?? only.label)
     ) : newest ? (
       <>
         {newest.label}: {newest.activity}

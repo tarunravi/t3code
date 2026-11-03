@@ -287,10 +287,10 @@ export function BackgroundTaskList(props: {
 }
 
 /**
- * The composer banner's clickable summary. It opens a popover anchored to the
- * banner that lists the tasks and tails the selected one in place.
+ * The thread status line's clickable count. The line owns the task description;
+ * the popover lists the tasks and tails the selected one in place.
  */
-export function BackgroundTasksBannerPopover(props: {
+function BackgroundTasksBannerPopover(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly entries: ReadonlyArray<BackgroundTaskEntry>;
@@ -318,23 +318,20 @@ export function BackgroundTasksBannerPopover(props: {
             ref={triggerRef}
             type="button"
             aria-label={`${title.full}: ${summary}. Show background tasks`}
-            className="flex w-full min-w-0 cursor-pointer items-baseline gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="inline cursor-pointer rounded-sm text-left font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             data-background-tasks-banner-trigger
           />
         }
       >
-        <span className="shrink-0 font-medium">
-          <span className="@max-[440px]:hidden">{title.full}</span>
-          <span className="hidden @max-[440px]:inline">{title.compact}</span>
-        </span>
-        <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>
+        <span className="@max-[440px]:hidden">{title.full}</span>
+        <span className="hidden @max-[440px]:inline">{title.compact}</span>
       </PopoverTrigger>
       <PopoverPopup
         side="top"
         align="start"
         sideOffset={8}
         padding="compact"
-        anchor={() => triggerRef.current?.closest('[data-slot="composer-banner"]') ?? null}
+        anchor={() => triggerRef.current?.closest("[data-thread-now-line]") ?? null}
         width="anchor"
         data-background-tasks-popover
       >
