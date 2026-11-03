@@ -191,12 +191,6 @@ export const layer: Layer.Layer<
             context.providerTurns.find((turn) => turn.id === targetAttempt?.providerTurnId));
       const hasNativeTarget =
         targetAttempt !== undefined && targetTurn?.providerThreadId === providerThread.id;
-      if (targetOrdinal > 0 && input.restoreFiles !== false && !hasNativeTarget) {
-        return yield* new CheckpointRollbackExecutionError({
-          reason: "provider-turn-unavailable",
-          ...input,
-        });
-      }
       const rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget =
         targetOrdinal === 0 || !hasNativeTarget
           ? { type: "thread_start", checkpointId: checkpoint.id, appRunOrdinal: 0 }

@@ -109,6 +109,13 @@ it.effect("chooses rollback, native fork, or portable context by capability", ()
 it.effect.each([
   { targetOrdinal: 0, supported: true, busy: false, checkpointStatus: "ready" },
   { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "ready" },
+  {
+    targetOrdinal: 1,
+    supported: true,
+    busy: false,
+    checkpointStatus: "ready",
+    restoreFiles: true,
+  },
   // Outside git a turn's checkpoint has no file snapshot, but keep-files rewrites still work.
   { targetOrdinal: 1, supported: true, busy: false, checkpointStatus: "missing" },
   { targetOrdinal: 1, supported: false, busy: false, checkpointStatus: "ready" },
@@ -126,12 +133,28 @@ it.effect.each([
   (testCase) => {
     const { targetOrdinal, supported, busy, checkpointStatus } = testCase;
     const nativeRefuses = "nativeRefuses" in testCase && testCase.nativeRefuses;
+    const restoreFiles = "restoreFiles" in testCase && testCase.restoreFiles;
     const threadId = ThreadId.make("portable-rewrite");
     const providerThreadId = ProviderThreadId.make("portable-original");
     const providerSessionId = ProviderSessionId.make("portable-original-session");
     const providerInstanceId = ProviderInstanceId.make("portable-provider");
     const checkpointId = CheckpointId.make("portable-checkpoint");
     const scopeId = CheckpointScopeId.make("portable-scope");
+    const targetAttempt = restoreFiles
+      ? {
+          id: RunAttemptId.make("retained-attempt"),
+          providerTurnId: ProviderTurnId.make("retained-turn"),
+        }
+      : undefined;
+    const providerTurns = targetAttempt
+      ? [
+          {
+            id: targetAttempt.providerTurnId,
+            runAttemptId: targetAttempt.id,
+            providerThreadId: ProviderThreadId.make("portable-before-first-rewrite"),
+          },
+        ]
+      : [];
     const now = DateTime.makeUnsafe("2026-09-22T00:00:00Z");
     const original = {
       id: providerThreadId,
@@ -150,13 +173,13 @@ it.effect.each([
     const projection = {
       thread: {
         id: threadId,
-        worktreePath: null,
+        worktreePath: restoreFiles ? process.cwd() : null,
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId: providerInstanceId, model: "test" },
       },
       providerThreads: [original],
       providerSessions: [],
-      providerTurns: [],
+      providerTurns,
       nodes: [],
       attempts: [],
       checkpoints: [
@@ -181,7 +204,9 @@ it.effect.each([
       })),
     } as unknown as OrchestrationV2ThreadProjection;
     const events: OrchestrationV2DomainEvent[] = [];
-    const restore = vi.fn(() => Effect.die("keep-files rewrite must not restore files"));
+    const restore = vi.fn(() =>
+      restoreFiles ? Effect.void : Effect.die("keep-files rewrite must not restore files"),
+    );
     const rollbackThread = vi.fn(() =>
       nativeRefuses
         ? // @effect-diagnostics-next-line globalErrorInEffectFailure:off
@@ -210,8 +235,8 @@ it.effect.each([
                 providerSession: undefined,
                 checkpoint: projection.checkpoints[0],
                 scope: projection.checkpointScopes[0],
-                targetAttempt: undefined,
-                providerTurns: [],
+                targetAttempt,
+                providerTurns,
                 rolledBackAttemptIds: [],
                 runsToRollback: projection.runs.filter(
                   (run) => run.ordinal > targetOrdinal && run.status !== "rolled_back",
@@ -221,6 +246,7 @@ it.effect.each([
                 hasActiveRuns: busy,
               } as never),
             getThreadRecords: () => Effect.succeed(projection),
+            getShellSnapshot: () => Effect.succeed({ threads: [], archivedThreads: [] } as never),
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
             open: () =>
@@ -249,9 +275,9 @@ it.effect.each([
     return Effect.gen(function* () {
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
       const result = yield* service
-        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
+        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
         .pipe(Effect.result);
-      assert.equal(restore.mock.calls.length, 0);
+      assert.equal(restore.mock.calls.length, restoreFiles ? 1 : 0);
       assert.equal(rollbackThread.mock.calls.length, nativeRefuses ? 1 : 0);
       assert.equal(original.nativeThreadRef.nativeId, "original-native-id");
       if (!supported || busy) {
