@@ -159,16 +159,6 @@ export const OrchestrationV2AppThreadLineage = Schema.Struct({
 });
 export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLineage.Type;
 
-/** Subagent and side-chat threads belong to their parent and stay out of thread lists. */
-export function isParentOwnedThread(
-  lineage: Pick<OrchestrationV2AppThreadLineage, "relationshipToParent" | "sideChat">,
-): boolean {
-  return (
-    lineage.relationshipToParent === "subagent" ||
-    lineage.relationshipToParent === "side" ||
-    lineage.sideChat === true
-  );
-}
 /** Subagents and side chats live inside their parent's view, never in thread lists. */
 export const isListedThreadLineage = (lineage: OrchestrationV2AppThreadLineage): boolean =>
   lineage.relationshipToParent !== "subagent" &&

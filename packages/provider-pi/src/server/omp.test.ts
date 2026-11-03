@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 // @effect-diagnostics nodeBuiltinImport:off -- Fixtures lay out a real omp sessions root on disk.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";

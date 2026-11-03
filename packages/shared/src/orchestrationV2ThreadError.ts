@@ -47,7 +47,7 @@ export function isResumableProviderFailure(failure: OrchestrationV2ProviderFailu
 }
 
 /** Runs in the latest uninterrupted streak of retryable provider-loop failures. */
-export function latestProviderFailureStreak(
+function latestProviderFailureStreak(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<FailureScanTurnItem>,
 ): ReadonlyArray<OrchestrationV2Run> {
@@ -69,13 +69,6 @@ export function latestProviderFailureStreak(
     streak.push(run);
   }
   return streak;
-}
-
-export function consecutiveProviderFailureCount(
-  runs: ReadonlyArray<OrchestrationV2Run>,
-  turnItems: ReadonlyArray<FailureScanTurnItem>,
-): number {
-  return latestProviderFailureStreak(runs, turnItems).length;
 }
 
 /**
