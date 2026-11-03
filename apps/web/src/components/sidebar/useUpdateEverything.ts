@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
@@ -8,8 +7,6 @@ import { useEnvironments } from "~/state/environments";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom } from "~/state/server";
 import { environmentSessionStatesAtom } from "~/state/session";
-import { getProviderUpdateRunOutcome } from "../ProviderUpdateLaunchNotification.logic";
-import { useProviderUpdates } from "../ProviderUpdatesAction";
 import { canUpdateServer, type ServerUpdateOutcome, useServerUpdate } from "../ServerUpdateAction";
 import {
   type ChannelSwitchRelease,
@@ -20,7 +17,6 @@ import {
   collectUpdateEverythingResult,
   describeUpdateEverything,
   runUpdateEverything,
-  type UpdateRunMachine,
 } from "./updateEverything.logic";
 import {
   clearSavedUpdateEverythingResult,
@@ -72,9 +68,6 @@ export function useUpdateEverything(
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);
-  const providerUpdates = useProviderUpdates();
-  // A track switch moves app and servers only; provider updates stay a separate choice.
-  const providers = channelSwitch ? { machines: [], updateAll: async () => [] } : providerUpdates;
   const updateServer = useServerUpdate();
 
   const view = describeUpdateEverything({
@@ -82,17 +75,11 @@ export function useUpdateEverything(
     localMachines: machines.filter((machine) => machine.hostedByThisApp),
     servers: moving,
     skipped,
-    providerMachines: providers.machines.map((machine) => ({
-      environmentId: machine.environmentId,
-      label: machine.label,
-      providers: machine.candidates.map(
-        (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
-      ),
-    })),
+    providerMachines: [],
   });
 
   return {
-    hasUpdates: servers.length > 0 || providers.machines.length > 0,
+    hasUpdates: servers.length > 0,
     ...view,
     restarts,
     run: async ({
@@ -107,91 +94,38 @@ export function useUpdateEverything(
         localFailures.push(`${title}: ${description}`);
       };
       const startedAt = Date.now();
-      const machinesById = new Map<UpdateRunMachine["environmentId"], UpdateRunMachine>();
-      for (const machine of providers.machines) {
-        machinesById.set(machine.environmentId, {
-          environmentId: machine.environmentId,
-          label: machine.label,
-          updatesProviders: true,
-          server: null,
-          handedOffVersion: null,
-          startedAt,
-          result: null,
-          failure: null,
-          providerFailure: null,
-        });
-      }
-      for (const server of servers) {
-        const existing = machinesById.get(server.environmentId);
-        machinesById.set(server.environmentId, {
+      const localVersion = installLocal ? localUpdateVersion : null;
+      setUpdateEverythingRun(() => ({
+        ...(channelSwitch ? { trackSwitch: true } : {}),
+        localVersion,
+        phase: "servers",
+        restartAt: null,
+        machines: servers.map((server) => ({
           environmentId: server.environmentId,
           label: server.serverLabel,
-          updatesProviders: existing?.updatesProviders ?? false,
+          updatesProviders: false,
           server,
           handedOffVersion: null,
           startedAt,
           result: null,
           failure: null,
           providerFailure: null,
-        });
-      }
-      const localVersion = installLocal ? localUpdateVersion : null;
-      setUpdateEverythingRun(() => ({
-        ...(channelSwitch ? { trackSwitch: true } : {}),
-        localVersion,
-        phase: "providers",
-        restartAt: null,
-        machines: Array.from(machinesById.values()),
+        })),
       }));
-      const providerFailures = new Map<UpdateRunMachine["environmentId"], string>();
       const finishedServers: Array<{ label: string; outcome: ServerUpdateOutcome }> = [];
       try {
         const outcome = await runUpdateEverything({
           ...(downloadLocal ? { downloadLocal: () => downloadLocal(reportLocalError) } : {}),
-          updateProviders: async () => {
-            const runs = await providers.updateAll({ quiet: true });
-            const outcomes = runs.map((run) => {
-              const runOutcome = getProviderUpdateRunOutcome(run);
-              if (runOutcome.status !== "updated") {
-                providerFailures.set(
-                  run.environmentId,
-                  runOutcome.status === "failed" ? runOutcome.line : "Provider update interrupted",
-                );
-              }
-              return runOutcome;
-            });
-            for (const machine of machinesById.values()) {
-              if (machine.server === null) {
-                settleUpdateRunMachine(
-                  machine.environmentId,
-                  providerFailures.get(machine.environmentId) ?? null,
-                );
-              }
-            }
-            const serversStartedAt = Date.now();
-            setUpdateEverythingRun(
-              (run) =>
-                run && {
-                  ...run,
-                  phase: "servers",
-                  machines: run.machines.map((machine) =>
-                    machine.server === null ? machine : { ...machine, startedAt: serversStartedAt },
-                  ),
-                },
-            );
-            return outcomes;
-          },
+          // CLI versions are managed explicitly in provider settings.
+          updateProviders: async () => [],
           updateServers: async () => {
             const runs = servers.map(async (server) => {
               const serverOutcome = await updateServer(server, { quiet: true });
               settleUpdateRunMachine(
                 server.environmentId,
-                serverOutcome.status === "failed"
-                  ? serverOutcome.message
-                  : (providerFailures.get(server.environmentId) ?? null),
+                serverOutcome.status === "failed" ? serverOutcome.message : null,
                 {
                   serverUpdated: serverOutcome.status !== "failed",
-                  providerFailure: providerFailures.get(server.environmentId) ?? null,
                 },
               );
               const finished = { label: server.serverLabel, outcome: serverOutcome };
