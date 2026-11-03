@@ -201,6 +201,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.SET_SIGN_IN_AWS_PROFILE_CHANNEL, input),
   getAwsLoginStatus: () => ipcRenderer.invoke(IpcChannels.GET_AWS_LOGIN_STATUS_CHANNEL),
   setAwsLoginGuard: (input) => ipcRenderer.invoke(IpcChannels.SET_AWS_LOGIN_GUARD_CHANNEL, input),
+  getEnvironmentRecovery: (connected = []) =>
+    ipcRenderer.invoke(IpcChannels.GET_ENVIRONMENT_RECOVERY_CHANNEL, connected),
+  setEnvironmentRecovery: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_ENVIRONMENT_RECOVERY_CHANNEL, input),
+  runEnvironmentRecovery: (input) =>
+    ipcRenderer.invoke(IpcChannels.RUN_ENVIRONMENT_RECOVERY_CHANNEL, input),
+  cancelEnvironmentRecovery: (id) =>
+    ipcRenderer.invoke(IpcChannels.CANCEL_ENVIRONMENT_RECOVERY_CHANNEL, id),
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   pickProjectFavicon: (initialPath) =>
     ipcRenderer.invoke(IpcChannels.PICK_PROJECT_FAVICON_CHANNEL, initialPath),

@@ -71,6 +71,158 @@ import {
 } from "../ServerUpdateAction";
 import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
 import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
+import {
+  environmentRecoveryLabel,
+  environmentRecoveryRunning,
+  setEnvironmentRecoveryState,
+  useEnvironmentRecovery,
+} from "~/lib/environmentRecovery";
+import { Textarea } from "../ui/textarea";
+
+const recoveryBridge = typeof window === "undefined" ? undefined : window.desktopBridge;
+const recoveryExample = `set -e
+if ! aws sts get-caller-identity --profile production-developer >/dev/null; then
+  echo 'Signing in to AWS…'
+  aws sso login --profile production-developer
+fi
+launchctl kickstart -k gui/$(id -u)/com.tarun.devbox1-t3-proxy`;
+
+function EnvironmentRecoverySetting({
+  environment,
+}: {
+  readonly environment: EnvironmentPresentation;
+}) {
+  const id = environment.environmentId;
+  const state = useEnvironmentRecovery(id);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [automatic, setAutomatic] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!recoveryBridge?.setEnvironmentRecovery) return null;
+  const script = draft ?? state?.recipe?.script ?? "";
+  const auto = automatic ?? state?.recipe?.automatic ?? false;
+  const running = environmentRecoveryRunning(state);
+  const act = async (action: () => Promise<NonNullable<typeof state>>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setEnvironmentRecoveryState(await action());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+    setBusy(false);
+  };
+  const save = () =>
+    act(() =>
+      recoveryBridge.setEnvironmentRecovery!({
+        environmentId: id,
+        recipe: { script, automatic: auto },
+      }),
+    );
+  const run = () =>
+    act(() => recoveryBridge.runEnvironmentRecovery!({ environmentId: id, reason: "manual" }));
+  const remove = () =>
+    act(async () => {
+      const next = await recoveryBridge.setEnvironmentRecovery!({
+        environmentId: id,
+        recipe: null,
+      });
+      setDraft(null);
+      setAutomatic(null);
+      return next;
+    });
+  return (
+    <div className="mt-1 grid gap-2 text-xs">
+      <details>
+        <summary className="w-fit cursor-pointer text-muted-foreground hover:text-foreground">
+          Local login / recovery{state?.recipe ? " configured" : ""}
+        </summary>
+        <div className="mt-2 grid gap-2">
+          <p className="text-muted-foreground">
+            Runs on this desktop with your shell. Use existing commands and browser sign-in;
+            terminal prompts are unavailable. Stops after 10 minutes. Output stays on this desktop.
+          </p>
+          <Textarea
+            aria-label={`Recovery script for ${environment.label}`}
+            value={script}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Your local login and tunnel recovery commands"
+          />
+          <label className="flex items-center gap-2">
+            <Switch size="sm" checked={auto} onCheckedChange={setAutomatic} />
+            Run automatically after persistent connection failure
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy || !script.trim()}
+              onClick={() => void save()}
+            >
+              Save
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy || !state?.recipe || !environment.entry.enabled || running}
+              onClick={() => void run()}
+            >
+              {state?.job ? "Retry recovery" : "Run recovery"}
+            </Button>
+            {running ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void act(() => recoveryBridge.cancelEnvironmentRecovery!(id))}
+              >
+                Cancel
+              </Button>
+            ) : null}
+            {state?.recipe ? (
+              <Button size="xs" variant="ghost" disabled={busy} onClick={() => void remove()}>
+                Remove script
+              </Button>
+            ) : null}
+            <Button size="xs" variant="ghost" onClick={() => setDraft(recoveryExample)}>
+              Use AWS / launchd example
+            </Button>
+          </div>
+          <p className="text-muted-foreground">
+            The example uses a specific AWS profile and existing launchd proxy. Edit both for this
+            environment before saving.
+          </p>
+          {state?.job?.links.map((link) => (
+            <button
+              key={link}
+              type="button"
+              className="w-fit break-all text-left underline"
+              onClick={() => void recoveryBridge.openExternal(link)}
+            >
+              Open sign-in page
+            </button>
+          ))}
+          {state?.job?.codes.length ? (
+            <p className="font-mono">{state.job.codes.join(" · ")}</p>
+          ) : null}
+          {state?.job?.output ? (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2">
+              {state.job.output}
+            </pre>
+          ) : null}
+        </div>
+      </details>
+      {environmentRecoveryLabel(state) && environment.connection.phase !== "connected" ? (
+        <p role="status">{environmentRecoveryLabel(state)}</p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
@@ -312,6 +464,7 @@ export function SavedBackendListRow({
       }
       below={
         <>
+          <EnvironmentRecoverySetting environment={environment} />
           {diagnosis ? (
             <ConnectionDiagnosisSummary
               diagnosis={diagnosis}

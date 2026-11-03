@@ -18,6 +18,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useDeadlinePassed } from "../../hooks/useDeadline";
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { cn } from "../../lib/utils";
+import { environmentRecoveryLabel, useEnvironmentRecovery } from "~/lib/environmentRecovery";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
@@ -57,7 +58,9 @@ export function ConnectionDiagnosisHeadline({
 }: {
   readonly environment: EnvironmentPresentation;
 }) {
-  return useConnectionDiagnosis(environment).diagnosis?.headline ?? null;
+  const diagnosis = useConnectionDiagnosis(environment).diagnosis;
+  const recovery = useEnvironmentRecovery(environment.environmentId);
+  return environmentRecoveryLabel(recovery) ?? diagnosis?.headline ?? null;
 }
 
 const HOP_MARK = { ok: "✓", failed: "✕", unchecked: "–" } as const;

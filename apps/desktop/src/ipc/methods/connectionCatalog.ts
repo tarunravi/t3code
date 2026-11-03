@@ -3,6 +3,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as DesktopConnectionCatalogStore from "../../app/DesktopConnectionCatalogStore.ts";
+import { DesktopEnvironmentRecovery } from "../../recovery/DesktopEnvironmentRecovery.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 
@@ -22,6 +23,11 @@ export const setConnectionCatalog = DesktopIpc.makeIpcMethod({
   result: Schema.Boolean,
   handler: Effect.fn("desktop.ipc.connectionCatalog.set")(function* (catalog) {
     const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-    return yield* store.set(catalog);
+    const saved = yield* store.set(catalog);
+    if (saved) {
+      const recovery = yield* DesktopEnvironmentRecovery;
+      yield* recovery.reconcile(catalog);
+    }
+    return saved;
   }),
 });

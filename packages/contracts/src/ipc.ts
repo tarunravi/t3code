@@ -734,6 +734,27 @@ export const DesktopAwsLoginStatusSchema = Schema.Struct({
 });
 export type DesktopAwsLoginStatus = typeof DesktopAwsLoginStatusSchema.Type;
 
+/** Executable content stays on the connecting desktop, outside the connection catalog. */
+export const DesktopEnvironmentRecoveryRecipeSchema = Schema.Struct({
+  script: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(16_000)),
+  automatic: Schema.Boolean,
+});
+export type DesktopEnvironmentRecoveryRecipe = typeof DesktopEnvironmentRecoveryRecipeSchema.Type;
+export const DesktopEnvironmentRecoveryStateSchema = Schema.Struct({
+  environmentId: EnvironmentId,
+  recipe: Schema.NullOr(DesktopEnvironmentRecoveryRecipeSchema),
+  job: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String,
+      phase: Schema.Literals(["running", "browser", "done", "failed", "cancelled"]),
+      output: Schema.String,
+      links: Schema.Array(Schema.String),
+      codes: Schema.Array(Schema.String),
+    }),
+  ),
+});
+export type DesktopEnvironmentRecoveryState = typeof DesktopEnvironmentRecoveryStateSchema.Type;
+
 /**
  */
 export type DesktopPreviewNavStatus =
@@ -1281,6 +1302,20 @@ export interface DesktopBridge {
   /** Re-checks the watched profile's sign-in; a no-op returning `awsProfile: null` when off. */
   getAwsLoginStatus?: () => Promise<DesktopAwsLoginStatus>;
   setAwsLoginGuard?: (input: DesktopAwsLoginGuardInput) => Promise<DesktopAwsLoginStatus>;
+  getEnvironmentRecovery?: (
+    connectedEnvironmentIds?: readonly EnvironmentId[],
+  ) => Promise<readonly DesktopEnvironmentRecoveryState[]>;
+  setEnvironmentRecovery?: (input: {
+    environmentId: EnvironmentId;
+    recipe: DesktopEnvironmentRecoveryRecipe | null;
+  }) => Promise<DesktopEnvironmentRecoveryState>;
+  runEnvironmentRecovery?: (input: {
+    environmentId: EnvironmentId;
+    reason: "automatic" | "manual";
+  }) => Promise<DesktopEnvironmentRecoveryState>;
+  cancelEnvironmentRecovery?: (
+    environmentId: EnvironmentId,
+  ) => Promise<DesktopEnvironmentRecoveryState>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   pickProjectFavicon: (initialPath?: string) => Promise<string | null>;
   pickThemeFiles: () => Promise<readonly PickedThemeFile[] | null>;

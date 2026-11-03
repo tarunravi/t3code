@@ -5,6 +5,12 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
+import {
+  getEnvironmentRecovery,
+  setEnvironmentRecovery,
+  runEnvironmentRecovery,
+  cancelEnvironmentRecovery,
+} from "./methods/environmentRecovery.ts";
 import { getKeepAwakeEnabled, setKeepAwakeEnabled } from "./methods/keepAwake.ts";
 import {
   getLocalEnvironmentEnabled,
@@ -123,6 +129,10 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(getConnectionCatalog);
+  yield* ipc.handle(getEnvironmentRecovery);
+  yield* ipc.handle(setEnvironmentRecovery);
+  yield* ipc.handle(runEnvironmentRecovery);
+  yield* ipc.handle(cancelEnvironmentRecovery);
   yield* ipc.handle(getSnapShotState);
   yield* ipc.handle(setupSnapShot);
   yield* ipc.handle(previewSnapShotConfig);
