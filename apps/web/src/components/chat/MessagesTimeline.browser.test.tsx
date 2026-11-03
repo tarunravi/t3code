@@ -35,7 +35,7 @@ import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
   deriveTimelineEntriesFromVisibleTurnItems,
@@ -255,12 +255,12 @@ describe("MessagesTimeline live thinking", () => {
   }
 
   it("streams the whole thought into the live row when on", async () => {
-    const screen = await renderStreamingThought(true);
+    await using screen = await renderStreamingThought(true);
     expect(screen.text()).toContain(STREAMED_TAIL);
   });
 
   it("keeps only the first sentence in the live row when off", async () => {
-    const screen = await renderStreamingThought(false);
+    await using screen = await renderStreamingThought(false);
     expect(screen.text()).toContain(FIRST_SENTENCE);
     expect(screen.text()).not.toContain(STREAMED_TAIL);
   });
@@ -344,7 +344,12 @@ describe("MessagesTimeline work rows", () => {
       ];
       using _threadAtom = vi.spyOn(environmentThreadDetails, "threadAtom").mockReturnValue(
         Atom.make({
-          projection: { subagents: tasks, turnItems: [], visibleTurnItems: [] },
+          projection: {
+            ...makeThreadProjectionFixture(),
+            subagents: tasks,
+            turnItems: [],
+            visibleTurnItems: [],
+          },
         }) as never,
       );
       const onOpenThread = vi.fn();
@@ -871,9 +876,9 @@ describe("MessagesTimeline automation prompts", () => {
         ],
       },
     );
-    expect(screen.buttons("Edit from here")).toHaveLength(0);
+    expect(screen.buttons("Edit and rewrite from here")).toHaveLength(0);
     await click(screen.button(/^Automation/));
-    expect(screen.buttons("Edit from here")).toHaveLength(1);
+    expect(screen.buttons("Edit and rewrite from here")).toHaveLength(1);
   });
 });
 

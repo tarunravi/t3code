@@ -1,6 +1,6 @@
 import { fakeTimers } from "../../test/render";
 const WORKING_EXIT_GRACE_MS = 2_000;
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import type { AnyRouter } from "@tanstack/react-router";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
@@ -23,7 +23,7 @@ const state = vi.hoisted(() => ({
   turnError: false,
   limited: false,
   relationshipToParent: null as "subagent" | "side" | "fork" | null,
-  background: [] as Array<{ taskId: string; kind: "command" | "monitor" }>,
+  background: [] as Array<{ taskId: string; kind: "command" | "monitor"; awaited?: true }>,
   delegatedChild: null as "running" | "approval" | null,
   add: vi.fn(
     (_toast: { title: string; description: string; actionProps: { onClick: () => void } }) =>
@@ -117,7 +117,11 @@ vi.mock(import("../state/shell"), async (original) => {
   const actual = await original();
   return {
     ...actual,
-    environmentShell: { ...actual.environmentShell, stateValueAtom: (() => shellAtom) as never },
+    environmentShell: {
+      ...actual.environmentShell,
+      stateValueAtom: (() => shellAtom) as never,
+      stateAtom: (() => shellResultAtom) as never,
+    },
   };
 });
 vi.mock(import("../state/presentation"), async (original) => {
@@ -158,7 +162,8 @@ vi.mock(import("./ui/toast"), async (original) => {
 
 import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 
-const shellAtom = Atom.make<unknown>(null);
+const shellAtom = Atom.make<unknown>(null).pipe(Atom.keepAlive);
+const shellResultAtom = Atom.map(shellAtom, (shell) => AsyncResult.success(shell));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>(["env-1"]);
 let registry: AtomRegistry.AtomRegistry;
 let start: (() => void) | null = null;
@@ -190,8 +195,9 @@ async function setup() {
   const currentRegistry = registry;
   stack.defer(() => currentRegistry.dispose());
   state.settingsListeners.clear();
+  const notifications = stack.use(new DisposableStack());
   start = () =>
-    stack.defer(
+    notifications.defer(
       startThreadNotifications(currentRegistry, {
         get state() {
           return { matches: [{ params: state.active }] };
@@ -252,6 +258,7 @@ describe("thread notifications", () => {
           body: "Fix the login form",
           tag: expect.any(String),
           silent: true,
+          requireInteraction: false,
         });
       }
       if (sound) {
@@ -387,13 +394,14 @@ describe("thread notifications", () => {
       body: "Fix the login form",
       tag: expect.any(String),
       silent: true,
+      requireInteraction: false,
     });
   });
 
   it("alerts when only a dev server is left running, not while a monitor can wake the agent", async () => {
     await using _fixture = await setup();
     await render();
-    state.background = [{ taskId: "watch", kind: "monitor" }];
+    state.background = [{ taskId: "watch", kind: "monitor", awaited: true }];
     await complete();
     expect(state.add).not.toHaveBeenCalled();
     state.background = [{ taskId: "dev", kind: "command" }];
@@ -471,6 +479,7 @@ describe("thread notifications", () => {
       body: "Fix the login form",
       tag: expect.any(String),
       silent: true,
+      requireInteraction: false,
     });
   });
 });

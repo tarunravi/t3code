@@ -35,7 +35,7 @@ vi.mock("@effect/atom-react", async (importOriginal) => {
     },
   };
 });
-vi.mock("../../env", () => ({ isElectron: false }));
+vi.mock(import("../../env"), async (original) => ({ ...(await original()), isElectron: false }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: { configValueAtom: () => "config" },
 }));

@@ -89,7 +89,9 @@ export function assertPiSimpleOutput(
       ? [event.payload.tokenUsage.usedTokens]
       : [],
   );
-  assert.deepEqual(liveUsage, [...new Set(streamedTotals.filter((total) => total !== 0))]);
+  assert.deepEqual(liveUsage, [
+    ...new Set(streamedTotals.filter((total) => typeof total === "number")),
+  ]);
 
   const entries = field(lastPiResponseData(transcript, "get_entries"), "entries");
   const userEntryId = (Array.isArray(entries) ? entries : [])

@@ -321,8 +321,9 @@ describe("EnvironmentProviderSettings routing", () => {
     });
   });
   it("saves the subagent model list on the server, separate from the picker", async () => {
+    await setup();
     await setProviders([provider()]);
-    await render(panel());
+    await using _screen = await render(panel());
 
     await userEvent.click(page.getByRole("button", { name: "Subagents" }));
     await userEvent.click(page.getByRole("switch", { name: "Allow Chosen as a subagent" }));

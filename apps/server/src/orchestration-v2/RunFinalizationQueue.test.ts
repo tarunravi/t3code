@@ -89,7 +89,10 @@ it.effect.each([
         Layer.mock(CheckpointRollback.CheckpointRollbackServiceV2)({}),
         Layer.mock(RuntimeRequests.RuntimeRequestServiceV2)({}),
         Layer.mock(ThreadTitles.ThreadTitleRegenerationService)({}),
-        Layer.mock(ThreadManagement.ThreadManagementService)({}),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadRecords: () =>
+            Effect.succeed({ thread: { id: threadId, preservationOnly: false } } as never),
+        }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderTurnStart.ProviderTurnStartServiceV2)({
           start: () => Effect.sync(() => calls.push("start")).pipe(Effect.asVoid),

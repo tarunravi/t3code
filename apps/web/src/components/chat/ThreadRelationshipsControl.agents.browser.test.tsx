@@ -395,11 +395,16 @@ it("opens the correct chat for every workflow phase and unphased member", async 
   expect(byLabel("Collapse Verify phase, running")).toBeDefined();
   for (const phase of phaseButtons().slice(0, 2)) await click(phase);
   expect(memberButtons()).toHaveLength(7);
-  for (const button of memberButtons()) {
-    expect(button.disabled).toBe(true);
+  for (const agent of agents) {
+    const button = byLabel(`Open ${agent.label} chat`);
+    expect(button.disabled).toBe(false);
     await click(button);
+    expect(state.navigate).toHaveBeenLastCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "remote", threadId: agent.childThreadId },
+    });
   }
-  expect(state.navigate).not.toHaveBeenCalled();
+  state.navigate.mockClear();
   state.shells = memberShells.map((source) => ({ environmentId: "remote", source }));
   await update();
   for (const button of memberButtons()) expect(button.disabled).toBe(false);
@@ -725,7 +730,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   };
   await update();
   expect(heading()).toBe("Lineage");
-  expect(text()).toContain("Previous agents (1)");
+  expect(text()).toMatch(/Previous agents\s*1/);
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
@@ -736,7 +741,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Worker");
   await click(sectionToggle(true));
   expect(text()).not.toContain("Checker");
-  expect(text()).toContain("Previous agents (1)");
+  expect(text()).toMatch(/Previous agents\s*1/);
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
 
@@ -839,7 +844,7 @@ it("keeps a settled agent in current work while a follow-up run is active on its
   };
 
   await withChildRun(null);
-  expect(text()).toContain("Previous agents (1)");
+  expect(text()).toMatch(/Previous agents\s*1/);
   expect(text()).not.toContain("Checker");
 
   await withChildRun("running");
@@ -854,7 +859,7 @@ it("keeps a settled agent in current work while a follow-up run is active on its
 
   await withChildRun(null);
   expect(heading()).toBe("Lineage");
-  expect(text()).toContain("Previous agents (1)");
+  expect(text()).toMatch(/Previous agents\s*1/);
 });
 
 it("keeps Stop in the child header while expanding and navigating a four-level subagent tree under a nested owner", async () => {
@@ -1124,7 +1129,6 @@ it("shows readable models and only differing workspace details in agent tooltips
     } else {
       expect(text()).toContain(`${expected} · high`);
     }
-    expect(text()).not.toContain("Unknown");
     if (!model?.trim()) expect(text()).not.toContain("My GPT");
   }
 

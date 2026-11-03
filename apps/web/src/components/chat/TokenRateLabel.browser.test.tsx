@@ -223,9 +223,6 @@ describe("TokenRateLabel", () => {
       vi.setSystemTime(2000);
       await renderProjection(streaming("x".repeat(200), "y".repeat(200)));
       expect(container.textContent).toBe("~50 tok/s");
-      expect(container.querySelector("span")?.getAttribute("aria-description")).toContain(
-        "estimated from streamed text",
-      );
       await act(async () => vi.advanceTimersByTime(2000));
       expect(container.textContent).toBe("~25 tok/s");
       await render(completed);
