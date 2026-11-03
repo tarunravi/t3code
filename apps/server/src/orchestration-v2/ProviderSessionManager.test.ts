@@ -2089,7 +2089,7 @@ it.effect("ProviderSessionManagerV2 keeps MCP credentials when release persisten
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const registry = yield* McpSessionRegistry.McpSessionRegistry;
-      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      const _mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("thread-provider-session-manager-mcp-release-failure");
       const providerSessionId = yield* idAllocator.allocate.providerSession({

@@ -1,3 +1,4 @@
+import { usageSourcesTestLayer } from "../usage/UsageLimitSources.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -174,6 +175,7 @@ it.effect.each([
         );
         const layerTest = Layer.merge(
           OrchestratorMcpService.layer.pipe(
+            Layer.provide(usageSourcesTestLayer),
             Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
             Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
           ),

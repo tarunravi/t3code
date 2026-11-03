@@ -531,7 +531,6 @@ describe("ClientSettings voice input device", () => {
   });
 });
 
-
 describe("ServerSettings fallback model", () => {
   it("defaults to disabled and accepts set and clear patches", () => {
     expect(DEFAULT_SERVER_SETTINGS.fallbackProviderInstanceId).toBeNull();
@@ -567,7 +566,6 @@ describe("ServerSettings live thinking", () => {
   });
 });
 
-
 describe("legacy subagent roster settings", () => {
   // Written by fork builds that let threads pick their own subagents.
   const legacy = {
@@ -602,4 +600,3 @@ describe("legacy subagent roster settings", () => {
     });
   });
 });
-

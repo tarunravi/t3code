@@ -1,10 +1,4 @@
-/**
- * `/goal` kept by T3 for an agent whose own goal mode T3 cannot reach: omp
- * over ACP, and omp RPC builds older than its native RPC goals. T3 stores the
- * goal on the provider thread and pursues it with ordinary prompts. The agent never enters a native goal mode:
- * it does not continue on its own between turns, and a goal turn that ends
- * short of done leaves the goal paused for `/goal resume`.
- */
+/** Locally track goals for runtimes whose native goal mode is unavailable through their protocol. */
 import type { OrchestrationV2ProviderGoal, TurnTokenUsage } from "@t3tools/contracts";
 
 export type LocalGoalCommand =

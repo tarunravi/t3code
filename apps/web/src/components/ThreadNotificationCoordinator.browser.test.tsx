@@ -1,5 +1,5 @@
 import { fakeTimers } from "../../test/render";
-import { WORKING_EXIT_GRACE_MS } from "@t3tools/client-runtime/state/thread-inbox";
+const WORKING_EXIT_GRACE_MS = 2_000;
 import { Atom, AtomRegistry } from "effect/reactivity";
 import type { AnyRouter } from "@tanstack/react-router";
 import type { ClientSettings } from "@t3tools/contracts/settings";

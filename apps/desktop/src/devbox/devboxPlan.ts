@@ -413,13 +413,7 @@ export function sshBlockAliases(existing: string): string[] {
   );
 }
 
-/**
- * Writes `hosts` into the shared block, replacing entries with the same alias
- * or instance id in place and appending new ones. Entries for `removed`
- * instance ids are dropped; every other line is kept. A new block is
- * prepended because ssh_config uses the first matching value, so a later
- * `Host *` or stale alias must not shadow it.
- */
+/** Preserve unrelated SSH entries; prepend new blocks because the first matching host wins. */
 export function syncSshConfigHosts(
   existing: string,
   config: AwsTarget,
@@ -804,7 +798,6 @@ path.write_text(json.dumps(data, indent=2))
   }
 }
 
-// oxlint-disable-next-line no-control-regex -- stripping terminal escape sequences
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/gu;
 
 export function stripTerminal(text: string): string {

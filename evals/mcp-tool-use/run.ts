@@ -16,7 +16,6 @@ import {
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
-  OrchestratorMcpTaskRole,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -248,8 +247,6 @@ export const McpToolUseCase = Schema.Struct({
     harness: Schema.optional(Schema.Literals(["claude", "codex"])),
     /** The Linked environments beta is on, so T3 lists its link tools. */
     linkedEnvironments: Schema.optional(Schema.Boolean),
-    /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
-    delegateRole: Schema.optional(OrchestratorMcpTaskRole),
     context: Schema.optional(Schema.String),
     priorTurns: Schema.optional(
       Schema.Array(
@@ -879,7 +876,7 @@ export const buildMessages = (sample: Sample) => {
     if (last?.role !== role) messages.push({ role, content: blocks });
     else messages[messages.length - 1] = { role, content: [...last.content, ...blocks] };
   };
-  const { role, context, delegateRole, priorTurns = [] } = testCase.setup;
+  const { role, context, priorTurns = [] } = testCase.setup;
   const native = role === "native-subagent";
   const notes = [
     native
@@ -937,7 +934,7 @@ export const buildMessages = (sample: Sample) => {
           }),
           userText,
         );
-  const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
+  const childPrompt = () => taskPrompt({ task: prompt });
   push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {

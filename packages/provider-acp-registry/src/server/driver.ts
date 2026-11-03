@@ -504,10 +504,14 @@ export interface AcpRegistryProviderVariant {
   readonly slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
 }
 
-export const makeAcpRegistryProviderInstance =
-  (variant: AcpRegistryProviderVariant) =>
+export const makeAcpRegistryProviderInstance = (variant: AcpRegistryProviderVariant) =>
   Effect.fn("AcpRegistryDriver.create")(function* ({
-    instanceId, displayName, accentColor, environment, enabled, config,
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
   }: ProviderDriverCreateInput<AcpRegistrySettings>) {
     const driverKind = variant.driverKind;
     const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
@@ -545,7 +549,9 @@ export const makeAcpRegistryProviderInstance =
       hostEnvironment,
     );
     const orchestrationAdapter = yield* createAcpRegistryAdapterV2({
-      instanceId, environment, settings: effectiveConfig,
+      instanceId,
+      environment,
+      settings: effectiveConfig,
       flavorOverrides: { ...variant.flavorOverrides, driver: driverKind },
     }).pipe(
       Effect.mapError(
@@ -605,7 +611,7 @@ export const makeAcpRegistryProviderInstance =
           );
       return withVariantSlashCommands(live, variant.slashCommands);
     });
-  const checkProvider = checkAcpRegistryProviderReadiness(readinessInput).pipe(
+    const checkProvider = checkAcpRegistryProviderReadiness(readinessInput).pipe(
       Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog),
       Effect.flatMap(withLiveRuntimeState),
     );

@@ -219,6 +219,8 @@ it("stops the entire native workflow through its parent without changing state b
   ];
   await render(
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("remote")}
       threadId={ThreadId.make("parent")}
     />,
@@ -293,6 +295,8 @@ it.each([
   };
   await render(
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("remote")}
       threadId={ThreadId.make("parent")}
     />,
@@ -371,6 +375,8 @@ it("opens the correct chat for every workflow phase and unphased member", async 
   state.shells = memberShells.map((source) => ({ environmentId: "other", source }));
   const panel = (
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("remote")}
       threadId={ThreadId.make("parent")}
     />
@@ -478,6 +484,8 @@ it("groups and counts a workflow by its run status instead of its coordinator ch
   state.shells = [{ environmentId: "test", source: child }];
   const panel = (
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />
@@ -577,6 +585,8 @@ it.each([
     state.projection = projection;
     const panel = (
       <ThreadRelationshipsPanel
+        showLineage
+        showSideChats
         environmentId={EnvironmentId.make("test")}
         threadId={ThreadId.make("parent")}
       />
@@ -683,6 +693,8 @@ it("shows the matching child agent details and refreshes them when the agent set
   state.projection = projection;
   const panel = (
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />
@@ -801,6 +813,8 @@ it("keeps a settled agent in current work while a follow-up run is active on its
   };
   const panel = (
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />
@@ -927,7 +941,14 @@ it("keeps Stop in the child header while expanding and navigating a four-level s
       { sourceThreadId: "child", targetThreadId: "child-transfer", status: "consumed" },
     ],
   };
-  const panel = <ThreadRelationshipsPanel environmentId={environmentId} threadId={ownerThreadId} />;
+  const panel = (
+    <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
+      environmentId={environmentId}
+      threadId={ownerThreadId}
+    />
+  );
   const text = () => textNodes(" ").replace(/\s+/g, " ");
   const expand = (label: string) => click(byLabel(label));
   const expectStopInChildHeader = () => {
@@ -1046,6 +1067,8 @@ it("shows readable models and only differing workspace details in agent tooltips
   state.projection = projection;
   const panel = (
     <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
     />
@@ -1422,7 +1445,12 @@ it("shows the parent's own visible status as parent and child activity change", 
   ];
   state.shells = shells(parent, child);
   const panel = (
-    <ThreadRelationshipsPanel environmentId={environmentId} threadId={ThreadId.make("child")} />
+    <ThreadRelationshipsPanel
+      showLineage
+      showSideChats
+      environmentId={environmentId}
+      threadId={ThreadId.make("child")}
+    />
   );
   await render(panel);
   const visibleText = () => textNodes(" ", true);
@@ -1460,6 +1488,8 @@ it.each(["source", "target"])(
     };
     const panel = (
       <ThreadRelationshipsPanel
+        showLineage
+        showSideChats
         environmentId={environmentId}
         threadId={ThreadId.make(currentThreadId)}
       />

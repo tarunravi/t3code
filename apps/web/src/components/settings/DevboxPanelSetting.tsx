@@ -44,6 +44,7 @@ export function DevboxProfileForm({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads AWS profiles and panel state from the desktop bridge on mount
   useEffect(() => {
     void Promise.all([bridge?.listAwsProfiles?.() ?? [], bridge?.getDevboxState?.()]).then(
       ([found, state]) => {

@@ -28,6 +28,7 @@ export function VoiceMicrophoneSetting() {
   const listDevices = async () =>
     mediaDevices ? await mediaDevices.enumerateDevices().catch(() => []) : [];
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to microphone device changes from the browser media API
   useEffect(() => {
     if (!mediaDevices) return;
     let active = true;

@@ -136,7 +136,6 @@ describe("ProviderContinuationService", () => {
     });
   });
 
-
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();

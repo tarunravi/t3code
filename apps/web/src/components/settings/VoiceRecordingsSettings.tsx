@@ -84,6 +84,7 @@ function VoiceRecordingRow({
     onError: (error) => setActionError(error.message),
   });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- revokes the browser audio URL when its recording view releases it
   useEffect(
     () => () => {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -132,6 +133,7 @@ function VoiceRecordingRow({
 
   const failed = recording.status === "error";
   const rowRef = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the focused recording into the DOM viewport
   useEffect(() => {
     if (focused) rowRef.current?.scrollIntoView({ block: "center" });
   }, [focused]);
@@ -251,6 +253,7 @@ export function VoiceRecordingsSettingsPanel(props: { readonly focusedRecordingI
       .finally(() => setRefreshing(false));
   });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads recordings from the desktop recording store when the view mounts
   useEffect(() => {
     void refresh();
   }, [refresh]);

@@ -25,6 +25,7 @@ export function SidebarAwsLoginPill() {
   const watching = level !== "off";
 
   // Re-classify each minute so the warning appears and counts down between desktop checks.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- ages desktop AWS credential expiry against the wall clock while watched
   useEffect(() => {
     if (!watching) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);

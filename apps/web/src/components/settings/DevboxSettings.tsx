@@ -105,11 +105,13 @@ export function DevboxSettings() {
     },
   );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads managed devboxes from the desktop process
   useEffect(() => {
     void load({ refresh: true });
   }, [load]);
 
   // Jobs run in the desktop process; poll only while one is active.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls desktop jobs while they are active
   useEffect(() => {
     if (!anyBusy) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
@@ -144,6 +146,7 @@ export function DevboxSettings() {
   };
 
   // Launch and setup end by pairing T3 through the normal SSH connection flow.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pairs completed desktop launch jobs through the connection flow
   useEffect(() => {
     for (const job of jobs) {
       const wasRunning = runningJobs.current.has(job.devbox);

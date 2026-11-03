@@ -280,7 +280,6 @@ const childCase: McpToolUseCase = {
   experience: "A delegated child must link its PR and report back, not watch it.",
   setup: {
     role: "delegated-child",
-    delegateRole: "implementation",
     world: { branch: "fix/date-format", files: { "src/date.ts": "export const format = 1;\n" } },
     priorTurns: [
       {
@@ -326,7 +325,7 @@ it("rebuilds the template from this checkout and sends a child T3's task prompt"
   assert.notInclude(reminders?.join(), "Codebase and user instructions");
 
   const prompt = buildMessages(makeSample(childCase, base)).at(-1)?.content.at(-1);
-  assert.equal(prompt?.text, taskPrompt({ task: childCase.prompt, role: "implementation" }));
+  assert.equal(prompt?.text, taskPrompt({ task: childCase.prompt }));
   assert.notEqual(prompt?.text, childCase.prompt);
 });
 

@@ -1,17 +1,4 @@
-/**
- * ZCodeStreamJson — the ZCode CLI's headless `--output-format stream-json`
- * protocol, reduced to the updates `ZCodeAdapterV2` renders.
- *
- * Each turn runs `zcode --prompt=<text> --output-format stream-json`. Stdout
- * carries one ZCode session event per line (`model.streaming`,
- * `tool.updated`, `permission.resolved`, `turn.completed`, …) and ends with a
- * `{"type":"result"}` summary. Every event carries the ZCode `sessionId`,
- * which `--resume` accepts on the next turn.
- *
- * Headless ZCode has no interactive approval surface: a tool that would ask
- * for permission is denied and reported as `permission.resolved` with
- * `decision: "deny"`, so runtime modes map onto ZCode's own permission modes.
- */
+/** Decode ZCode JSON events without depending on SDK-internal wire types. */
 import type { RuntimeMode, ProviderInteractionMode } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 

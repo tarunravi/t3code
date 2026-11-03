@@ -1,11 +1,4 @@
 import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
-/**
- * oh-my-pi (`omp`) runs as a local ACP agent (`omp acp`). Its sessions
- * advertise model and thinking-level config options, which the ACP Registry
- * discovery turns into T3's model picker and per-model options. This module
- * holds what is specific to omp: its launch command, how it reports token
- * usage, and its one-shot print mode for text generation.
- */
 import {
   ProviderDriverKind,
   type OmpSettings,

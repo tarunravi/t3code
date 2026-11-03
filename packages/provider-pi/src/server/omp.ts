@@ -1,11 +1,4 @@
-/**
- * oh-my-pi (`omp`) is a Pi fork whose RPC mode (`omp --mode rpc`) keeps Pi's
- * commands and session events but differs in a few records. This flavor maps
- * those records onto the Pi protocol PiAdapterV2 speaks, and enables omp's
- * native `/goal` loop where the running omp supports it.
- *
- * @module provider-pi/server/omp
- */
+/** Adapt oh-my-pi RPC differences without changing the standard Pi protocol. */
 import {
   ProviderDriverKind,
   type OrchestrationV2ProviderGoal,
@@ -80,18 +73,7 @@ export function ompGoalFromNative(goal: unknown): OrchestrationV2ProviderGoal | 
   };
 }
 
-/**
- * Translates one omp RPC connection's records into Pi's protocol:
- *
- * - `session_settled` is omp's `agent_settled`: nothing is running, queued,
- *   or left in the background to wake the session.
- * - Automatic compaction is `auto_compaction_*` rather than `compaction_*`.
- * - omp acks an id-less `prompt` before running it and reports the outcome
- *   later in `prompt_result`; Pi's single ack carries the outcome. The early
- *   ack is held back and `prompt_result` becomes the ack. A rejection arrives
- *   as an error response followed by a failed `prompt_result`, so the error
- *   response is the ack and its result is dropped.
- */
+/** Hold an early prompt ACK until prompt_result; an error ACK suppresses its later result. */
 export function makeOmpRecordNormalizer(): (record: PiRpcRecord) => PiRpcRecord | undefined {
   let awaitingResults = 0;
   let rejectedResults = 0;
@@ -156,15 +138,7 @@ const slashed = (path: string) => path.replace(/\\/g, "/");
 const dirName = (path: string) => slashed(path).replace(/\/[^/]*$/, "");
 const baseName = (path: string) => slashed(path).replace(/^.*\//, "");
 
-/**
- * omp names session files `<sessions root>/<cwd bucket>/<timestamp>_<id>.jsonl`.
- * `switch_session` opens its argument as a path, so a bare id would become a
- * new, empty session file relative to the project. Threads started on omp's
- * ACP transport stored that bare id, and a resume before this fix stored the
- * resulting `<cwd>/<id>` path. Both resolve back to the id's real file,
- * searching the current session's bucket first, then the others under the same
- * root, which follows omp's profile and session-dir settings.
- */
+/** switch_session requires a file path; resolve old ACP IDs and mistaken cwd-relative paths. */
 export const resolveOmpSessionFile = Effect.fn("resolveOmpSessionFile")(function* (
   resumeId: string,
   currentSessionFile: string | undefined,

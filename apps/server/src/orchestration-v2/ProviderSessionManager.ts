@@ -769,12 +769,7 @@ export const layerWithOptions = (
         }
       });
 
-      // Background work (a Claude subagent that outlived its turn, a
-      // backgrounded command) can only be settled by the provider process that
-      // ran it. Once that process is released, cancel what it left running on
-      // its threads so nothing reads as live forever. Threads a live
-      // replacement session took over, and items of runs that are still
-      // active, stay with their current owner.
+      // Cancel only work owned by the released process; preserve live runs and replacement owners.
       const settleOrphanedBackgroundWork = (
         entry: LiveSessionEntry,
         threadIds: Iterable<ThreadId>,
@@ -834,11 +829,7 @@ export const layerWithOptions = (
         });
         return operation();
       };
-      // Read as soon as the session leaves the live map: after that, a
-      // replacement session with the same id can open and report tasks of its
-      // own on the same provider threads. OpenCode's background subagents run
-      // on a server shared by its sessions and can outlive this one, so their
-      // roster stays.
+      // Read before a replacement reuses the session ID. Shared OpenCode server tasks survive.
       const readReleasedBackgroundTasks = Effect.fn(
         "ProviderSessionManager.readReleasedBackgroundTasks",
       )(

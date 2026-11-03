@@ -29,6 +29,7 @@ export function VoiceRecordingWaveform(props: {
     >
       {levels.map((level, index) => (
         <span
+          // oxlint-disable-next-line react/no-array-index-key -- waveform slots have fixed identities and never reorder
           key={index}
           aria-hidden="true"
           className={cn(

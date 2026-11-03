@@ -1,11 +1,4 @@
-/**
- * Web voice-input adapters for the shared VoiceInputController.
- *
- * Recording uses MediaRecorder; transcription runs in the desktop main
- * process (window.desktopBridge.transcribeVoice), which reaches the Codex
- * transcription endpoint through Electron's Chromium network stack using the
- * local Codex login (~/.codex/auth.json).
- */
+/** Browser recording and Codex transcription for composer dictation. */
 import { useEffect, useRef, useState } from "react";
 
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -437,14 +430,17 @@ export function useCodexVoiceInput(input: VoiceInputHookInput) {
   );
 
   const previousOwnerRef = useRef(input.ownerKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retargets the external recording controller when the composer owner changes
   useEffect(() => {
     if (previousOwnerRef.current === input.ownerKey) return;
     previousOwnerRef.current = input.ownerKey;
     controller.ownerChanged();
   }, [controller, input.ownerKey]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the recording controller and its resources on unmount
   useEffect(() => () => controller.dispose(), [controller]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- updates elapsed recording time from a wall clock timer
   useEffect(() => {
     if (state.phase !== "recording") return;
     const startedAt = Date.now();

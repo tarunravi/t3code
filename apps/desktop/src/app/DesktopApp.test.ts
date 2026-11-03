@@ -1,3 +1,5 @@
+import * as DesktopKeepAwake from "./DesktopKeepAwake.ts";
+import * as DesktopDevbox from "../devbox/DesktopDevbox.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Deferred from "effect/Deferred";
@@ -229,5 +231,13 @@ it.effect(
       yield* (yield* DesktopShutdown.DesktopShutdown).request;
       yield* Fiber.join(app);
       assert.isTrue(yield* Deferred.isDone(registrationStopped));
-    }).pipe(Effect.provide(DesktopShutdown.layer)),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          DesktopShutdown.layer,
+          Layer.mock(DesktopKeepAwake.DesktopKeepAwake)({ setEnabled: () => Effect.void }),
+          Layer.mock(DesktopDevbox.DesktopDevbox)({}),
+        ),
+      ),
+    ),
 );

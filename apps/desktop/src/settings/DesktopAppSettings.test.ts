@@ -141,7 +141,6 @@ describe("DesktopSettings", () => {
     ),
   );
 
-
   it.effect(
     "persists disabling and re-enabling local execution without clearing backend settings",
     () =>

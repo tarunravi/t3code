@@ -23,7 +23,6 @@ import {
   formatAssistantCitationForComposer,
   parseSideChatCommand,
   isPathSuggestionCurrent,
-  parseSideChatCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { slashCommandItemsForPromptPosition } from "./components/chat/composerSlashCommandSearch";

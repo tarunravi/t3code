@@ -18,6 +18,7 @@ export function AwsLoginGuardSetting() {
   const [lastUsed, setLastUsed] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads host AWS profiles and the last desktop sign-in profile
   useEffect(() => {
     void bridge?.listAwsProfiles?.().then(setProfiles);
     void bridge?.getDevboxState?.().then((state) => setLastUsed(state.signInAwsProfile));

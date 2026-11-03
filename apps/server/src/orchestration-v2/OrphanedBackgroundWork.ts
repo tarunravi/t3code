@@ -55,22 +55,8 @@ function resolveStaleBackgroundItemProviderInstanceId(
   return projection.providerThreads[0]?.providerInstanceId ?? projection.thread.providerInstanceId;
 }
 
-/**
- * Cancels background work that only a now-dead provider process could have
- * settled: background-capable turn items (commands, dynamic tools, subagents)
- * with their nodes and linked subagent entities, plus a provider-native
- * subagent thread's runless root turn and the items under it.
- *
- * Items owned by `skipRunIds` are left alone: the caller either settles those
- * runs itself or they are still live. `alreadyCancelledItemIds` lists items
- * the caller already cancelled in the same commit. `onCancelledItem` sees each
- * cancelled background-capable item.
- *
- * An app-owned delegated task runs in its own child thread and provider
- * session, and settles when that child's run ends. Only a caller that knows
- * the child's process is gone too (process-loss recovery) sets
- * `settleAppOwnedSubagents`; releasing the parent's session must not cancel it.
- */
+/** Cancel only work the dead provider could have completed, preserving skipped live runs.
+ * Include linked native subagents and their runless root items. */
 export const orphanedBackgroundWorkEvents = <E>(input: {
   readonly projection: ProjectionRuntimeRecoveryState;
   readonly skipRunIds: ReadonlySet<string>;

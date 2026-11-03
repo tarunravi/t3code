@@ -1,12 +1,4 @@
-/**
- * ZCodeDriver — `ProviderDriver` for the ZCode CLI, composing the headless
- * orchestrator-v2 adapter (`ZCodeAdapterV2`) with the `--version` probe
- * (`ZCodeProvider`).
- *
- * ZCode has no default instance: users add one from Settings and point its
- * binary path at `zcode` or a wrapper script. Instance environment variables
- * (for example `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`) reach every turn.
- */
+/** ZCode uses a headless CLI behind the T3 provider interface. */
 import { ProviderDriverKind, TextGenerationError, ZCodeSettings } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";

@@ -16,7 +16,7 @@ export class ElectronPowerSaveBlocker extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronPowerSaveBlocker") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = ElectronPowerSaveBlocker.of({
   preventDisplaySleep: Effect.acquireRelease(
     Effect.sync(() => Electron.powerSaveBlocker.start("prevent-display-sleep")),

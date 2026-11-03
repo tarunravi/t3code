@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 // @effect-diagnostics nodeBuiltinImport:off - the fake ZCode CLI is a real script on disk.
 import * as NodeFS from "node:fs";
@@ -29,7 +31,6 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
-import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import {
   IdAllocatorV2,
   layer as idAllocatorLayer,
@@ -162,8 +163,15 @@ function makeFakeZCode(
       if (isHelpProbe) {
         helpProbes += 1;
       } else {
-        spawned.push({ args: command.args, cwd: command.options.cwd });
-        mcpConfigs.push(readSpawnedMcpConfig(command.args));
+        spawned.push({
+          args: command.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))),
+          cwd: command.options.cwd,
+        });
+        mcpConfigs.push(
+          readSpawnedMcpConfig(
+            command.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))),
+          ),
+        );
       }
       const script = isHelpProbe ? { lines: [help] } : (remaining.shift() ?? { lines: [] });
       const stdout = yield* Queue.unbounded<string, Cause.Done>();
@@ -250,9 +258,11 @@ const openRuntime = Effect.fnUntraced(function* (
   });
   const emitted: Array<ProviderAdapterV2Event> = [];
   const terminals = yield* Queue.unbounded<ProviderAdapterV2Event>();
+  const observed = yield* Queue.unbounded<ProviderAdapterV2Event>();
   yield* runtime.events.pipe(
     Stream.runForEach((next) =>
       Effect.sync(() => emitted.push(next)).pipe(
+        Effect.andThen(Queue.offer(observed, next)),
         Effect.andThen(next.type === "turn.terminal" ? Queue.offer(terminals, next) : Effect.void),
       ),
     ),
@@ -263,7 +273,19 @@ const openRuntime = Effect.fnUntraced(function* (
     modelSelection: { instanceId: INSTANCE_ID, model: "default" },
     runtimePolicy,
   });
-  return { adapter, runtime, emitted, providerThread, nextTerminal: Queue.take(terminals) };
+  return {
+    adapter,
+    runtime,
+    emitted,
+    providerThread,
+    nextTerminal: Queue.take(terminals),
+    waitForEvent: (predicate: (event: ProviderAdapterV2Event) => boolean) =>
+      Stream.fromQueue(observed).pipe(
+        Stream.filter(predicate),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      ),
+  };
 });
 
 const appThread = Effect.map(DateTime.now, (now): OrchestrationV2AppThread => ({
@@ -681,18 +703,17 @@ describe("ZCodeAdapterV2", () => {
           ],
         },
       ]);
-      const { runtime, emitted, providerThread, nextTerminal } = yield* openRuntime(fake.spawner);
+      const { runtime, emitted, providerThread, nextTerminal, waitForEvent } = yield* openRuntime(
+        fake.spawner,
+      );
       yield* runtime.startTurn(yield* turnInput(providerThread, 1, "Run a long command"));
-      const running = yield* Effect.gen(function* () {
-        while (true) {
-          const turn = emitted.find((next) => next.type === "provider_turn.updated");
-          const toolStarted = latestItems(emitted).some(
-            (item) => item.type === "command_execution",
-          );
-          if (turn?.type === "provider_turn.updated" && toolStarted) return turn.providerTurn;
-          yield* Effect.yieldNow;
-        }
-      });
+      yield* waitForEvent(() =>
+        latestItems(emitted).some((item) => item.type === "command_execution"),
+      );
+      const started = emitted.find((next) => next.type === "provider_turn.updated");
+      if (started?.type !== "provider_turn.updated")
+        return yield* Effect.die("Expected running turn");
+      const running = started.providerTurn;
 
       yield* runtime.interruptTurn({ providerThread, providerTurnId: running.id });
       const terminal = yield* nextTerminal;
@@ -770,24 +791,20 @@ describe("ZCodeAdapterV2", () => {
         ],
         HELP_WITH_MCP_CONFIG,
       );
-      const { runtime, emitted, providerThread, nextTerminal } = yield* openRuntime(fake.spawner);
+      const { runtime, providerThread, nextTerminal, waitForEvent } = yield* openRuntime(
+        fake.spawner,
+      );
 
       yield* runtime.startTurn(yield* turnInput(providerThread, 1, "Fail"));
       const failed = yield* nextTerminal;
       assert.equal(failed.type === "turn.terminal" && failed.status, "failed");
 
       yield* runtime.startTurn(yield* turnInput(providerThread, 2, "Stop"));
-      const running = yield* Effect.gen(function* () {
-        while (true) {
-          const turn = emitted.findLast(
-            (next) => next.type === "provider_turn.updated" && next.providerTurn.ordinal === 2,
-          );
-          if (turn?.type === "provider_turn.updated" && fake.spawned.length === 2) {
-            return turn.providerTurn;
-          }
-          yield* Effect.yieldNow;
-        }
-      });
+      const started = yield* waitForEvent(
+        (next) => next.type === "turn_item.updated" && next.turnItem.type === "command_execution",
+      );
+      if (started.type !== "turn_item.updated") return yield* Effect.die("Expected second command");
+      const running = { id: started.turnItem.providerTurnId! };
       yield* runtime.interruptTurn({ providerThread, providerTurnId: running.id });
       const interrupted = yield* nextTerminal;
       assert.equal(interrupted.type === "turn.terminal" && interrupted.status, "interrupted");

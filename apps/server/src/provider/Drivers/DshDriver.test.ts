@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
@@ -29,9 +30,12 @@ const decodeFrames = Schema.decodeUnknownSync(
 const layer = Layer.mergeAll(
   Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
   NodeServices.layer,
+  NodeCrypto.layer,
   IdAllocator.layer,
   McpProviderSessions.layer,
-  TestProviderHost.layer({ runBackgroundWork: false }).pipe(Layer.provide(NodeServices.layer)),
+  TestProviderHost.layer({ runBackgroundWork: false }).pipe(
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  ),
   Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
     inspect: () =>
       Effect.succeed({

@@ -1,10 +1,10 @@
-import { execFileSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-const mobileRoot = path.resolve(import.meta.dirname, "..");
+const mobileRoot = NodePath.resolve(import.meta.dirname, "..");
 const keychainGroups = ["$(AppIdentifierPrefix)com.t3tools.t3code"];
 const compose = `
 const { compileModsAsync } = require("expo/config-plugins");
@@ -23,10 +23,10 @@ const { getConfig } = require("expo/config");
 `;
 
 function regenerateEntitlements(personalTeam) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "t3-personal-entitlements-"));
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-personal-entitlements-"));
   try {
     // Expo caches dynamic config imports, so each variant needs a fresh process.
-    const output = execFileSync(process.execPath, ["--eval", compose, root], {
+    const output = NodeChildProcess.execFileSync(process.execPath, ["--eval", compose, root], {
       cwd: mobileRoot,
       env: {
         ...process.env,
@@ -47,7 +47,7 @@ function regenerateEntitlements(personalTeam) {
     expect(result.personalTeam).toBe(personalTeam);
     return result.entitlements;
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    NodeFS.rmSync(root, { recursive: true, force: true });
   }
 }
 

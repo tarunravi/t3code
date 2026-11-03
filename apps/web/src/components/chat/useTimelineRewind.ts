@@ -36,7 +36,6 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { readLocalApi } from "../../localApi";
-import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage } from "../../types";
 import { newThreadId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -151,18 +150,15 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     routeThreadRef,
     routeThreadKey,
     currentRouteThreadKeyRef,
-    serverProjection,
     activeThread,
     timelineMessages,
     phase,
     isSendBusy,
     isRevertingCheckpoint,
-    supportsConversationRollback,
     activeEnvironmentUnavailable,
     activeEnvironmentUnavailableLabel,
     promptRef,
     composerRef,
-    composerDraftTarget,
     setThreadError,
   } = input;
   const navigate = useNavigate();

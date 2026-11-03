@@ -283,9 +283,9 @@ thread keeps working. It treats that history as background, avoids editing files
 and messages the thread only when you ask it to. The arrow on a side answer also sends it to the
 thread.
 
-Each thread has one side chat at a time. Closing its tab discards it, and side chats end when the
-server restarts. **Settings → General → Side chat model** picks the model side chats start with;
-the picker in the side chat changes it for that chat.
+A thread can have several side chats. Chats with messages survive closing their tabs and server
+restarts; empty chats are discarded when closed. **Settings → General → Side chat model** picks
+the model side chats start with; the picker in the side chat changes it for that chat.
 
 ## Context in your message
 

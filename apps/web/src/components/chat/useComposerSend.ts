@@ -2,8 +2,6 @@ import { CommandId, type ScopedThreadRef } from "@t3tools/contracts";
 import { randomUUID } from "~/lib/utils";
 import { waitForRevertedMessage } from "../ChatView.logic";
 import type { MessageRewriteState } from "./useTimelineRewind";
-import { useSideChatActions } from "./SideChatPanel";
-import { parseSideChatCommand } from "../../composer-logic";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -358,7 +356,6 @@ export function useComposerSend(input: ComposerSendInput) {
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
-  const { open: openSideChat } = useSideChatActions(environmentId);
   const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
@@ -496,27 +493,6 @@ export function useComposerSend(input: ComposerSendInput) {
         }),
         id: `chat-send-environment-unavailable:${toastSlot}`,
       });
-      return;
-    }
-    const sideChatCommand =
-      isServerThread && !directAnnotation && !draftHasNonPromptContent(composerDraftTarget)
-        ? parseSideChatCommand(promptRef.current)
-        : null;
-    if (sideChatCommand !== null && rewritingMessage === null) {
-      if (activeMessageCount === 0) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "info",
-            title: "Nothing to ask about yet",
-            description: "Send a message first, then try /side again.",
-          }),
-        );
-        return;
-      }
-      promptRef.current = "";
-      setComposerDraftPrompt(composerDraftTarget, "");
-      composerRef.current?.resetCursorState();
-      void openSideChat(activeThread, sideChatCommand.question);
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();

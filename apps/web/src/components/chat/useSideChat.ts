@@ -1,3 +1,4 @@
+import { useEnvironmentSettings } from "../../hooks/useSettings";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
@@ -25,6 +26,8 @@ export function useSideChat(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly onError: (message: string) => void;
 }) {
+  const settings = useEnvironmentSettings(input.threadRef?.environmentId ?? null);
+  const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata, { reportFailure: false });
   const pendingRef = useRef(false);
   const forkSideChat = useAtomCommand(threadEnvironment.forkSideChat, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
@@ -59,6 +62,17 @@ export function useSideChat(input: {
       input.onError("The side chat was created, but it did not reach this client.");
       discard();
       return false;
+    }
+    if (settings.sideChatModelSelection !== null) {
+      const updated = await updateMetadata({
+        environmentId: threadRef.environmentId,
+        input: { threadId: targetThreadId, modelSelection: settings.sideChatModelSelection },
+      });
+      if (updated._tag === "Failure") {
+        reportFailure(updated, "Could not select the side chat model.");
+        discard();
+        return false;
+      }
     }
     const text = prompt?.trim();
     // Send before showing the tab: closing a tab whose side chat has no run deletes it.

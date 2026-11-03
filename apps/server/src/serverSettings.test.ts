@@ -2035,7 +2035,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       assert.notProperty(settings, "subagentPresets");
     }).pipe(Effect.provide(layerServerSettings())),
   );
-
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(

@@ -74,7 +74,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
   }));
   const live = liveSources.length > 0;
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Timestamp external provider counter changes after commit, not during render.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- timestamps new external provider counters after React commits them
   useEffect(() => {
     if (sampleSources.length === 0) return;
     const atMs = Date.now();
@@ -102,7 +102,7 @@ export function useTokenRateSources(sources: readonly TokenRateProjectionSource[
     });
   }, [sampleSources]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Age live samples against wall-clock time and release the timer when idle.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- ages provider samples with a timer only while a run is live
   useEffect(() => {
     if (!live) return;
     const id = setInterval(

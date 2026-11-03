@@ -1,12 +1,4 @@
-/**
- * Request speed from the places that record timing: OpenCodex request history
- * (exact, including time to first token), Claude Code transcripts (end-to-end
- * estimates from record timestamps), and Cursor turns run through T3 Code
- * (turn timing without token counts). Pure: no filesystem or network access,
- * so callers stream input and tests pass fixtures.
- *
- * @module usageSpeed
- */
+/** Fold provider timestamps and token counters into turn throughput. */
 import type { UsageSpeedRow, UsageSpeedSourceKind } from "@t3tools/contracts";
 
 export interface SpeedSample {
@@ -108,13 +100,7 @@ interface PendingClaudeMessage {
   reasoningTokens: number;
 }
 
-/**
- * Line-at-a-time reader for one Claude Code transcript. A response starts at
- * the last non-assistant record (the prompt or tool result) and ends at its
- * last content block, so the estimate includes time to first token. Claude
- * writes one record per content block with the same usage, so blocks are
- * merged by message id.
- */
+/** Merge repeated blocks by message ID; timing starts at the last prompt or tool result. */
 export class ClaudeSpeedReader {
   private lastInputMs: number | null = null;
   private readonly pending = new Map<string, PendingClaudeMessage>();

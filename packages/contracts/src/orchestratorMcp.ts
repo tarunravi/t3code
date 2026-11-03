@@ -597,14 +597,8 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
-/**
- * Awareness-only quota view for one provider instance, folded from the
- * server's existing usage snapshots (its own account plus any pooled hub
- * accounts the driver routes through). Not a hard gate: an agent should plan
- * around `mostConstrained` and the reset times, but delegation is never
- * refused because of usage. Omitted entirely when the server holds no usage
- * data for the instance.
- */
+/** Quota awareness only: include pooled accounts and reset times, but never refuse delegation.
+ * Omit providers without any usage snapshots. */
 export const OrchestratorMcpProviderUsage = Schema.Struct({
   /** When the winning account's snapshot was read; stale data is still included. */
   checkedAt: IsoDateTime,

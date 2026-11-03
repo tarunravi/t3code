@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import { assert, it } from "@effect/vitest";
 import { OmpSettings, ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -23,7 +24,11 @@ const makeFakeOmp = (output: { readonly stdout: string; readonly exitCode?: numb
           ? (stdinConfig.stream as Stream.Stream<Uint8Array>)
           : Stream.empty;
       const stdin = yield* stdinStream.pipe(Stream.decodeText(), Stream.mkString);
-      calls.push({ command: command.command, args: command.args, stdin });
+      calls.push({
+        command: command.command,
+        args: command.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))),
+        stdin,
+      });
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(999_999_998),
         exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(output.exitCode ?? 0)),

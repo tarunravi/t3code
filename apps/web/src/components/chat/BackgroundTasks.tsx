@@ -150,6 +150,7 @@ function BackgroundTaskOutputTail(props: {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the output DOM scroller pinned as new task output arrives
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (text.length > 0 && element && pinnedRef.current) element.scrollTop = element.scrollHeight;

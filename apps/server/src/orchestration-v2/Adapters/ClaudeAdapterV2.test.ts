@@ -3445,8 +3445,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         awaitContinuation: (count: number) =>
           changes.until(() => continuationRequests.length >= count),
       };
-    });
-  const makeWakeHarness = makeWakeHarnessWithOptions();
+    }).pipe(Effect.provide(NodeCrypto.layer));
+  const makeWakeHarness = makeWakeHarnessWithOptions().pipe(Effect.provide(NodeCrypto.layer));
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",

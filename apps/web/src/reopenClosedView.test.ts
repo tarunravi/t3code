@@ -93,7 +93,7 @@ describe("reopenClosedView", () => {
       {
         kind: "panel-tab",
         threadRef,
-        surface: { kind: "side-chat", id: "side-chat", threadId: sideThreadId },
+        surface: { kind: "side-chat", id: "side-chat:side-1", threadId: sideThreadId },
       },
       { openPreview: vi.fn(), workspaceAvailable: true },
     );
@@ -103,7 +103,7 @@ describe("reopenClosedView", () => {
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef),
     ).toMatchObject({
       isOpen: true,
-      surfaces: [{ kind: "side-chat", id: "side-chat", threadId: sideThreadId }],
+      surfaces: [{ kind: "side-chat", id: "side-chat:side-1", threadId: sideThreadId }],
     });
   });
 

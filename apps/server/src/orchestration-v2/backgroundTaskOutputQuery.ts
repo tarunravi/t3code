@@ -1,13 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-/**
- * Read-only tail of a background task's output for the thread's Background
- * panel.
- *
- * The client names a task, never a path: the file comes from the provider
- * thread roster the adapter recorded, and must be that task's own
- * `<taskId>.output` file. Reads are bounded to the last lines and bytes so a
- * chatty dev server cannot flood the websocket.
- */
+/** Read bounded output only from the provider roster, never from a client-supplied path. */
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";

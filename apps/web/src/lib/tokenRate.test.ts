@@ -208,9 +208,18 @@ function attempt(overrides: Partial<OrchestrationV2RunAttempt> = {}): Orchestrat
   };
 }
 function projection(
-  overrides: Partial<NonNullable<Parameters<typeof latestTokenRateTurn>[0]>> = {},
+  overrides: Partial<NonNullable<Parameters<typeof latestTokenRateTurn>[0]>> & {
+    turnItems?: ReadonlyArray<OrchestrationV2TurnItem>;
+  } = {},
 ) {
-  return { runs: [run()], attempts: [attempt()], providerTurns: [turn()], nodes: [], ...overrides };
+  return {
+    runs: [run()],
+    attempts: [attempt()],
+    providerTurns: [turn()],
+    nodes: [],
+    turnItems: [],
+    ...overrides,
+  };
 }
 
 describe("latestTokenRateTurn", () => {
