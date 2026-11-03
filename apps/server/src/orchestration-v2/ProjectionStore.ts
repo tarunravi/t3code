@@ -4,6 +4,7 @@ import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
+import { checkpointTurnOrdinal } from "./CommandPolicy.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -5329,13 +5330,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               checkpoint === undefined ||
               scope === undefined ||
               checkpoint.scopeId !== scope.id ||
-              checkpoint.status !== "ready" ||
+              (checkpoint.status !== "ready" && checkpoint.status !== "missing") ||
               providerThread.id !== thread.activeProviderThreadId ||
               providerThread.providerInstanceId !== thread.modelSelection.instanceId
             )
               return context;
 
-            const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
+            const targetOrdinal = checkpointTurnOrdinal(checkpoint, scope);
             const [attemptRows, runRows, sessionRows, rolledBackAttempts, staleRows] =
               yield* Effect.all([
                 sql`SELECT attempt.attempt_id AS id, attempt.provider_turn_id AS "providerTurnId"
@@ -5361,7 +5362,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND attempt.thread_id = ${threadId}`,
                 sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoints
             WHERE thread_id = ${threadId} AND scope_id = ${scope.id} AND status IN ('ready', 'missing')
-              AND app_run_ordinal > ${targetOrdinal}
+              AND COALESCE(app_run_ordinal, ${scope.kind === "root_run" ? sql`ordinal_within_scope` : sql`0`}) > ${targetOrdinal}
             ORDER BY ordinal_within_scope ASC`,
               ]);
             const targetAttempt = (yield* decodeRollbackTargetAttempts(attemptRows))[0];

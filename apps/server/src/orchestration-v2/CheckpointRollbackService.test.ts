@@ -947,7 +947,7 @@ const seedRollbackHistory = Effect.gen(function* () {
       ),
     ),
   );
-  const rollback = (ordinal: number) =>
+  const rollback = (ordinal: number, restoreFiles = true) =>
     Effect.gen(function* () {
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
       yield* service.execute({
@@ -955,6 +955,7 @@ const seedRollbackHistory = Effect.gen(function* () {
         providerThreadId,
         scopeId,
         checkpointId: checkpointId(ordinal),
+        restoreFiles,
       });
     }).pipe(Effect.provide(serviceLayer));
 
@@ -1037,18 +1038,32 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
       }),
     );
 
-    it.effect(
-      "rewinds stopped runs repeatedly without counting discarded provider turns again",
-      () =>
+    it.effect.each([
+      { checkpointStatus: "ready", retainTurnLink: true },
+      { checkpointStatus: "ready", retainTurnLink: false },
+      { checkpointStatus: "missing", retainTurnLink: false },
+    ] as const)(
+      "rewinds stopped runs without counting discarded provider turns again: %j",
+      ({ checkpointStatus, retainTurnLink }) =>
         Effect.gen(function* () {
           const history = yield* seedRollbackHistory;
-          yield* history.rollback(5);
-          yield* history.rollback(2);
-          yield* history.rollback(0);
-          yield* history.rollback(0);
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE orchestration_v2_projection_checkpoints
+            SET status = ${checkpointStatus},
+              app_run_ordinal = CASE WHEN ${retainTurnLink ? 1 : 0} = 1 THEN app_run_ordinal ELSE NULL END,
+              payload_json = json_set(payload_json, '$.status', ${checkpointStatus},
+                '$.appRunOrdinal', CASE WHEN ${retainTurnLink ? 1 : 0} = 1 THEN app_run_ordinal ELSE NULL END)
+            WHERE thread_id = ${history.threadId} AND status <> 'stale'`;
+          for (const ordinal of [5, 2, 0, 0]) {
+            yield* history.rollback(ordinal, checkpointStatus === "ready");
+          }
 
           assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-          assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
+          assert.sameMembers(
+            history.deletedRefs,
+            checkpointStatus === "ready" ? [1, 2, 3, 4, 5, 6].map(history.checkpointId) : [],
+          );
+          if (checkpointStatus === "missing") assert.isEmpty(history.restored);
           assert.sameMembers(
             history.committed
               .filter((event) => event.type === "run.updated")
@@ -1064,7 +1079,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
           assert.sameMembers(
             records.checkpoints
-              .filter((checkpoint) => checkpoint.status === "ready")
+              .filter((checkpoint) => checkpoint.status === checkpointStatus)
               .map((checkpoint) => checkpoint.id),
             [history.checkpointId(0), history.checkpointId(8)],
           );

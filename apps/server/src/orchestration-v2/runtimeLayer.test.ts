@@ -973,7 +973,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       }),
   );
 
-  it.effect("forks a side chat from a parent run in progress and discards it with the parent", () =>
+  it.effect("forks side chats beside active work with stable history and current activity", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -1040,9 +1040,11 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       });
 
       yield* sendToParent("first", "Remember the anchor marker.");
-      const first = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
-      const parentProviderThread = (yield* orchestrator.getThreadProjection(parentThreadId))
-        .providerThreads[0]!;
+      const firstProjection = yield* orchestrator.getThreadProjection(parentThreadId);
+      const first = firstProjection.runs[0]!;
+      const firstScope = firstProjection.checkpointScopes[0]!;
+      const firstCheckpointId = CheckpointId.make("runtime-side-chat-anchor");
+      const parentProviderThread = firstProjection.providerThreads[0]!;
       yield* eventSink.write({
         commandId: CommandId.make("runtime-side-chat-first-completed"),
         events: [
@@ -1061,12 +1063,39 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           },
           assistantItem(first, "Anchor stored.", "completed"),
           {
+            id: EventId.make("runtime-side-chat-anchor-event"),
+            type: "checkpoint.captured",
+            threadId: parentThreadId,
+            runId: first.id,
+            occurredAt: now,
+            payload: {
+              id: firstCheckpointId,
+              threadId: parentThreadId,
+              scopeId: firstScope.id,
+              runId: first.id,
+              nodeId: first.rootNodeId!,
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: first.ordinal,
+              ref: CheckpointRef.make("refs/t3/runtime-side-chat-anchor"),
+              status: "missing",
+              files: [],
+              capturedAt: now,
+            },
+          },
+          {
             id: EventId.make("runtime-side-chat-first-run"),
             type: "run.updated",
             threadId: parentThreadId,
             runId: first.id,
             occurredAt: now,
-            payload: { ...first, status: "completed", startedAt: now, completedAt: now },
+            payload: {
+              ...first,
+              status: "completed",
+              startedAt: now,
+              completedAt: now,
+              checkpointId: firstCheckpointId,
+            },
           },
         ],
       });
@@ -1121,29 +1150,28 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         return { side, handoffText, transfer: side.contextTransfers[0]! };
       });
 
-      const native = yield* openSideChat("native", modelSelection);
-      assert.deepEqual(native.side.thread.lineage, {
-        parentThreadId,
-        relationshipToParent: "fork",
-        sideChat: true,
-        rootThreadId: parentThreadId,
-      });
-      assert.equal(native.side.thread.forkedFrom?.type, "run");
-      assert.equal(native.transfer.sourcePoint.runId, first.id);
-      assert.equal(native.transfer.status, "pending");
-      assert.equal(native.side.contextHandoffs[0]?.strategy, "manual_context");
-      assert.deepEqual(native.handoffText, []);
-      const nativeDigest = native.side.contextHandoffs[0]!.summaryText;
-      assert.include(nativeDigest, "Refactor the parser.");
-      assert.include(nativeDigest, "Halfway through the parser refactor.");
-
+      const sameProvider = yield* openSideChat("same-provider", modelSelection);
       const portable = yield* openSideChat("portable", {
         instanceId: alternateInstanceId,
         model: "gpt-5.5",
       });
-      assert.equal(portable.transfer.resolution?.strategy, "portable_context");
-      assert.equal(portable.side.contextHandoffs[0]?.strategy, "full_thread_summary");
-      assert.deepEqual(portable.handoffText, ["Remember the anchor marker.", "Anchor stored."]);
+      for (const result of [sameProvider, portable]) {
+        assert.deepEqual(result.side.thread.lineage, {
+          parentThreadId,
+          relationshipToParent: "fork",
+          sideChat: true,
+          rootThreadId: parentThreadId,
+        });
+        assert.equal(result.side.thread.forkedFrom?.type, "run");
+        assert.equal(result.transfer.sourcePoint.runId, first.id);
+        assert.equal(result.transfer.resolution?.strategy, "portable_context");
+        assert.deepEqual(result.handoffText, ["Remember the anchor marker.", "Anchor stored."]);
+        const activity = result.side.contextHandoffs.find(
+          (handoff) => handoff.strategy === "manual_context",
+        )!;
+        assert.include(activity.summaryText, "Refactor the parser.");
+        assert.include(activity.summaryText, "Halfway through the parser refactor.");
+      }
 
       const listed = yield* threads.listProjectThreads({ projectId, includeSubagents: true });
       assert.deepEqual(
@@ -1156,7 +1184,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         commandId: CommandId.make("runtime-side-chat-delete-parent"),
         threadId: parentThreadId,
       });
-      for (const side of [native.side, portable.side]) {
+      for (const side of [sameProvider.side, portable.side]) {
         const deleted = yield* orchestrator.getThreadProjection(side.thread.id);
         assert.isNotNull(deleted.thread.deletedAt);
         assert.isTrue(deleted.runs.every((run) => run.status === "cancelled"));
