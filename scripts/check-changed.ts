@@ -177,10 +177,12 @@ const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
+const BROWSER_TEST = /\.browser\.test\.[cm]?[jt]sx?$/;
 export const splitTests = (tests: Iterable<string>) => {
   const all = [...tests];
   return {
-    vitestTests: all.filter((file) => !NODE_TEST.test(file)),
+    vitestTests: all.filter((file) => !NODE_TEST.test(file) && !BROWSER_TEST.test(file)),
+    browserTests: all.filter((file) => !NODE_TEST.test(file) && BROWSER_TEST.test(file)),
     nodeTests: all.filter((file) => NODE_TEST.test(file)),
   };
 };
@@ -329,7 +331,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   for (const test of docReaderTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
-  const { vitestTests, nodeTests } = splitTests(tests);
+  const { vitestTests, browserTests, nodeTests } = splitTests(tests);
 
   // React Compiler coverage compiles every client source file, so run only the
   // changed files' cases, in one extra step: a -t filter in the main test step
@@ -497,20 +499,25 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           },
         ]
       : []),
-    // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...(vitestTests.length > 0
-      ? [
-          {
-            ...command(`test (${vitestTests.length} files)`, [
-              "test",
-              "run",
-              "--passWithNoTests",
-              ...vitestTests,
-            ]),
-            serial: true,
-          },
-        ]
-      : []),
+    // Keep browser and unit mock registries in separate processes.
+    ...[
+      { name: "test", files: vitestTests },
+      { name: "browser test", files: browserTests },
+    ].flatMap(({ name, files }) =>
+      files.length > 0
+        ? [
+            {
+              ...command(`${name} (${files.length} files)`, [
+                "test",
+                "run",
+                "--passWithNoTests",
+                ...files,
+              ]),
+              serial: true,
+            },
+          ]
+        : [],
+    ),
     ...(nodeTests.length > 0
       ? [
           command(`node --test (${nodeTests.length} files)`, [

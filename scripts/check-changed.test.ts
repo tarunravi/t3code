@@ -143,16 +143,22 @@ describe("check:changed", () => {
     }),
   );
 
-  it("runs the .github/scripts node:test files with node --test, not vitest", () => {
+  it("routes unit, browser, and node tests to separate runners", () => {
     assert.deepStrictEqual(
       splitTests([
         "apps/server/src/ws.test.ts",
+        "apps/web/src/components/chat/BackgroundTasks.browser.test.tsx",
+        "apps/web/src/components/chat/ChatView.logic.browser.test.ts",
         ".github/scripts/ci-changes.test.cjs",
         ".github\\scripts\\thread-transfer-report.test.cjs",
         "scripts/check-changed.test.ts",
       ]),
       {
         vitestTests: ["apps/server/src/ws.test.ts", "scripts/check-changed.test.ts"],
+        browserTests: [
+          "apps/web/src/components/chat/BackgroundTasks.browser.test.tsx",
+          "apps/web/src/components/chat/ChatView.logic.browser.test.ts",
+        ],
         nodeTests: [
           ".github/scripts/ci-changes.test.cjs",
           ".github\\scripts\\thread-transfer-report.test.cjs",
