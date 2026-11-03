@@ -175,7 +175,7 @@ const replayableMigrationIds: ReadonlySet<number> = new Set([
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 // Fork builds before the 2026-10-28 upstream sync recorded UsageProjectionIndex
 // at 70, where upstream has PeerLinks. Keep that recorded slot, and create the
-// PeerLinks table before the migrator runs 71 onward; 078 re-creates the index
+// PeerLinks table before the migrator runs 71 onward; 079 re-creates the index
 // idempotently.
 const FORK_SLOT_70_NAME = "UsageProjectionIndex";
 const hasForkSlot70 = (
