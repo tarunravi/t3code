@@ -237,14 +237,31 @@ export const DeviceHostStatus = Schema.Literals([
 ]);
 export type DeviceHostStatus = typeof DeviceHostStatus.Type;
 
-export const DeviceSession = Schema.Struct({
-  threadId: ThreadId,
+const withDeviceOwner = <Fields extends Schema.Struct.Fields>(fields: Fields) =>
+  Schema.Union([
+    Schema.Struct({
+      ...fields,
+      threadId: ThreadId,
+      mcpClientSessionId: Schema.optionalKey(Schema.Never),
+    }),
+    Schema.Struct({
+      ...fields,
+      threadId: Schema.optionalKey(Schema.Never),
+      mcpClientSessionId: TrimmedNonEmptyString,
+    }),
+  ]);
+
+export const DeviceSessionOwner = withDeviceOwner({});
+export type DeviceSessionOwner = typeof DeviceSessionOwner.Type;
+
+export const DeviceSession = withDeviceOwner({
   hostId: DeviceHostId,
   deviceId: DeviceId,
   platform: DevicePlatform,
   openedAt: Schema.String,
 });
 export type DeviceSession = typeof DeviceSession.Type;
+const BootingDevice = withDeviceOwner(DeviceSummary.fields);
 
 export const DeviceHostStatuses = Schema.Record(
   DeviceHostId,
@@ -268,9 +285,7 @@ const deviceServiceStateFields = {
   hostStatuses: DeviceHostStatuses,
   devices: Schema.Array(DeviceSummary),
   sessions: Schema.Array(DeviceSession),
-  bootingDevices: Schema.optional(
-    Schema.Array(Schema.Struct({ ...DeviceSummary.fields, threadId: ThreadId })),
-  ),
+  bootingDevices: Schema.optional(Schema.Array(BootingDevice)),
   onboardingCompleted: Schema.Boolean,
   agentAccessEnabled: Schema.Boolean,
   hubBasePath: Schema.String,
@@ -284,6 +299,11 @@ const deviceServiceStateFields = {
  */
 const DeviceServiceStateWire = Schema.Struct({
   ...deviceServiceStateFields,
+  // Older clients require a threadId in these arrays, just as they require machine-only hosts.
+  sessions: Schema.Array(DeviceSession.members[0]),
+  mcpClientSessions: Schema.optional(Schema.Array(DeviceSession.members[1])),
+  bootingDevices: Schema.optional(Schema.Array(BootingDevice.members[0])),
+  mcpClientBootingDevices: Schema.optional(Schema.Array(BootingDevice.members[1])),
   hosts: Schema.Array(MachineDeviceHostSummary),
   easHosts: Schema.optional(Schema.Array(EasDeviceHostSummary)),
   simlockHosts: Schema.optional(Schema.Array(SimlockDeviceHostSummary)),
@@ -300,12 +320,29 @@ export const DeviceServiceState = DeviceServiceStateWire.pipe(
       typeof DeviceServiceStateDecoded.Type,
       typeof DeviceServiceStateWire.Type
     >({
-      decode: ({ easHosts, simlockHosts, ...state }) => ({
+      decode: ({
+        easHosts,
+        simlockHosts,
+        mcpClientSessions,
+        mcpClientBootingDevices,
+        ...state
+      }) => ({
         ...state,
+        sessions: [...state.sessions, ...(mcpClientSessions ?? [])],
+        bootingDevices:
+          state.bootingDevices === undefined && mcpClientBootingDevices === undefined
+            ? undefined
+            : [...(state.bootingDevices ?? []), ...(mcpClientBootingDevices ?? [])],
         hosts: [...state.hosts, ...(easHosts ?? []), ...(simlockHosts ?? [])],
       }),
       encode: (state) => ({
         ...state,
+        sessions: state.sessions.filter((session) => session.threadId !== undefined),
+        mcpClientSessions: state.sessions.filter((session) => session.threadId === undefined),
+        bootingDevices: state.bootingDevices?.filter((device) => device.threadId !== undefined),
+        mcpClientBootingDevices: state.bootingDevices?.filter(
+          (device) => device.threadId === undefined,
+        ),
         hosts: state.hosts.filter(
           (host): host is typeof MachineDeviceHostSummary.Type =>
             host.kind === "local" || host.kind === "ssh",
@@ -336,8 +373,7 @@ export const DeviceConfigureInput = Schema.Struct({
 });
 export type DeviceConfigureInput = typeof DeviceConfigureInput.Type;
 
-export const DeviceOpenInput = Schema.Struct({
-  threadId: ThreadId,
+export const DeviceOpenInput = withDeviceOwner({
   hostId: Schema.optional(DeviceHostId),
   deviceId: DeviceId,
   platform: DevicePlatform,
@@ -346,10 +382,9 @@ export const DeviceOpenInput = Schema.Struct({
 });
 export type DeviceOpenInput = typeof DeviceOpenInput.Type;
 
-export const DeviceCloseInput = Schema.Struct({
+export const DeviceCloseInput = withDeviceOwner({
   hostId: Schema.optional(DeviceHostId),
-  threadId: ThreadId,
-  /** Omit to close every device session for the thread. */
+  /** Omit to close every device session for this owner. */
   deviceId: Schema.optional(DeviceId),
   /** Also shut the simulator or emulator down. Defaults to false. */
   shutdown: Schema.optional(Schema.Boolean),

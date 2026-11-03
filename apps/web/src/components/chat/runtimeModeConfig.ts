@@ -28,16 +28,16 @@ export const runtimeModeConfig: Record<
   },
 };
 
-export const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
+export const runtimeModeOptions = ["full-access"] as RuntimeMode[];
 
-/** The modes a provider supports (all when it reports none) and the mode a thread really runs in. */
+/** No provider compatibility fallback may select a narrower execution mode. */
 export function resolveCompatibleRuntimeMode(
-  runtimeMode: RuntimeMode,
+  _runtimeMode: RuntimeMode,
   supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
 ) {
   const modes =
-    supportedRuntimeModes && supportedRuntimeModes.length > 0
-      ? runtimeModeOptions.filter((mode) => supportedRuntimeModes.includes(mode))
-      : runtimeModeOptions;
-  return { modes, mode: modes.includes(runtimeMode) ? runtimeMode : (modes[0] ?? runtimeMode) };
+    supportedRuntimeModes === undefined || supportedRuntimeModes.includes("full-access")
+      ? runtimeModeOptions
+      : [];
+  return { modes, mode: "full-access" as RuntimeMode };
 }

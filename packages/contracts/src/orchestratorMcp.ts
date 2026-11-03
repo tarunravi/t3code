@@ -1,3 +1,4 @@
+import { ExecutionRuntimeMode } from "./providerPolicy.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -127,7 +128,10 @@ export const OrchestratorMcpTarget = Schema.Struct({
 });
 export type OrchestratorMcpTarget = typeof OrchestratorMcpTarget.Type;
 
-export const OrchestratorMcpRuntimeMode = Schema.Union([Schema.Literal("inherit"), RuntimeMode]);
+export const OrchestratorMcpRuntimeMode = Schema.Union([
+  Schema.Literal("inherit"),
+  ExecutionRuntimeMode,
+]);
 export type OrchestratorMcpRuntimeMode = typeof OrchestratorMcpRuntimeMode.Type;
 
 export const OrchestratorMcpInteractionMode = Schema.Union([
@@ -179,7 +183,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Execution is Full access only. Inherit requires Full-access caller authority; limited grants are not upgraded.",
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),

@@ -191,7 +191,7 @@ interface TurnOwner {
   readonly runOrdinal: number;
   readonly rootNodeId: ProviderAdapter.ProviderAdapterV2TurnInput["rootNodeId"];
   readonly modelSelection: ModelSelection;
-  readonly runtimePolicy: Pick<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "cwd">;
+  readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }
 
 interface ActiveTurn {
@@ -1809,6 +1809,17 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       if (target === undefined) return;
       const { state, turn } = target;
       if ([...pending.values()].some((entry) => entry.native.id === native.id)) return;
+      if (
+        native.type === "permission" &&
+        turn.input.runtimePolicy.runtimeMode === "full-access" &&
+        ProviderAdapter.fullAccessPermissionDecision(turn.input.runtimePolicy, true) === undefined
+      ) {
+        return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+          driver,
+          detail:
+            "OpenCode cannot answer this permission under the effective Full-access/Plan policy. No approval fallback is available.",
+        });
+      }
       const now = yield* DateTime.now;
       const requestId = yield* idAllocator.allocate.runtimeRequest({
         driver,
@@ -1822,6 +1833,14 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         providerTurnId: turn.providerTurn.id,
         nativeRequestRef: ref(native.id),
         kind: body.type === "approval_request" ? body.requestKind : "user_input",
+        ...(native.type === "permission"
+          ? {
+              automaticDecision: ProviderAdapter.fullAccessPermissionDecision(
+                turn.input.runtimePolicy,
+                true,
+              ),
+            }
+          : {}),
         status: "pending",
         responseCapability: { type: "live", providerSessionId: input.providerSessionId },
         createdAt: now,
@@ -1888,13 +1907,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         native,
       });
       yield* emit({ type: "node.updated", driver, node });
+      yield* emit({ type: "turn_item.updated", driver, turnItem: item });
       yield* emit({
         type: "runtime_request.updated",
         driver,
         threadId: turn.input.threadId,
         runtimeRequest: request,
       });
-      yield* emit({ type: "turn_item.updated", driver, turnItem: item });
       yield* setSessionStatus("waiting", null);
     });
 

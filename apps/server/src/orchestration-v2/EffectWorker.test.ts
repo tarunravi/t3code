@@ -677,3 +677,67 @@ it.effect("denies delayed provider and checkpoint effects after explicit preserv
     }).pipe(Effect.provide(layer));
   }),
 );
+
+it.effect("never retries a permission decision after ambiguous native delivery", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const claim = {
+      ...restartEffect(now, { type: "detach" }),
+      request: {
+        type: "runtime-request.respond" as const,
+        providerSessionId: oldSessionId,
+        requestId: RuntimeRequestId.make("ambiguous-permission"),
+        decision: "accept" as const,
+      },
+    };
+    let retries = 0;
+    let failures = 0;
+    const retryFlags: boolean[] = [];
+    const workerLayer = EffectWorker.layerWithOptions({
+      workerId: "automatic-permission-worker",
+      maxAttempts: 5,
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            claimNext: () => Effect.succeedSome(claim),
+            get: () => Effect.succeedSome(claim),
+            awaitCancellation: () => Effect.never,
+            clearCancellation: () => Effect.void,
+            retry: () =>
+              Effect.sync(() => {
+                retries++;
+                return true;
+              }),
+            fail: () =>
+              Effect.sync(() => {
+                failures++;
+                return true;
+              }),
+          }),
+          Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+            execute: (_effect, options) =>
+              Effect.sync(() => {
+                retryFlags.push(options?.willRetry ?? true);
+              }).pipe(
+                Effect.andThen(
+                  new EffectWorker.OrchestrationEffectExecutionError({
+                    effectId: claim.id,
+                    effectType: claim.request.type,
+                    cause: "native response may have been sent",
+                  }),
+                ),
+              ),
+          }),
+        ),
+      ),
+    );
+    yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+      Effect.flatMap((worker) => worker.runOnce),
+      Effect.provide(workerLayer),
+    );
+    assert.deepEqual(retryFlags, [false]);
+    assert.equal(retries, 0);
+    assert.equal(failures, 1);
+  }),
+);

@@ -1094,20 +1094,23 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
         .setEnabled({ id: ScheduledTaskId.make("task:above-ceiling"), enabled: true })
         .pipe(Effect.flip);
       assert.equal(reenabled.message, "Example Corp limits threads to Auto-accept edits.");
-      // A task bound to a thread runs in that thread's mode, so its own is not checked.
-      yield* service.upsert({
-        id: ScheduledTaskId.make("task:bound"),
-        title: "Follow up",
-        prompt: "Check progress",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: ProjectId.make("project:test"),
-        threadId: ThreadId.make("thread:bound"),
-        workspaceStrategy: { type: "root" },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
+      // Bound tasks execute in Full access too; a ceiling is not a reason to run supervised.
+      const boundRefusal = yield* service
+        .upsert({
+          id: ScheduledTaskId.make("task:bound"),
+          title: "Follow up",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          threadId: ThreadId.make("thread:bound"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        })
+        .pipe(Effect.flip);
+      assert.equal(boundRefusal.message, "Example Corp limits threads to Auto-accept edits.");
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -1176,6 +1179,63 @@ it.effect("a run interrupted right after it reserves the task does not block the
       const second = yield* service.runNow({ id: task.id });
       assert.equal(second.threadId, ThreadId.make("thread:launched"));
       assert.equal(yield* Ref.get(launches), 1);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("refuses legacy scheduled authority until an authorized Full-access re-save", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const launches: string[] = [];
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          NodeCrypto.layer,
+          Scheduler.layer,
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: (input) =>
+              Effect.sync(() => {
+                launches.push(input.runtimeMode);
+                return { threadId: ThreadId.make("new-task-thread") } as never;
+              }),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/fixture-projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const input = {
+        id: ScheduledTaskId.make("legacy-task"),
+        title: "Legacy",
+        prompt: "Inspect",
+        enabled: true,
+        schedule: { type: "interval" as const, everyMs: 60000 },
+        projectId: ProjectId.make("project-test"),
+        workspaceStrategy: { type: "root" as const },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "fixture" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      yield* service.upsert(input);
+      yield* sql`UPDATE scheduled_tasks SET runtime_mode = 'auto' WHERE task_id = ${input.id}`;
+      assert.include(
+        (yield* service.list()).tasks[0]?.blockedByPolicy ?? "",
+        "old authority was not upgraded",
+      );
+      const result = yield* service.runNow({ id: input.id });
+      assert.equal(result.task.lastRunStatus, "failed");
+      assert.include(result.task.lastRunError ?? "", "old authority was not upgraded");
+      assert.deepEqual(launches, []);
+      yield* service.upsert(input);
+      yield* service.runNow({ id: input.id });
+      assert.deepEqual(launches, ["full-access"]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

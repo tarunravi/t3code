@@ -15,6 +15,7 @@ import {
   DevicePlatformUnavailableError,
   type DeviceServiceState,
   type DeviceSession,
+  type DeviceSessionOwner,
   type DeviceShutdownInput,
   type DeviceSummary,
   type DeviceEasAccount,
@@ -118,6 +119,26 @@ export interface DeviceAgentReadiness extends DeviceReadiness {
 const DeviceHostName = Schema.Struct({ id: DeviceHostId, label: Schema.optional(Schema.String) });
 const hostName = (host: typeof DeviceHostName.Type) => host.label ?? `host ${host.id}`;
 
+export const deviceSessionOwnedBy = (session: DeviceSessionOwner, owner: DeviceSessionOwner) =>
+  owner.threadId !== undefined
+    ? session.threadId === owner.threadId
+    : session.threadId === undefined && session.mcpClientSessionId === owner.mcpClientSessionId;
+
+const deviceOwner = (owner: DeviceSessionOwner): DeviceSessionOwner =>
+  owner.threadId !== undefined
+    ? { threadId: owner.threadId }
+    : { mcpClientSessionId: owner.mcpClientSessionId };
+
+const sessionName = Effect.fn("DeviceService.sessionName")(
+  (session: DeviceSessionOwner & { hostId: DeviceHostId; deviceId: DeviceId }) =>
+    agentDeviceSession(
+      session.threadId,
+      session.hostId,
+      session.deviceId,
+      session.mcpClientSessionId,
+    ),
+);
+
 export class DeviceHostAmbiguousError extends Schema.TaggedError<DeviceHostAmbiguousError>()(
   "DeviceHostAmbiguousError",
   { deviceId: DeviceId, hosts: Schema.Array(DeviceHostName) },
@@ -154,11 +175,12 @@ export class DeviceService extends Context.Service<
      * The agent-device flags that reach the device: its config and session,
      * and the id agent-device selects it by, which can differ from its id here.
      */
-    readonly agentTarget: (input: {
-      threadId: ThreadId;
-      hostId: DeviceHostId;
-      deviceId: DeviceId;
-    }) => Effect.Effect<
+    readonly agentTarget: (
+      input: DeviceSessionOwner & {
+        hostId: DeviceHostId;
+        deviceId: DeviceId;
+      },
+    ) => Effect.Effect<
       {
         readonly agentDeviceId: string | null;
         readonly session: string;
@@ -171,12 +193,13 @@ export class DeviceService extends Context.Service<
      * The command agents run for one agent-device session; it is removed when the session ends.
      * None when the session closed before it could be bound.
      */
-    readonly agentLauncher: (input: {
-      readonly threadId: ThreadId;
-      readonly hostId: DeviceHostId;
-      readonly deviceId: DeviceId;
-      readonly targetArgs: ReadonlyArray<string>;
-    }) => Effect.Effect<Option.Option<string>, DeviceError>;
+    readonly agentLauncher: (
+      input: DeviceSessionOwner & {
+        readonly hostId: DeviceHostId;
+        readonly deviceId: DeviceId;
+        readonly targetArgs: ReadonlyArray<string>;
+      },
+    ) => Effect.Effect<Option.Option<string>, DeviceError>;
     readonly state: Effect.Effect<DeviceServiceState>;
     readonly subscribe: Effect.Effect<PubSub.Subscription<DeviceServiceState>, never, Scope.Scope>;
     readonly configure: (
@@ -190,11 +213,16 @@ export class DeviceService extends Context.Service<
       input: DeviceOpenInput,
       context?: DeviceHost.DeviceOpenContext,
     ) => Effect.Effect<DeviceSession, DeviceError>;
-    readonly close: (input: DeviceCloseInput) => Effect.Effect<void, DeviceError>;
+    /** An exact acquisition prevents failed-open cleanup from retiring a later reopen. */
+    readonly close: (
+      input: DeviceCloseInput,
+      expectedSession?: DeviceSession,
+    ) => Effect.Effect<void, DeviceError>;
     readonly shutdown: (input: DeviceShutdownInput) => Effect.Effect<void, DeviceError>;
     readonly detail: (input: DeviceDetailInput) => Effect.Effect<DeviceDetail, DeviceError>;
     readonly action: (input: DeviceActionInput) => Effect.Effect<DeviceDetail, DeviceError>;
     readonly screenshot: (input: {
+      readonly owner?: DeviceSessionOwner;
       readonly hostId?: DeviceHostId | undefined;
       readonly deviceId: DeviceId;
     }) => Effect.Effect<DeviceScreenshot, DeviceError>;
@@ -210,12 +238,13 @@ export class DeviceService extends Context.Service<
       Option.Option<DeviceSummary>,
       DeviceHostAmbiguousError | DeviceOnOtherHostError
     >;
-    /** As `locateDevice`, among the devices a thread has open. */
-    readonly locateSession: (input: {
-      readonly threadId: ThreadId;
-      readonly hostId?: DeviceHostId | undefined;
-      readonly deviceId: DeviceId;
-    }) => Effect.Effect<
+    /** As `locateDevice`, among the devices this owner has open. */
+    readonly locateSession: (
+      input: DeviceSessionOwner & {
+        readonly hostId?: DeviceHostId | undefined;
+        readonly deviceId: DeviceId;
+      },
+    ) => Effect.Effect<
       Option.Option<DeviceSession>,
       DeviceHostAmbiguousError | DeviceOnOtherHostError
     >;
@@ -228,6 +257,9 @@ export class DeviceService extends Context.Service<
     ) => Effect.Effect<DeviceAgentReadiness | null, DeviceError>;
     readonly currentReadiness: (hostId?: DeviceHostId) => Effect.Effect<DeviceReadiness | null>;
     readonly sessionsForThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<DeviceSession>>;
+    readonly sessionsForOwner: (
+      owner: DeviceSessionOwner,
+    ) => Effect.Effect<ReadonlyArray<DeviceSession>>;
   }
 >()("t3/device/DeviceService") {}
 
@@ -313,6 +345,30 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const boundLaunchers = new Map<string, string>();
   /** Launchers on a session the host leases to every thread; the host ends it, not a retiring thread. */
   const hostSessionLaunchers = new Set<string>();
+  const openingSessions = new Set<
+    DeviceSessionOwner & { hostId: DeviceHostId; deviceId: DeviceId }
+  >();
+  const assertAvailable = Effect.fn("DeviceService.assertAvailable")(function* (
+    owner: DeviceSessionOwner,
+    hostId: DeviceHostId,
+    deviceId: DeviceId,
+  ) {
+    const { state } = yield* SynchronizedRef.get(stateRef);
+    // Thread panels may share a device; standalone clients must not share its daemon or lease.
+    if (
+      [...state.sessions, ...openingSessions].some(
+        (session) =>
+          session.hostId === hostId &&
+          session.deviceId === deviceId &&
+          (owner.threadId === undefined || session.threadId === undefined) &&
+          !deviceSessionOwnedBy(session, owner),
+      )
+    )
+      return yield* new DeviceHostUnavailableError({
+        hostId,
+        reason: "This device is owned by another caller. Ask its owner to close it first.",
+      });
+  });
   // Binding and pruning read sessions under the lock, so neither acts on a session list the other has outdated.
   // A retired session's agent-device session ends before its launcher goes, and a reopen of the same
   // device waits for the lock, so the close cannot end the reopened session.
@@ -321,9 +377,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       if (!launchers) return;
       const { state } = yield* SynchronizedRef.get(stateRef);
       const live = new Set(
-        yield* Effect.forEach(state.sessions, (session) =>
-          agentDeviceSession(session.threadId, session.hostId, session.deviceId),
-        ).pipe(Effect.provideService(Digest.Digest, digest)),
+        yield* Effect.forEach(state.sessions, (session) => sessionName(session)).pipe(
+          Effect.provideService(Digest.Digest, digest),
+        ),
       );
       const retired = [...boundLaunchers].filter(([session]) => !live.has(session));
       for (const [session] of retired) boundLaunchers.delete(session);
@@ -344,11 +400,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         sessions,
         (session) =>
           Effect.gen(function* () {
-            const name = yield* agentDeviceSession(
-              session.threadId,
-              session.hostId,
-              session.deviceId,
-            ).pipe(Effect.provideService(Digest.Digest, digest));
+            const name = yield* sessionName(session).pipe(
+              Effect.provideService(Digest.Digest, digest),
+            );
             const launcher = boundLaunchers.get(name);
             if (!launcher || hostSessionLaunchers.has(name) || !launchers?.release) return;
             yield* launchers.release(launcher);
@@ -542,7 +596,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     // A session opened while the listing ran is on a device the listing could
     // not have seen yet; only sessions from before it can be pruned by it.
     const sessionKey = (session: DeviceSession) =>
-      `${session.hostId}\u0000${session.deviceId}\u0000${session.threadId}\u0000${session.openedAt}`;
+      JSON.stringify([session.hostId, session.deviceId, deviceOwner(session), session.openedAt]);
     const before = new Set((yield* SynchronizedRef.get(stateRef)).state.sessions.map(sessionKey));
     const { devices, detail, androidDiscoveryIncomplete } = yield* fetchDevices(ready);
     const hostSummaries = yield* Effect.forEach(hosts.values(), (host) => host.summary);
@@ -728,7 +782,10 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }
   });
 
-  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
+  const open: (
+    input: DeviceOpenInput,
+    context?: DeviceHost.DeviceOpenContext,
+  ) => Effect.Effect<DeviceSession, DeviceError, Scope.Scope> = Effect.fn("DeviceService.open")(
     function* (input, context) {
       const host = yield* resolveHost(input.hostId);
       yield* ensurePlatform(host, input.platform);
@@ -738,6 +795,20 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       if (!device) {
         return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
       }
+      const claim = { ...deviceOwner(input), hostId: host.id, deviceId: device.id };
+      yield* Effect.acquireRelease(
+        lifecycleLock.withPermit(
+          Effect.gen(function* () {
+            yield* assertAvailable(input, host.id, claim.deviceId);
+            openingSessions.add(claim);
+            return claim;
+          }),
+        ),
+        (claim) =>
+          Effect.sync(() => {
+            openingSessions.delete(claim);
+          }),
+      );
       // Hosts that route their own streams never encode emulator video with serve-emu's ffmpeg.
       if (device.platform === "android" && !device.physical && !ready.upstream) {
         // Resolve the override on the device host the way its hub does.
@@ -767,7 +838,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         }
       }
       if (!device.booted && input.boot !== false) {
-        const booting = { ...device, threadId: input.threadId };
+        const booting = { ...device, ...deviceOwner(input) };
         yield* publish((current) => ({
           ...current,
           bootingDevices: [
@@ -803,7 +874,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         });
       const openedAt = DateTime.formatIso(yield* DateTime.now);
       const session: DeviceSession = {
-        threadId: input.threadId,
+        ...deviceOwner(input),
         hostId: host.id,
         deviceId: device.id,
         platform: device.platform,
@@ -817,13 +888,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
               hostLabel: host.label,
               reason: "Device support was turned off while the device was opening.",
             });
+          yield* assertAvailable(input, host.id, session.deviceId);
           yield* publish((current) => ({
             ...current,
             sessions: [
               ...current.sessions.filter(
                 (existing) =>
                   !(
-                    existing.threadId === session.threadId &&
+                    deviceSessionOwnedBy(existing, session) &&
                     existing.hostId === session.hostId &&
                     existing.deviceId === session.deviceId
                   ),
@@ -861,17 +933,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   });
 
   const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(
-    function* (input) {
+    function* (input, expectedSession) {
       // Open publishes under the same lock; an old close must not release a reopened claim.
       const closing = yield* lifecycleLock.withPermit(
         Effect.gen(function* () {
           const { state } = yield* SynchronizedRef.get(stateRef);
           const closing = state.sessions.filter(
             (session) =>
-              session.threadId === input.threadId &&
+              deviceSessionOwnedBy(session, input) &&
+              (expectedSession === undefined || session === expectedSession) &&
               (input.hostId === undefined || session.hostId === input.hostId) &&
               (input.deviceId === undefined || session.deviceId === input.deviceId),
           );
+          if (input.shutdown)
+            for (const session of closing)
+              yield* assertAvailable(input, session.hostId, session.deviceId);
           const ending = input.shutdown
             ? state.sessions.filter((session) =>
                 closing.some(
@@ -891,11 +967,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                 reason: "Device host is reconnecting. Retry close after it reconnects.",
               });
             if (ready?.releaseAgentSession) {
-              const name = yield* agentDeviceSession(
-                session.threadId,
-                session.hostId,
-                session.deviceId,
-              ).pipe(Effect.provideService(Digest.Digest, digest));
+              const name = yield* sessionName(session).pipe(
+                Effect.provideService(Digest.Digest, digest),
+              );
               yield* ready.releaseAgentSession(name, session.deviceId);
             }
           }
@@ -950,7 +1024,27 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const screenshot: DeviceService["Service"]["screenshot"] = Effect.fn("DeviceService.screenshot")(
     function* (input) {
       const { ready, device } = yield* resolveDevice(input.hostId, input.deviceId);
-      return { device, png: yield* ready.devices.screenshot(device) };
+      return yield* lifecycleLock.withPermit(
+        Effect.gen(function* () {
+          const owner = input.owner;
+          if (owner) {
+            const { state } = yield* SynchronizedRef.get(stateRef);
+            if (
+              !state.sessions.some(
+                (session) =>
+                  deviceSessionOwnedBy(session, owner) &&
+                  session.hostId === (input.hostId ?? LOCAL_DEVICE_HOST_ID) &&
+                  session.deviceId === input.deviceId,
+              )
+            )
+              return yield* new DeviceNotFoundError({
+                hostId: input.hostId ?? LOCAL_DEVICE_HOST_ID,
+                deviceId: input.deviceId,
+              });
+          }
+          return { device, png: yield* ready.devices.screenshot(device) };
+        }),
+      );
     },
   );
 
@@ -990,8 +1084,12 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   );
 
   const sessionsForThread: DeviceService["Service"]["sessionsForThread"] = (threadId) =>
+    sessionsForOwner({ threadId });
+  const sessionsForOwner: DeviceService["Service"]["sessionsForOwner"] = (owner) =>
     SynchronizedRef.get(stateRef).pipe(
-      Effect.map(({ state }) => state.sessions.filter((session) => session.threadId === threadId)),
+      Effect.map(({ state }) =>
+        state.sessions.filter((session) => deviceSessionOwnedBy(session, owner)),
+      ),
     );
 
   const locate = <T extends { readonly hostId: DeviceHostId }>(
@@ -1044,7 +1142,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       state,
       input,
       state.sessions.filter(
-        (session) => session.threadId === input.threadId && session.deviceId === input.deviceId,
+        (session) => deviceSessionOwnedBy(session, input) && session.deviceId === input.deviceId,
       ),
     );
   });
@@ -1098,6 +1196,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         const { configPath, agentDeviceId, boundSession, installDirectory } =
           yield* lifecycleLock.withPermit(
             Effect.gen(function* () {
+              const { state } = yield* SynchronizedRef.get(stateRef);
+              yield* assertAvailable(input, input.hostId, input.deviceId);
+              if (
+                input.threadId === undefined &&
+                !state.sessions.some(
+                  (session) =>
+                    deviceSessionOwnedBy(session, input) &&
+                    session.hostId === input.hostId &&
+                    session.deviceId === input.deviceId,
+                )
+              )
+                return yield* new DeviceNotFoundError({
+                  hostId: input.hostId,
+                  deviceId: input.deviceId,
+                });
               if (hosts.get(host.id) !== host)
                 return yield* new DeviceHostUnavailableError({
                   hostId: host.id,
@@ -1127,11 +1240,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
               };
             }),
           );
-        const ownSession = yield* agentDeviceSession(
-          input.threadId,
-          input.hostId,
-          input.deviceId,
-        ).pipe(Effect.provideService(Digest.Digest, digest));
+        const ownSession = yield* sessionName(input).pipe(
+          Effect.provideService(Digest.Digest, digest),
+        );
         if (boundSession) hostSessionLaunchers.add(ownSession);
         const session = boundSession ?? ownSession;
         return {
@@ -1150,18 +1261,16 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             hostId: target.hostId,
             reason: "Agent launchers are unavailable in this device service.",
           });
-        const session = yield* agentDeviceSession(
-          target.threadId,
-          target.hostId,
-          target.deviceId,
-        ).pipe(Effect.provideService(Digest.Digest, digest));
+        const session = yield* sessionName(target).pipe(
+          Effect.provideService(Digest.Digest, digest),
+        );
         return yield* launcherLock.withPermit(
           Effect.gen(function* () {
             const { state } = yield* SynchronizedRef.get(stateRef);
             if (
               !state.sessions.some(
                 (live) =>
-                  live.threadId === target.threadId &&
+                  deviceSessionOwnedBy(live, target) &&
                   live.hostId === target.hostId &&
                   live.deviceId === target.deviceId,
               )
@@ -1177,7 +1286,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       subscribe: PubSub.subscribe(statePubSub),
       configure,
       list,
-      open,
+      open: (input, context) => Effect.scoped(open(input, context)),
       close,
       shutdown,
       detail,
@@ -1190,6 +1299,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       agentReadinessIfSupported,
       currentReadiness,
       sessionsForThread,
+      sessionsForOwner,
     }),
     setHostStatus,
     withLifecycleLock: lifecycleLock.withPermit,

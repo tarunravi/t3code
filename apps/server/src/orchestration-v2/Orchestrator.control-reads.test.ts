@@ -612,7 +612,7 @@ it.effect(
       const thread = yield* projections.getThread(threadId);
       assert.equal(thread.title, "After");
       assert.equal(thread.modelSelection.model, "gpt-6");
-      assert.equal(thread.runtimeMode, "approval-required");
+      assert.equal(thread.runtimeMode, "full-access");
       assert.deepEqual(
         (yield* projections.getThreadProviderContext(threadId)).providerSessions,
         [],

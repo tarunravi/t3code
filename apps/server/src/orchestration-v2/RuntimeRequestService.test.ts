@@ -98,3 +98,118 @@ it.effect.each(["expired", "resolved"] as const)(
     }).pipe(Effect.provide(layerTest));
   },
 );
+
+it.effect.each([
+  "delivered",
+  "wrong-session",
+  "stale-run",
+  "wrong-attempt",
+  "wrong-binding",
+  "wrong-decision",
+  "transport-failure",
+] as const)(
+  "automatic permission response revalidates exact routing and reports %s honestly",
+  (outcome) => {
+    const threadId = ThreadId.make("automatic-thread");
+    const providerSessionId = ProviderSessionId.make("automatic-session");
+    const requestId = RuntimeRequestId.make("automatic-request");
+    const calls: ProviderAdapter.ProviderAdapterV2RuntimeRequestResponseInput[] = [];
+    const request = {
+      id: requestId,
+      nodeId: NodeId.make("automatic-node"),
+      providerTurnId: "native-turn",
+      status: "resolved",
+      kind: "command",
+      decision: "accept",
+      automaticDecision: { policy: "full-access", decision: "accept" },
+      responseCapability: {
+        type: "live",
+        providerSessionId: outcome === "wrong-session" ? "other-session" : providerSessionId,
+      },
+    };
+    const layer = RuntimeRequestService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRuntimeRequest: () => Effect.succeed(request as never),
+            getRuntimeResponseContext: () =>
+              Effect.succeed({
+                node: {
+                  runId: "owner-run",
+                  providerTurnId: "native-turn",
+                  providerThreadId: "owner-thread",
+                },
+              } as never),
+            getThreadRecords: () =>
+              Effect.succeed({
+                runs: [
+                  {
+                    id: "owner-run",
+                    activeAttemptId: "owner-attempt",
+                    status: outcome === "stale-run" ? "completed" : "running",
+                  },
+                ],
+                providerTurns: [
+                  {
+                    id: "native-turn",
+                    status: "running",
+                    runAttemptId: outcome === "wrong-attempt" ? "old-attempt" : "owner-attempt",
+                    providerThreadId: "owner-thread",
+                  },
+                ],
+                providerThreads: [
+                  {
+                    id: "owner-thread",
+                    providerSessionId:
+                      outcome === "wrong-binding" ? "other-session" : providerSessionId,
+                  },
+                ],
+              } as never),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.succeedSome({
+                providerSession: { status: "running" },
+                respondToRuntimeRequest: (
+                  input: ProviderAdapter.ProviderAdapterV2RuntimeRequestResponseInput,
+                ) =>
+                  Effect.sync(() => {
+                    calls.push(input);
+                  }).pipe(
+                    Effect.andThen(
+                      outcome === "transport-failure"
+                        ? Effect.fail("ambiguous-native-delivery")
+                        : Effect.void,
+                    ),
+                  ),
+              } as never),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* RuntimeRequestService.RuntimeRequestServiceV2;
+      const result = yield* service
+        .respond({
+          threadId,
+          providerSessionId,
+          requestId,
+          decision: outcome === "wrong-decision" ? "decline" : "accept",
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, outcome === "delivered" ? "Success" : "Failure");
+      assert.equal(
+        calls.length,
+        outcome === "delivered" || outcome === "transport-failure" ? 1 : 0,
+      );
+      if (result._tag === "Failure") {
+        assert.equal(
+          result.failure.reason,
+          outcome === "transport-failure" ? "unexpected-failure" : "request-not-resumable",
+        );
+        if (outcome === "transport-failure")
+          assert.equal(result.failure.cause, "ambiguous-native-delivery");
+      }
+    }).pipe(Effect.provide(layer));
+  },
+);

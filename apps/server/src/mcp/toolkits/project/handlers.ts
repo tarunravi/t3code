@@ -208,12 +208,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
-        let startedRuntimeMode =
-          projectDefaults !== undefined && input.runtimeMode === undefined
-            ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-                Effect.orElseSucceed(() => runtimeMode),
-              )
-            : runtimeMode;
+        let startedRuntimeMode = yield* resolveRuntimeMode(runtimeMode, input.runtimeMode);
         if (!replaying) {
           const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
           startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {

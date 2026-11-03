@@ -37,7 +37,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { Button } from "../../components/ui/Button";
-import { RUNTIME_MODE_CHOICES } from "./thread-settings-options";
 
 /** The same five levels as web's access picker: read-only, then the runtime modes. */
 const ACCESS_CHOICES: ReadonlyArray<{
@@ -50,7 +49,22 @@ const ACCESS_CHOICES: ReadonlyArray<{
     label: "Read only",
     description: "Read projects and threads. Cannot start, message or change anything.",
   },
-  ...RUNTIME_MODE_CHOICES.map((choice) => ({ ...choice, access: choice.mode })),
+  {
+    access: "approval-required",
+    label: "Supervised",
+    description: "Start and message threads within a supervised grant.",
+  },
+  {
+    access: "auto-accept-edits",
+    label: "Auto-accept edits",
+    description: "Allow edit-mode authority, not unrestricted execution.",
+  },
+  { access: "auto", label: "Auto", description: "Allow Auto-mode authority, not Full access." },
+  {
+    access: "full-access",
+    label: "Full access",
+    description: "Allow Full-access execution within the granted scopes.",
+  },
 ];
 const accessLabel = (access: AuthMcpClientAccess) =>
   ACCESS_CHOICES.find((choice) => choice.access === access)?.label ?? access;

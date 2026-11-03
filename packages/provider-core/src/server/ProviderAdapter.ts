@@ -59,6 +59,26 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
+/** Adapters call this only for a native command/file/tool permission with an actual allow-once response. */
+export function fullAccessPermissionDecision(
+  policy: ProviderAdapterV2RuntimePolicy,
+  supportsAllowOnce: boolean,
+): OrchestrationV2RuntimeRequest["automaticDecision"] {
+  const sandbox = policy.sandboxPolicy;
+  const unrestricted =
+    supportsAllowOnce &&
+    policy.runtimeMode === "full-access" &&
+    policy.interactionMode === "default" &&
+    (policy.maxRuntimeMode === undefined || policy.maxRuntimeMode === "full-access") &&
+    (policy.approvalPolicy === undefined || policy.approvalPolicy === "never") &&
+    (sandbox === undefined ||
+      (typeof sandbox === "object" &&
+        sandbox !== null &&
+        "type" in sandbox &&
+        sandbox.type === "dangerFullAccess"));
+  return unrestricted ? { policy: "full-access", decision: "accept" } : undefined;
+}
+
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
   messageId: MessageId,
   text: Schema.String,

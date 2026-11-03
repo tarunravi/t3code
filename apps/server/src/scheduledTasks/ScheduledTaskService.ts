@@ -469,10 +469,14 @@ export const layer = Layer.effect(
       webhookPolicyOrganization === undefined
         ? undefined
         : managedPolicyDeniedMessage(webhookPolicyOrganization, "webhook tasks");
+    const legacyExecutionBlock =
+      "This saved task predates Full-access-only execution. Re-save it with Full access using an authorized caller; its old authority was not upgraded.";
     const withPolicy = (task: ScheduledTask): ScheduledTask =>
-      webhookPolicyBlock !== undefined && task.schedule.type === "webhook"
-        ? { ...task, blockedByPolicy: webhookPolicyBlock }
-        : task;
+      task.runtimeMode !== "full-access"
+        ? { ...task, blockedByPolicy: legacyExecutionBlock }
+        : webhookPolicyBlock !== undefined && task.schedule.type === "webhook"
+          ? { ...task, blockedByPolicy: webhookPolicyBlock }
+          : task;
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
@@ -1275,35 +1279,39 @@ export const layer = Layer.effect(
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
+          active.runtimeMode !== "full-access"
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                Effect.fail(taskError(legacyExecutionBlock, { taskId: active.id })),
               )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
-              );
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(Effect.map((launched) => launched.threadId)),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
@@ -1553,6 +1561,8 @@ export const layer = Layer.effect(
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input) {
+      if (input.runtimeMode !== "full-access")
+        return yield* taskError("Only Full-access execution is supported.");
       // A webhook task the policy blocks can still be edited while it is off.
       if (input.enabled && input.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
         return yield* taskError(
@@ -1560,13 +1570,11 @@ export const layer = Layer.effect(
           input.id === undefined ? {} : { taskId: input.id },
         );
       }
-      // Refused on save rather than at run time; a disabled task can still be saved, so one
-      // stored above the ceiling can be turned off before its mode is lowered. A task bound to a
-      // thread runs in that thread's mode, which the orchestrator checks instead.
-      const modeDenial =
-        input.enabled && input.threadId == null
-          ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
-          : undefined;
+      // Disabled tasks remain editable, but enabling either task shape requires Full access
+      // within the managed ceiling. Binding to a historical narrow thread is not a fallback.
+      const modeDenial = input.enabled
+        ? managedRuntimeModeDenial(managedPolicy.summary, "full-access")
+        : undefined;
       if (modeDenial !== undefined) {
         return yield* taskError(modeDenial, input.id === undefined ? {} : { taskId: input.id });
       }
@@ -1717,10 +1725,11 @@ export const layer = Layer.effect(
       ) {
         return yield* taskError(webhookPolicyBlock, { taskId: input.id });
       }
-      const modeDenial =
-        input.enabled && existing.threadId === null
-          ? managedRuntimeModeDenial(managedPolicy.summary, existing.runtimeMode)
-          : undefined;
+      const modeDenial = input.enabled
+        ? existing.runtimeMode !== "full-access"
+          ? legacyExecutionBlock
+          : managedRuntimeModeDenial(managedPolicy.summary, "full-access")
+        : undefined;
       if (modeDenial !== undefined) {
         return yield* taskError(modeDenial, { taskId: input.id });
       }

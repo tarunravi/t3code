@@ -9101,28 +9101,54 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     const startApprovalTurn = (
       scenario: string,
       entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+      runtimeMode: "full-access" | "approval-required" = "full-access",
     ) =>
       Effect.gen(function* () {
         const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
             scenario,
-            entries: [...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }), ...entries],
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }).map((entry) => {
+                if (!("frame" in entry)) return entry;
+                const frame = entry.frame as { method?: string; params?: Record<string, unknown> };
+                if (
+                  runtimeMode === "approval-required" &&
+                  entry.type === "expect_outbound" &&
+                  frame.method === "turn/start"
+                ) {
+                  return {
+                    ...entry,
+                    frame: {
+                      ...frame,
+                      params: {
+                        ...frame.params,
+                        approvalPolicy: "untrusted",
+                        sandboxPolicy: { type: "readOnly" },
+                      },
+                    },
+                  };
+                }
+                return entry;
+              }),
+              ...entries,
+            ],
           }),
           (event) =>
             event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
               ? Queue.offer(pending, event.runtimeRequest)
               : Effect.void,
         );
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
             attemptId: RunAttemptId.make(`${scenario}-attempt`),
             text: prompt,
           }),
-        );
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, runtimeMode },
+        });
         return {
           harness,
           answerNext: Queue.take(pending).pipe(
@@ -9160,6 +9186,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           turnCompleted(nativeTurnId),
         ]);
         const request = yield* answerNext;
+        assert.deepEqual(request.automaticDecision, { policy: "full-access", decision: "accept" });
         yield* harness.firstTerminal;
 
         const items = harness.events.flatMap((event) =>
@@ -9297,16 +9324,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             frame: { id, result: { permissions: { fileSystem: { entries } }, scope: "turn" } },
           },
         ];
-        const { harness, answerNext } = yield* startApprovalTurn("permission-entries", [
-          ...permissionRequest(0, "write-glob", [
-            { access: "read", path: { type: "path", path: "/w/src" } },
-            { access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } },
-          ]),
-          ...permissionRequest(1, "read-glob", [
-            { access: "read", path: { type: "glob_pattern", pattern: "/w/docs/**" } },
-          ]),
-          turnCompleted(nativeTurnId),
-        ]);
+        const { harness, answerNext } = yield* startApprovalTurn(
+          "permission-entries",
+          [
+            ...permissionRequest(0, "write-glob", [
+              { access: "read", path: { type: "path", path: "/w/src" } },
+              { access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } },
+            ]),
+            ...permissionRequest(1, "read-glob", [
+              { access: "read", path: { type: "glob_pattern", pattern: "/w/docs/**" } },
+            ]),
+            turnCompleted(nativeTurnId),
+          ],
+          "approval-required",
+        );
         const write = yield* answerNext;
         const read = yield* answerNext;
         yield* harness.firstTerminal;

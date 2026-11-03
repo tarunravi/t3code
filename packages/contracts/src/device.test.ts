@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
+import { ThreadId } from "./baseSchemas.ts";
 import {
   DeviceBootError,
   DeviceServiceState,
@@ -20,6 +21,8 @@ const decodeOlderState = Schema.decodeUnknownSync(
     hosts: Schema.Array(
       Schema.Struct({ id: Schema.String, kind: Schema.Literals(["local", "ssh"]) }),
     ),
+    sessions: Schema.Array(Schema.Struct({ threadId: Schema.String })),
+    bootingDevices: Schema.optional(Schema.Array(Schema.Struct({ threadId: Schema.String }))),
   }),
 );
 
@@ -81,6 +84,44 @@ describe("device state for clients from before EAS hosts", () => {
     const wire = encodeState(state);
     expect(decodeOlderState(wire).hosts.map((host) => host.id)).toEqual(["local"]);
     expect(decodeState(wire).hosts).toEqual(state.hosts);
+  });
+
+  it("keeps standalone sessions and booting devices out of older clients' thread fields", () => {
+    const device = {
+      hostId: "local",
+      id: "phone",
+      platform: "ios" as const,
+      name: "Phone",
+      version: "iOS",
+      booted: true,
+      physical: false,
+    };
+    const session = {
+      hostId: "local",
+      deviceId: "phone",
+      platform: "ios" as const,
+      openedAt: "now",
+    };
+    const thread = { threadId: ThreadId.make("device-thread") };
+    const client = { mcpClientSessionId: "device-client" };
+    const next = {
+      ...state,
+      sessions: [
+        { ...session, ...thread },
+        { ...session, ...client },
+      ],
+      bootingDevices: [
+        { ...device, ...thread },
+        { ...device, ...client },
+      ],
+    };
+    const wire = encodeState(next);
+    expect(decodeOlderState(wire)).toEqual({
+      hosts: [{ id: "local", kind: "local" }],
+      sessions: [thread],
+      bootingDevices: [thread],
+    });
+    expect(decodeState(wire)).toEqual(next);
   });
 });
 

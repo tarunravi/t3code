@@ -405,7 +405,7 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     projectId: input.projectId,
     title: input.title,
     modelSelection: input.modelSelection,
-    runtimeMode: input.runtimeMode,
+    runtimeMode: "full-access",
     interactionMode: input.interactionMode,
     branch: input.branch,
     worktreePath: input.worktreePath,
@@ -651,7 +651,7 @@ export const setThreadRuntimeMode = Effect.fn("EnvironmentCommands.setThreadRunt
       type: "thread.runtime-mode.set",
       commandId: yield* allocateCommandId(input),
       threadId: input.threadId,
-      runtimeMode: input.runtimeMode,
+      runtimeMode: "full-access",
     });
   },
 );
@@ -718,7 +718,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       title: input.titleSeed ?? thread.title,
       generateTitle: input.titleSeed !== undefined,
       modelSelection: input.modelSelection ?? thread.modelSelection,
-      runtimeMode: input.runtimeMode,
+      runtimeMode: "full-access",
       interactionMode: input.interactionMode,
       workspaceStrategy,
       initialMessage: {

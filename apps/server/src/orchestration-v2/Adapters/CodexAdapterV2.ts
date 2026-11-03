@@ -4198,6 +4198,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly prompt?: string | null;
           readonly appName?: string;
           readonly options?: ReadonlyArray<ProviderApprovalOption>;
+          readonly automaticDecision?: OrchestrationV2RuntimeRequest["automaticDecision"];
         }) {
           const createdAt = yield* DateTime.now;
           const { owner, subagent } = approvalOwnerCodexTurn(input.context);
@@ -4250,6 +4251,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               strength: "strong",
             },
             kind: input.requestKind,
+            ...(input.automaticDecision === undefined
+              ? {}
+              : { automaticDecision: input.automaticDecision }),
             status: "pending",
             responseCapability: {
               type: "live",
@@ -5310,8 +5314,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (context.providerThread.nativeThreadRef?.nativeId !== payload.threadId) {
+              return yield* toProtocolError(
+                "Permission request does not belong to this native thread.",
+                payload,
+              );
+            }
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              payload.networkApprovalContext != null
+            ) {
+              yield* Effect.logWarning(
+                "Codex destination/managed-network authorization was not auto-approved.",
+              );
+              return {
+                decision: "decline",
+              } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
+            }
+            const automaticDecision = ProviderAdapter.fullAccessPermissionDecision(
+              context.input.runtimePolicy,
+              true,
+            );
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              automaticDecision === undefined
+            ) {
+              return yield* toProtocolError(
+                "The effective Codex policy cannot auto-answer this permission. No approval fallback is available.",
+                payload,
+              );
+            }
             const allowance = sessionAllowance(payload.threadId, context);
-            if (allowance.has("command")) {
+            if (automaticDecision === undefined && allowance.has("command")) {
               return {
                 decision: "acceptForSession",
               } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
@@ -5320,6 +5354,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const nativeRequestId = payload.approvalId ?? payload.itemId;
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
+              automaticDecision,
               nativeItemId: payload.itemId,
               nativeRequestId,
               requestKind: "command",
@@ -5381,8 +5416,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (context.providerThread.nativeThreadRef?.nativeId !== payload.threadId) {
+              return yield* toProtocolError(
+                "Permission request does not belong to this native thread.",
+                payload,
+              );
+            }
+            const automaticDecision = ProviderAdapter.fullAccessPermissionDecision(
+              context.input.runtimePolicy,
+              true,
+            );
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              automaticDecision === undefined
+            ) {
+              return yield* toProtocolError(
+                "The effective Codex policy cannot auto-answer this permission. No approval fallback is available.",
+                payload,
+              );
+            }
             const allowance = sessionAllowance(payload.threadId, context);
-            if (allowance.has("file-change")) {
+            if (automaticDecision === undefined && allowance.has("file-change")) {
               return {
                 decision: "acceptForSession",
               } satisfies CodexSchema.FileChangeRequestApprovalResponse;
@@ -5390,6 +5444,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
+              automaticDecision,
               nativeItemId: payload.itemId,
               nativeRequestId: payload.itemId,
               requestKind: "file-change",
@@ -5454,6 +5509,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
             }
 
+            if (context.input.runtimePolicy.runtimeMode === "full-access") {
+              return yield* toProtocolError(
+                "Codex requested an additional native permission grant under Full access. This grant was not upgraded; no approval fallback is available.",
+                payload,
+              );
+            }
             const requestKind = providerRequestKindFromPermissions(payload.permissions);
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
@@ -5593,8 +5654,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (context.providerThread.nativeThreadRef?.nativeId !== payload.conversationId) {
+              return yield* toProtocolError(
+                "Permission request does not belong to this native thread.",
+                payload,
+              );
+            }
+            const automaticDecision = ProviderAdapter.fullAccessPermissionDecision(
+              context.input.runtimePolicy,
+              true,
+            );
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              automaticDecision === undefined
+            ) {
+              return yield* toProtocolError(
+                "The effective Codex policy cannot auto-answer this permission. No approval fallback is available.",
+                payload,
+              );
+            }
             const allowance = sessionAllowance(payload.conversationId, context);
-            if (allowance.has("command")) {
+            if (automaticDecision === undefined && allowance.has("command")) {
               return {
                 decision: "approved_for_session",
               } satisfies CodexSchema.ExecCommandApprovalResponse;
@@ -5603,6 +5683,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const nativeRequestId = payload.approvalId ?? payload.callId;
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
+              automaticDecision,
               nativeItemId: payload.callId,
               nativeRequestId,
               requestKind: "command",
@@ -5662,8 +5743,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (context.providerThread.nativeThreadRef?.nativeId !== payload.conversationId) {
+              return yield* toProtocolError(
+                "Permission request does not belong to this native thread.",
+                payload,
+              );
+            }
+            const automaticDecision = ProviderAdapter.fullAccessPermissionDecision(
+              context.input.runtimePolicy,
+              true,
+            );
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              automaticDecision === undefined
+            ) {
+              return yield* toProtocolError(
+                "The effective Codex policy cannot auto-answer this permission. No approval fallback is available.",
+                payload,
+              );
+            }
             const allowance = sessionAllowance(payload.conversationId, context);
-            if (allowance.has("file-change")) {
+            if (automaticDecision === undefined && allowance.has("file-change")) {
               return {
                 decision: "approved_for_session",
               } satisfies CodexSchema.ApplyPatchApprovalResponse;
@@ -5671,6 +5771,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
+              automaticDecision,
               nativeItemId: payload.callId,
               nativeRequestId: payload.callId,
               requestKind: "file-change",

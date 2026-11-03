@@ -1649,10 +1649,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (usageLimitHoldsQueue(projection, queuedRun.providerInstanceId)) {
         return;
       }
-      // Waits without a hold: lowering the thread's mode starts the queue again.
-      if (isRuntimeModeAbove(projection.thread.runtimeMode, runtimeModeCeiling?.maxRuntimeMode)) {
-        return;
-      }
       // Failed worktree creation would run queued work in the project checkout; wait for the user.
       const failedRun = latestExecutedRun(projection.runs);
       const failureClass =
@@ -2769,7 +2765,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       title: command.title,
       providerInstanceId: command.modelSelection.instanceId,
       modelSelection: command.modelSelection,
-      runtimeMode: command.runtimeMode,
+      runtimeMode: "full-access",
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
@@ -3923,7 +3919,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }
             : thread;
         case "thread.runtime-mode.set":
-          return { ...thread, runtimeMode: command.runtimeMode, updatedAt: now };
+          return { ...thread, runtimeMode: "full-access", updatedAt: now };
         case "thread.interaction-mode.set":
           return { ...thread, interactionMode: command.interactionMode, updatedAt: now };
         case "thread.model-selection.set":
@@ -5404,6 +5400,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    yield* refuseAboveDispatchModeLimit(command, command.threadId, {
+      ...projection.thread,
+      runtimeMode: "full-access",
+    });
+    if (projection.thread.runtimeMode !== "full-access") {
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.runtime-mode-updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: { ...projection.thread, runtimeMode: "full-access", updatedAt: now },
+      });
+      projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    }
     if (
       command.automaticFallbackOfRunId !== undefined &&
       (yield* stopReachedRun(command, command.threadId, command.automaticFallbackOfRunId))
@@ -7832,7 +7845,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
-        runtimeMode: command.runtimeMode,
+        runtimeMode: "full-access",
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
       };
@@ -9113,6 +9126,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Provider session ${providerSessionId} was not found.`,
         });
       }
+      if (runtimeRequest.automaticDecision !== undefined) {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(mapDispatchError(command));
+        if (
+          thread.runtimeMode !== "full-access" ||
+          providerSession === undefined ||
+          providerSession.status === "stopped" ||
+          providerSession.status === "error" ||
+          context.node?.providerTurnId !== runtimeRequest.providerTurnId
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "Automatic permission routing or Full-access execution policy is no longer valid.",
+          });
+        }
+        yield* refuseAboveDispatchModeLimit(command, command.threadId, thread);
+      }
       let answers = command.answers;
       if (runtimeRequest.kind === "user_input" && answers !== undefined) {
         const decoded = yield* decodeUserInputAnswers(answers).pipe(mapDispatchError(command));
@@ -9421,16 +9454,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { readonly type: "runtime-request.delivery.fail" }
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     const thread = yield* projectionStore
       .getThread(command.threadId)
       .pipe(mapDispatchError(command));
     if (thread.deletedAt !== null) return;
-    const node = (yield* projectionStore
+    const context = yield* projectionStore
       .getRuntimeResponseContext(command.threadId, command.requestId)
-      .pipe(mapDispatchError(command))).node;
+      .pipe(mapDispatchError(command));
+    const node = context.node;
     if (node === undefined) return;
     const now = yield* DateTime.now;
+    if (context.request?.status === "pending") {
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "runtime-request.updated",
+        threadId: command.threadId,
+        nodeId: node.id,
+        occurredAt: now,
+        payload: {
+          ...context.request,
+          status: "expired",
+          resolvedAt: now,
+          responseCapability: {
+            type: "not_resumable",
+            reason: "Automatic permission decision could not be delivered safely.",
+          },
+        },
+      });
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "node.updated",
+        threadId: command.threadId,
+        nodeId: node.id,
+        occurredAt: now,
+        payload: { ...node, status: "failed", completedAt: now },
+      });
+      if (context.item !== undefined)
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          nodeId: node.id,
+          occurredAt: now,
+          payload: { ...context.item, status: "failed", completedAt: now, updatedAt: now },
+        });
+    }
     yield* emit(
       events,
       command,
@@ -9465,6 +9541,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       },
     });
+    if (node.runId !== null) {
+      const { runs } = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs"])
+        .pipe(mapDispatchError(command));
+      const run = runs.find((candidate) => candidate.id === node.runId);
+      if (run !== undefined && isActiveRun(run))
+        yield* dispatchRunInterrupt(
+          {
+            type: "run.interrupt",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            runId: node.runId,
+          },
+          events,
+          effects,
+        );
+    }
   });
 
   const dispatchThreadUserInputDismiss = Effect.fn("Orchestrator.dispatchThreadUserInputDismiss")(
@@ -13557,7 +13650,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchCheckpointRollbackFail(command, events);
         break;
       case "runtime-request.delivery.fail":
-        yield* dispatchRuntimeRequestDeliveryFail(command, events);
+        yield* dispatchRuntimeRequestDeliveryFail(command, events, effects);
         break;
       case "thread.background-work.settle":
         yield* dispatchBackgroundWorkSettle(command, events, effects);
@@ -13716,6 +13809,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const plan = yield* dispatchOnce(command, sideChatIds).pipe(
+      Effect.flatMap((planned) =>
+        Effect.gen(function* () {
+          const normalized = planned.events.map((event) =>
+            event.type === "thread.created" || event.type === "thread.runtime-mode-updated"
+              ? { ...event, payload: { ...event.payload, runtimeMode: "full-access" as const } }
+              : event,
+          );
+          const modes = new Map<ThreadId, OrchestrationV2AppThread>();
+          for (const event of normalized) {
+            if (event.type === "thread.created" || event.type === "thread.runtime-mode-updated") {
+              modes.set(event.threadId, event.payload);
+              yield* refuseAboveDispatchModeLimit(command, event.threadId, event.payload);
+            }
+          }
+          const migrations: OrchestrationV2DomainEvent[] = [];
+          for (const threadId of threadsStartingWork(normalized)) {
+            const thread =
+              modes.get(threadId) ??
+              (yield* projectionStore.getThread(threadId).pipe(mapDispatchError(command)));
+            yield* refuseAboveDispatchModeLimit(command, threadId, {
+              ...thread,
+              runtimeMode: "full-access",
+            });
+            if (thread.runtimeMode === "full-access") continue;
+            const now = yield* DateTime.now;
+            const migrated = { ...thread, runtimeMode: "full-access" as const, updatedAt: now };
+            migrations.push({
+              id: yield* idAllocator.allocate
+                .event({ threadId, commandId: command.commandId })
+                .pipe(mapDispatchError(command)),
+              type: "thread.runtime-mode-updated",
+              threadId,
+              occurredAt: now,
+              payload: migrated,
+            });
+            modes.set(threadId, migrated);
+          }
+          return { ...planned, events: [...migrations, ...normalized] };
+        }),
+      ),
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>
@@ -13933,6 +14066,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ? dispatch
       : threadDispatch.withLock(parentThreadId, dispatch);
   });
+
+  const permissionEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+  yield* eventSink
+    .stream({ afterSequence: permissionEventsAfterSequence, eventType: "runtime-request.updated" })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "runtime-request.updated" &&
+          stored.event.payload.status === "pending" &&
+          stored.event.payload.automaticDecision !== undefined,
+      ),
+      Stream.runForEach((stored) =>
+        Effect.gen(function* () {
+          if (stored.event.type !== "runtime-request.updated") return;
+          const request = stored.event.payload;
+          // Adapter attestation is about native permissions, never generic elicitation or human input.
+          if (
+            !["command", "file-read", "file-change", "permission"].includes(request.kind) ||
+            request.responseCapability.type !== "live"
+          )
+            return;
+          yield* dispatchWithReceipt({
+            type: "runtime-request.respond",
+            commandId: CommandId.make(
+              `command:full-access-permission:${request.responseCapability.providerSessionId}:${request.id}`,
+            ),
+            threadId: stored.event.threadId,
+            requestId: request.id,
+            decision: "accept",
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              if (stored.event.type !== "runtime-request.updated") return;
+              const current = yield* projectionStore
+                .getRuntimeRequest(stored.event.threadId, stored.event.payload.id)
+                .pipe(Effect.orDie);
+              // A manual decision that won the race is already owned by its one outbox effect.
+              if (current?.status !== "pending") return;
+              yield* Effect.logWarning("Automatic permission decision was not dispatched", {
+                cause,
+              });
+              yield* dispatchWithReceipt({
+                type: "runtime-request.delivery.fail",
+                threadId: stored.event.threadId,
+                commandId: CommandId.make(
+                  `command:full-access-permission-failed:${stored.event.payload.id}`,
+                ),
+                requestId: stored.event.payload.id,
+              });
+            }).pipe(Effect.ignoreCause({ log: true })),
+          ),
+        ),
+      ),
+      Effect.forkScoped,
+    );
 
   const handleRunUpdate = Effect.fn("Orchestrator.handleRunUpdate")(
     function* (stored: OrchestrationV2StoredEvent) {

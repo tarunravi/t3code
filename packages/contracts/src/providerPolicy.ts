@@ -29,6 +29,10 @@ export const RuntimeMode = Schema.Literals([
   "full-access",
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
+/** Saved modes and authority ceilings retain their historical meaning. New execution has one mode. */
+export const ExecutionRuntimeMode = Schema.Literal("full-access").pipe(
+  Schema.decodeTo(RuntimeMode),
+);
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 
 const RUNTIME_MODE_RANK: Record<RuntimeMode, number> = {

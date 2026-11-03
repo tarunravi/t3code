@@ -891,6 +891,16 @@ describe("OpenCodeAdapterV2", () => {
               event.type === "runtime_request.updated" && event.runtimeRequest.kind === "file-read",
           ),
         );
+        const permission = events.find(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.kind === "file-read",
+        );
+        assert.ok(permission?.type === "runtime_request.updated");
+        if (permission?.type === "runtime_request.updated")
+          assert.deepEqual(permission.runtimeRequest.automaticDecision, {
+            policy: "full-access",
+            decision: "accept",
+          });
         const assistant = items.filter((item) => item.type === "assistant_message");
         assert.equal(assistant.at(-1)?.text, "Tool results received");
         assert.equal(assistant.at(-1)?.status, "completed");

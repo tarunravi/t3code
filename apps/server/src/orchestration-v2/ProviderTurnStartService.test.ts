@@ -98,6 +98,8 @@ function startWithMissingWorktree(
   );
   const projection = {
     thread: {
+      runtimeMode: "full-access",
+      interactionMode: "default",
       id: threadId,
       projectId: ProjectId.make("project_provider_turn_start_projection_failure"),
       branch: "feature/restore",
@@ -373,6 +375,8 @@ function makeLocalCommandHarness(input: {
   };
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
+      runtimeMode: "full-access",
+      interactionMode: "default",
       id: threadId,
       activeProviderThreadId: providerThreadId,
       projectId: ProjectId.make("project-native-account-command"),
@@ -1241,13 +1245,13 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
 );
 
 effectIt.effect.each([
-  { contextRun: "current", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
-  { contextRun: "failed", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
-  { contextRun: "cancelled", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
+  { contextRun: "current", runtimeMode: "full-access", context: "SIDE_CHAT_CONTEXT" },
+  { contextRun: "failed", runtimeMode: "full-access", context: "SIDE_CHAT_CONTEXT" },
+  { contextRun: "cancelled", runtimeMode: "full-access", context: "SIDE_CHAT_CONTEXT" },
   {
     contextRun: "failed",
     switchedProvider: true,
-    runtimeMode: "approval-required",
+    runtimeMode: "full-access",
     context: "SIDE_CHAT_CONTEXT",
   },
   { contextRun: "delivered", runtimeMode: "full-access", context: "" },
@@ -1262,7 +1266,7 @@ effectIt.effect.each([
 
       yield* harness.start;
 
-      // The turn that delivers the context is clamped; a later one follows the thread's mode.
+      // Side chats retain the admitted execution policy; context delivery is not an approval-mode fallback.
       expect(harness.open).toHaveBeenCalledWith(
         expect.objectContaining({ runtimePolicy: expect.objectContaining({ runtimeMode }) }),
       );
@@ -1531,7 +1535,9 @@ effectIt.effect.each([
     );
     if (boundary === "policy resolution") {
       harness.resolveRuntimePolicy.mockReturnValue(
-        gate.pipe(Effect.as({ cwd: "/tmp/native-account-command" } as never)),
+        gate.pipe(
+          Effect.as({ cwd: "/tmp/native-account-command", runtimeMode: "full-access" } as never),
+        ),
       );
     }
 
@@ -1828,7 +1834,7 @@ effectIt.effect.each(["exists", "policy"] as const)(
       // The existing harness records create; policy deferral covers the open boundary.
       if (boundary === "policy")
         harness.resolveRuntimePolicy.mockReturnValue(
-          gate.pipe(Effect.as({ cwd: "/tmp/fake" } as never)),
+          gate.pipe(Effect.as({ cwd: "/tmp/fake", runtimeMode: "full-access" } as never)),
         );
       const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.raceFirst(
@@ -2109,5 +2115,21 @@ effectIt.effect.each(["prune", "open"] as const)(
         load: 0,
       });
       expect(harness.projection()).toEqual(frozen);
+    }),
+);
+
+effectIt.effect(
+  "refuses a legacy queued or restarted run without silently upgrading its historical grant",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Queued before Full-access-only execution" });
+      const old = harness.projection();
+      harness.setProjection({ ...old, thread: { ...old.thread, runtimeMode: "auto" } });
+      yield* harness.start;
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(JSON.stringify(harness.events)).toContain(
+        "historical narrow authority was not upgraded",
+      );
     }),
 );

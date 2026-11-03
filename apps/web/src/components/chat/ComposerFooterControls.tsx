@@ -25,9 +25,9 @@ export type RuntimeModeOption = {
   mode: RuntimeMode;
   disabledReason?: string;
 } & (typeof runtimeModeConfig)[RuntimeMode];
-const supervisedRuntimeModeOption: RuntimeModeOption = {
-  mode: "approval-required" as const,
-  ...runtimeModeConfig["approval-required"],
+const fullAccessRuntimeModeOption: RuntimeModeOption = {
+  mode: "full-access" as const,
+  ...runtimeModeConfig["full-access"],
 };
 export const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
   showInteractionModeToggle: boolean;
@@ -50,7 +50,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
   const permissionsChipRef = useRef<HTMLButtonElement>(null);
   const runtimeModeOption =
     props.runtimeModeOptions.find((option) => option.mode === props.runtimeMode) ??
-    supervisedRuntimeModeOption;
+    fullAccessRuntimeModeOption;
   const RuntimeModeIcon = runtimeModeOption.icon;
   const interactionModeTooltip =
     props.interactionMode === "plan"
@@ -172,7 +172,7 @@ export function ComposerPermissionsSection(props: {
   const shownMode = previewMode ?? props.runtimeMode;
   const shown =
     props.runtimeModeOptions.find((option) => option.mode === shownMode) ??
-    supervisedRuntimeModeOption;
+    fullAccessRuntimeModeOption;
   const descriptionId = useId();
   return (
     <div data-composer-permissions className="grid w-72 gap-1.5 px-2 py-1.5">

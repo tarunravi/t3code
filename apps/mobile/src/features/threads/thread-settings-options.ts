@@ -10,21 +10,6 @@ export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
   readonly description: string;
 }> = [
   {
-    mode: "approval-required",
-    label: "Supervised",
-    description: "Ask before commands and file changes.",
-  },
-  {
-    mode: "auto-accept-edits",
-    label: "Auto-accept edits",
-    description: "Auto-approve edits, ask before other actions.",
-  },
-  {
-    mode: "auto",
-    label: "Auto",
-    description: "Supported providers approve routine actions; others still ask.",
-  },
-  {
     mode: "full-access",
     label: "Full access",
     description: "Allow commands and edits without prompts.",
@@ -34,7 +19,7 @@ export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
 export function runtimeModeChoicesForSupportedModes(
   supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
 ) {
-  return supportedRuntimeModes && supportedRuntimeModes.length > 0
+  return supportedRuntimeModes !== undefined
     ? RUNTIME_MODE_CHOICES.filter((choice) => supportedRuntimeModes.includes(choice.mode))
     : RUNTIME_MODE_CHOICES;
 }
@@ -60,27 +45,20 @@ export function withManagedRuntimeModeLimits(
   });
 }
 
-/**
- * A new thread's mode: the draft's choice unless the managed ceiling refuses it, then the
- * default, which the server already reads back at or below the ceiling.
- */
+/** Legacy drafts select Full access; managed denial remains visible instead of choosing a narrower mode. */
 export function resolveNewThreadRuntimeMode(
-  draftMode: RuntimeMode | undefined,
-  defaultMode: RuntimeMode,
-  policy: ManagedPolicySummary | undefined,
+  _draftMode: RuntimeMode | undefined,
+  _defaultMode: RuntimeMode,
+  _policy: ManagedPolicySummary | undefined,
 ): RuntimeMode {
-  return draftMode !== undefined && managedRuntimeModeDenial(policy, draftMode) === undefined
-    ? draftMode
-    : defaultMode;
+  return "full-access";
 }
 
 export function compatibleRuntimeModeForChoices(
-  runtimeMode: RuntimeMode,
-  choices: ReadonlyArray<{ readonly mode: RuntimeMode }>,
+  _runtimeMode: RuntimeMode,
+  _choices: ReadonlyArray<{ readonly mode: RuntimeMode }>,
 ): RuntimeMode {
-  return choices.some((choice) => choice.mode === runtimeMode)
-    ? runtimeMode
-    : (choices[0]?.mode ?? runtimeMode);
+  return "full-access";
 }
 
 export { selectableProviderOptionChoices as selectableChoices } from "@t3tools/client-runtime/model-traits";

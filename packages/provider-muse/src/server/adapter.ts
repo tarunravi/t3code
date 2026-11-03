@@ -1084,14 +1084,14 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       });
       const showRequest = Effect.fnUntraced(function* (entry: PendingRequest) {
         entry.shown = true;
+        yield* emit({ type: "node.updated", driver: MUSE_PROVIDER, node: entry.node });
+        yield* emit({ type: "turn_item.updated", driver: MUSE_PROVIDER, turnItem: entry.item });
         yield* emit({
           type: "runtime_request.updated",
           driver: MUSE_PROVIDER,
           threadId: entry.node.threadId,
           runtimeRequest: entry.request,
         });
-        yield* emit({ type: "node.updated", driver: MUSE_PROVIDER, node: entry.node });
-        yield* emit({ type: "turn_item.updated", driver: MUSE_PROVIDER, turnItem: entry.item });
         yield* updateSession("waiting");
       });
       /**
@@ -1117,6 +1117,26 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             entry.native.type === native.type &&
             entry.request.nativeRequestRef?.nativeId === nativeId,
         );
+        if (
+          previous !== undefined &&
+          native.type === "approval" &&
+          previous.native.type === "approval"
+        ) {
+          if (
+            previous.native.value.currentRequirementId.approvalId ===
+              native.value.currentRequirementId.approvalId &&
+            previous.native.value.currentRequirementId.sourceIndex ===
+              native.value.currentRequirementId.sourceIndex
+          )
+            return;
+          if (previous.request.automaticDecision !== undefined) {
+            return yield* failHost(
+              protocolError(
+                "Muse changed a permission requirement while its automatic decision was pending; delivery is ambiguous.",
+              ),
+            );
+          }
+        }
         const providerTurnId = turn?.providerTurn.id ?? null;
         const threadId = turn?.input.threadId ?? thread.appThreadId ?? input.threadId;
         const requestId =
@@ -1142,12 +1162,32 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               : subject.access === "read"
                 ? "file-read"
                 : "file-change";
+        const automaticDecision =
+          native.type === "approval" &&
+          ["shell", "fileAccess", "toolCall"].includes(native.value.subject.kind)
+            ? ProviderAdapter.fullAccessPermissionDecision(
+                turn?.input.runtimePolicy ?? input.runtimePolicy,
+                museApprovalChoices(native.value).get("accept")?.scope === "once",
+              )
+            : undefined;
+        if (
+          native.type === "approval" &&
+          (turn?.input.runtimePolicy ?? input.runtimePolicy).runtimeMode === "full-access" &&
+          automaticDecision === undefined
+        ) {
+          return yield* failHost(
+            protocolError(
+              "Muse did not offer an eligible one-time command/file/tool permission decision. No consent, destination grant or standing approval was supplied.",
+            ),
+          );
+        }
         const runtimeRequest: OrchestrationV2RuntimeRequest = {
           id: requestId,
           nodeId,
           providerTurnId,
           nativeRequestRef: nativeRef(nativeId),
           kind,
+          ...(automaticDecision === undefined ? {} : { automaticDecision }),
           status: "pending",
           responseCapability: { type: "live", providerSessionId: input.providerSessionId },
           createdAt: previous?.request.createdAt ?? time,
@@ -1224,28 +1264,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                   required: true,
                 })),
               };
-        // Muse does not propagate allowAll to workflow children; T3 answers for them.
-        const autoApprove = child && input.runtimePolicy.runtimeMode === "full-access";
-        const entry: PendingRequest = {
-          native,
-          request: runtimeRequest,
-          node,
-          item,
-          shown: !autoApprove || previous?.shown === true,
-        };
+        const entry: PendingRequest = { native, request: runtimeRequest, node, item, shown: true };
         pending.set(requestId, entry);
-        if (entry.shown) yield* showRequest(entry);
-        if (autoApprove)
-          yield* decideApproval(entry, "accept").pipe(
-            Effect.catch(() =>
-              Effect.gen(function* () {
-                // Native updates may settle or replace this entry while the RPC is in flight.
-                if (!closed && !broken && pending.get(requestId) === entry)
-                  yield* showRequest(entry);
-              }).pipe(eventPermit.withPermits(1)),
-            ),
-            Effect.forkIn(scope),
-          );
+        yield* showRequest(entry);
       });
       const handleRequestEvent = Effect.fnUntraced(function* (
         method: string,
@@ -2293,7 +2314,12 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           function* (args) {
             const entry = pending.get(args.requestId);
             if (!entry) return yield* protocolError("This Muse request is no longer pending");
-            if (entry.native.type === "approval") yield* decideApproval(entry, args.decision);
+            if (entry.native.type === "approval")
+              yield* decideApproval(entry, args.decision).pipe(
+                Effect.tapError((cause) =>
+                  entry.request.automaticDecision === undefined ? Effect.void : failHost(cause),
+                ),
+              );
             else {
               const questionRequest = entry.native.value;
               const answers = [];

@@ -31,21 +31,15 @@ describe("managed runtime mode limits", () => {
     ]);
 
     expect(choices.map((choice) => [choice.mode, choice.disabledReason])).toEqual([
-      ["approval-required", undefined],
-      ["auto-accept-edits", undefined],
-      ["auto", "Narrow Corp limits threads to Auto-accept edits."],
       ["full-access", "Wide Corp limits threads to Auto."],
     ]);
   });
 
-  it("drops a new thread's draft mode above the ceiling for the default", () => {
+  it("never downgrades a draft or default to work around a managed ceiling", () => {
     const capped = policy("Corp", "auto");
-    expect(resolveNewThreadRuntimeMode("full-access", "auto", capped)).toBe("auto");
-    expect(resolveNewThreadRuntimeMode("approval-required", "auto", capped)).toBe(
-      "approval-required",
-    );
-    expect(resolveNewThreadRuntimeMode(undefined, "auto", capped)).toBe("auto");
-    expect(resolveNewThreadRuntimeMode("full-access", "auto", undefined)).toBe("full-access");
+    expect(resolveNewThreadRuntimeMode("full-access", "auto", capped)).toBe("full-access");
+    expect(resolveNewThreadRuntimeMode("approval-required", "auto", capped)).toBe("full-access");
+    expect(resolveNewThreadRuntimeMode(undefined, "auto", capped)).toBe("full-access");
   });
 });
 

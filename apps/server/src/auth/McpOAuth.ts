@@ -576,6 +576,7 @@ export const layerMcpClientAuthenticator = Layer.effect(
   Effect.gen(function* () {
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const environment = yield* ServerEnvironment.ServerEnvironment;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const environmentId = yield* environment.getEnvironmentId;
     return McpHttpServer.McpClientAuthenticator.of({
       authenticate: Effect.fn("McpHttpServer.McpClientAuthenticator.authenticate")(
@@ -583,24 +584,31 @@ export const layerMcpClientAuthenticator = Layer.effect(
           return environmentAuth.authenticateMcpClient(request).pipe(
             Effect.flatMap((client) =>
               Clock.currentTimeMillis.pipe(
-                Effect.map((issuedAt): McpInvocationContext.McpInvocationScope => ({
-                  environmentId,
-                  requestNamespace: `client:${client.sessionId}`,
-                  thread: undefined,
-                  client: {
-                    sessionId: client.sessionId,
-                    label: client.label,
-                    access: client.access,
-                    linked: client.peerLink,
-                    ...(client.peerLink ? {} : { webOrigin: requestUrls(request).issuer }),
-                  },
-                  capabilities: new Set<McpInvocationContext.McpCapability>([
-                    "orchestration",
-                    "worktree",
-                    "pull-requests",
-                  ]),
-                  issuedAt,
-                })),
+                Effect.flatMap((issuedAt) =>
+                  settings.getSettings.pipe(
+                    Effect.map((settings): McpInvocationContext.McpInvocationScope => ({
+                      environmentId,
+                      requestNamespace: `client:${client.sessionId}`,
+                      thread: undefined,
+                      client: {
+                        sessionId: client.sessionId,
+                        label: client.label,
+                        access: client.access,
+                        linked: client.peerLink,
+                        ...(client.peerLink ? {} : { webOrigin: requestUrls(request).issuer }),
+                      },
+                      capabilities: new Set<McpInvocationContext.McpCapability>([
+                        "orchestration",
+                        "worktree",
+                        "pull-requests",
+                        ...(settings.enableDeviceSupport && settings.enableAgentDeviceAccess
+                          ? ["device" as const]
+                          : []),
+                      ]),
+                      issuedAt,
+                    })),
+                  ),
+                ),
               ),
             ),
             Effect.catch((error) =>

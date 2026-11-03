@@ -2917,7 +2917,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         );
         assert.deepEqual(
           listed.tasks.map((summary) => summary.webhookUrl),
-          [undefined, "https://t3.example/hooks/secret"],
+          [undefined, undefined],
         );
       }),
     );
@@ -3066,10 +3066,16 @@ describe("OrchestratorMcpService provider resolution", () => {
             ),
           ),
         );
-        const updated = yield* mcp.updateScheduledTask(supervisedClient, {
-          scheduledTaskId: bound.id,
-          prompt: "Something else",
-        });
+        const updated = yield* mcp.updateScheduledTask(
+          {
+            ...supervisedClient,
+            client: { sessionId: "full-access-scheduled", label: "Client", access: "full-access" },
+          },
+          {
+            scheduledTaskId: bound.id,
+            prompt: "Something else",
+          },
+        );
         assert.equal(yield* Ref.get(upserted), 1);
         assert.equal(updated.scheduledTaskId, bound.id);
         assert.equal(updated.webhookUrl, undefined);
@@ -3109,7 +3115,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       client: {
         sessionId: "scheduled-base",
         label: "Claude Code",
-        access: "approval-required",
+        access: "full-access",
       },
       capabilities: new Set(["orchestration"]),
       issuedAt: 1,
@@ -3654,14 +3660,17 @@ describe("OrchestratorMcpService provider resolution", () => {
           Effect.flip,
         );
         assert.equal(error.code, "invalid_request");
-        assert.include(error.message, "approval-required, full-access");
+        assert.include(error.message, "Only Full-access");
       }),
     );
 
-    it.effect("steps an inherited mode down to the broadest one the provider offers", () =>
+    it.effect("refuses inherited authority below Full access instead of stepping down", () =>
       Effect.gen(function* () {
         assert.equal(yield* resolveRuntimeMode("full-access", "inherit", muse), "full-access");
-        assert.equal(yield* resolveRuntimeMode("auto", undefined, muse), "approval-required");
+        assert.equal(
+          (yield* resolveRuntimeMode("auto", undefined, muse).pipe(Effect.flip)).code,
+          "runtime_mode_escalation_denied",
+        );
       }),
     );
   });

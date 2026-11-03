@@ -32,7 +32,7 @@ import {
 } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
-import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
+import { DEFAULT_RUNTIME_MODE, ExecutionRuntimeMode, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import {
   BrowserRecordingFrameRate,
@@ -1156,10 +1156,20 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
 
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
+const ExecutionRuntimeModeSetting = RuntimeMode.pipe(
+  Schema.decodeTo(
+    RuntimeMode,
+    SchemaTransformation.transform<RuntimeMode, RuntimeMode>({
+      decode: () => "full-access",
+      encode: () => "full-access",
+    }),
+  ),
+);
+
 export const ProjectSettingsOverrides = Schema.Struct({
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
-  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  defaultRuntimeMode: Schema.optionalKey(ExecutionRuntimeModeSetting),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   worktreeSubmodules: ForwardCompatibleOptional(WorktreeSubmodules),
@@ -1331,7 +1341,7 @@ export const ServerSettings = Schema.Struct({
   fallbackModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
-  defaultRuntimeMode: RuntimeMode.pipe(
+  defaultRuntimeMode: ExecutionRuntimeModeSetting.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
 
@@ -1749,7 +1759,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   fallbackProviderInstanceId: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
   fallbackModel: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
-  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  defaultRuntimeMode: Schema.optionalKey(ExecutionRuntimeMode),
   fallbackModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */
   projectSettingsOverrides: Schema.optionalKey(

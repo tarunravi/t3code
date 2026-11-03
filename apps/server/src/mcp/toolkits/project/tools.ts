@@ -8,7 +8,7 @@ import {
   OrchestrationV2DelegatedFrom,
   OrchestrationV2RunStatus,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  RuntimeMode,
+  ExecutionRuntimeMode,
   ProviderInteractionMode,
   Project,
   ProjectCreatePayload,
@@ -137,7 +137,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     title: TrimmedNonEmptyString,
     modelSelection: Schema.optional(ModelSelection),
-    runtimeMode: Schema.optional(RuntimeMode),
+    runtimeMode: Schema.optional(ExecutionRuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(
       OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({

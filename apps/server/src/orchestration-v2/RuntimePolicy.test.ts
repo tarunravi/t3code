@@ -65,11 +65,14 @@ function makeThread(input: {
 const grokInstanceId = ProviderInstanceId.make("grok");
 const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArray<RuntimeMode>>([
   [grokInstanceId, ["approval-required", "auto", "full-access"]],
+  [ProviderInstanceId.make("unsupported"), ["auto"]],
+  [ProviderInstanceId.make("missing-capability"), []],
 ]);
 const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   ({
     snapshot: {
       getSnapshot: Effect.succeed({
+        driver: "codex",
         supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
       } as ServerProvider),
     },
@@ -113,23 +116,25 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
 const layerTest = layerWithPolicy();
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
-  it.effect("runs a mode the provider does not offer in Supervised", () =>
-    Effect.gen(function* () {
-      const policy = yield* RuntimePolicy.RuntimePolicyV2;
-      const now = yield* DateTime.now;
-      const modeFor = (instanceId: ProviderInstanceId, runtimeMode: RuntimeMode) =>
-        policy
-          .resolve({
-            thread: makeThread({ now, worktreePath: null, runtimeMode }),
-            modelSelection: { instanceId, model: "test-model" },
-          })
-          .pipe(Effect.map((resolved) => resolved.runtimeMode));
+  it.effect(
+    "migrates saved narrow execution to genuine Full access without a provider downgrade",
+    () =>
+      Effect.gen(function* () {
+        const policy = yield* RuntimePolicy.RuntimePolicyV2;
+        const now = yield* DateTime.now;
+        const modeFor = (instanceId: ProviderInstanceId, runtimeMode: RuntimeMode) =>
+          policy
+            .resolve({
+              thread: makeThread({ now, worktreePath: null, runtimeMode }),
+              modelSelection: { instanceId, model: "test-model" },
+            })
+            .pipe(Effect.map((resolved) => resolved.runtimeMode));
 
-      assert.equal(yield* modeFor(grokInstanceId, "auto-accept-edits"), "approval-required");
-      assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
-      assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
-      assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
-    }),
+        assert.equal(yield* modeFor(grokInstanceId, "auto-accept-edits"), "full-access");
+        assert.equal(yield* modeFor(grokInstanceId, "auto"), "full-access");
+        assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
+        assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "full-access");
+      }),
   );
 });
 
@@ -154,11 +159,66 @@ it.layer(
       assert.equal(refused._tag, "RuntimePolicyAboveCeilingError");
       assert.equal(
         refused.message,
-        "Example Corp limits threads to Auto-accept edits. Switch this thread's mode to continue.",
+        "Example Corp limits threads to Auto-accept edits. Full-access execution is unavailable under this policy.",
       );
-      const allowed = yield* resolve("auto-accept-edits");
-      assert.equal(allowed.runtimeMode, "auto-accept-edits");
-      assert.equal(allowed.maxRuntimeMode, "auto-accept-edits");
+      const legacy = yield* resolve("auto-accept-edits").pipe(Effect.flip);
+      assert.equal(legacy._tag, "RuntimePolicyAboveCeilingError");
     }),
   );
 });
+
+it.layer(layerTest)("Full-access refusal", (it) => {
+  it.effect("refuses an unsupported provider and restrictive execution overrides", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const result = yield* policy
+        .resolve({
+          thread: makeThread({ now, worktreePath: "/work" }),
+          modelSelection: { instanceId: ProviderInstanceId.make("unsupported"), model: "test" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(result._tag, "RuntimePolicyFullAccessUnavailableError");
+    }),
+  );
+});
+
+it.effect("does not mask an internal read-only override with a Full-access label", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const result = yield* policy
+      .resolve({ thread: makeThread({ now, worktreePath: "/work" }), modelSelection })
+      .pipe(Effect.flip);
+    assert.equal(result._tag, "RuntimePolicyFullAccessUnavailableError");
+  }).pipe(
+    Effect.provide(
+      RuntimePolicy.layerWithOverride({
+        approvalPolicy: "untrusted",
+        sandboxPolicy: { type: "readOnly" },
+      }).pipe(Layer.provide(layerTest)),
+    ),
+  ),
+);
+
+it.effect(
+  "canonicalizes nonrestrictive overrides so adapters cannot reinterpret them as supervised",
+  () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now: yield* DateTime.now, worktreePath: "/work" }),
+        modelSelection,
+      });
+      assert.equal(resolved.runtimeMode, "full-access");
+      assert.isUndefined(resolved.approvalPolicy);
+      assert.isUndefined(resolved.sandboxPolicy);
+    }).pipe(
+      Effect.provide(
+        RuntimePolicy.layerWithOverride({
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        }).pipe(Layer.provide(layerTest)),
+      ),
+    ),
+);

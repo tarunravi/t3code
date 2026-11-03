@@ -1851,6 +1851,15 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               ? { permission: request.value }
               : { question: request.value }),
           };
+          if (
+            request.type === "permission" &&
+            turn.runtimePolicy.runtimeMode === "full-access" &&
+            ProviderAdapter.fullAccessPermissionDecision(turn.runtimePolicy, true) === undefined
+          ) {
+            return yield* protocolError(
+              "OpenCode cannot answer this permission under the effective Full-access/Plan policy. No approval fallback is available.",
+            );
+          }
           pendingRequests.set(String(requestId), pending);
           pendingRequestsByNativeId.set(nativeRequestId, pending);
           const runtimeRequest: OrchestrationV2RuntimeRequest = {
@@ -1859,6 +1868,14 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             providerTurnId: turn.providerTurnId,
             nativeRequestRef: providerRef(nativeRequestId),
             kind: requestKind,
+            ...(request.type === "permission"
+              ? {
+                  automaticDecision: ProviderAdapter.fullAccessPermissionDecision(
+                    turn.runtimePolicy,
+                    true,
+                  ),
+                }
+              : {}),
             status: "pending",
             responseCapability: {
               type: "live",
@@ -1890,15 +1907,15 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             },
           });
           yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: OPENCODE_PROVIDER,
+            turnItem: runtimeRequestTurnItem(pending, "waiting", null, now),
+          });
+          yield* emitProviderEvent({
             type: "runtime_request.updated",
             driver: OPENCODE_PROVIDER,
             threadId: turn.threadId,
             runtimeRequest,
-          });
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver: OPENCODE_PROVIDER,
-            turnItem: runtimeRequestTurnItem(pending, "waiting", null, now),
           });
           yield* updateProviderSession("waiting", null);
         });

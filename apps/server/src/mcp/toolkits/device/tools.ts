@@ -29,7 +29,7 @@ const DeviceToolFailure = Schema.Union([DeviceToolError, OrchestratorMcpFailure]
 
 const DeviceListTool = Tool.make("device_list", {
   description:
-    "List iOS Simulators and Android Emulators on every device host, what each host can run, and what is open in this thread's Device panel. Call before `device_open` when you do not know a device id.",
+    "List iOS Simulators and Android Emulators on every device host, what each host can run, and what this caller has open. Call before `device_open` when you do not know a device id.",
   // An empty struct serializes as `anyOf [object, array]`, which some
   // providers reject and then drop every tool on the server with it.
   parameters: Schema.Struct({
@@ -49,7 +49,7 @@ const DeviceListTool = Tool.make("device_list", {
 
 const DeviceOpenTool = Tool.make("device_open", {
   description:
-    "Open a simulator or emulator for this thread. Pass `deviceId` and `hostId` from `device_list`. Boots it if needed and shows it in the user's Device panel. Returns the `agent-device` CLI call pinned to that device. Drive the device with that CLI.",
+    "Open a simulator or emulator for this caller. Pass `deviceId` and `hostId` from `device_list`. Boots it if needed; in-thread callers also show it in the user's Device panel. External clients need full-access/default authorization. Returns the host-local `agent-device` CLI call pinned to that device. Drive the device with that CLI on the T3 server host.",
   parameters: DeviceToolOpenInput,
   success: DeviceToolOpenResult,
   failure: DeviceToolFailure,
@@ -84,7 +84,7 @@ export const DeviceScreenshotTool = Tool.make("device_screenshot", {
 
 const DeviceCloseTool = Tool.make("device_close", {
   description:
-    "Remove a device from this thread's Device panel. `shutdown=true` also turns it off.",
+    "Close this caller's device session (and its Device panel when in-thread). `shutdown=true` also turns it off and releases cloud leases. Always use shutdown for EAS or Simlock when done.",
   parameters: DeviceToolCloseInput,
   success: Schema.Record(Schema.String, Schema.Never),
   failure: DeviceToolFailure,

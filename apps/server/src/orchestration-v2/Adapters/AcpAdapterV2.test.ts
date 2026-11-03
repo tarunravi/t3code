@@ -9298,3 +9298,157 @@ describe("AcpAdapterV2 locally tracked /goal (omp)", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 });
+
+it.effect.each(["allow-once", "standing-only", "wrong-session", "delivery-failure"] as const)(
+  "Full-access ACP permission uses real native options and reports %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      type Runtime = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let permission: Parameters<Runtime["handleRequestPermission"]>[0] | undefined;
+      let nativeInput: AcpAdapterV2RuntimeInput | undefined;
+      const makeRuntime = makeMockRuntime({
+        childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+        mockAgentPath: yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        ),
+        environment: { T3_ACP_HANG_PROMPT_FOREVER: "1" },
+        wrapRuntime: (runtime) => ({
+          ...runtime,
+          handleRequestPermission: (handler) =>
+            Effect.sync(() => {
+              permission = handler;
+            }).pipe(Effect.andThen(runtime.handleRequestPermission(handler))),
+        }),
+      });
+      const instanceId = ProviderInstanceId.make(`full-access-acp-${outcome}`);
+      const threadId = ThreadId.make(`thread-full-access-acp-${outcome}`);
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" };
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          interruptPromptOnCancel: true,
+          makeRuntime: (input) =>
+            Effect.sync(() => {
+              nativeInput = input;
+            }).pipe(Effect.andThen(makeRuntime(input))),
+        },
+      });
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make(`session-full-access-${outcome}`),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const turn = yield* runtime
+        .startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+        )
+        .pipe(Effect.forkScoped);
+      const started = Option.getOrThrow(
+        yield* runtime.events.pipe(
+          Stream.filter((e) => e.type === "provider_turn.updated"),
+          Stream.runHead,
+        ),
+      );
+      if (!permission || started.type !== "provider_turn.updated")
+        return yield* Effect.die("No native ACP permission callback installed");
+      const request = {
+        sessionId: outcome === "wrong-session" ? "another-session" : "mock-session-1",
+        toolCall: { toolCallId: "native-command", kind: "execute" as const, title: "echo fixture" },
+        options:
+          outcome === "standing-only"
+            ? [{ optionId: "persist-rule", name: "Always allow", kind: "allow_always" as const }]
+            : [{ optionId: "native-once-choice", name: "Allow once", kind: "allow_once" as const }],
+      };
+      const response = yield* permission(request, {
+        requestId: "native-permission-id",
+        method: "session/request_permission",
+      }).pipe(Effect.result, Effect.forkScoped);
+      if (outcome === "standing-only" || outcome === "wrong-session") {
+        assert.equal((yield* Fiber.join(response))._tag, "Failure");
+      } else {
+        const pending = Option.getOrThrow(
+          yield* runtime.events.pipe(
+            Stream.filter(
+              (e) => e.type === "runtime_request.updated" && e.runtimeRequest.status === "pending",
+            ),
+            Stream.runHead,
+          ),
+        );
+        if (pending.type !== "runtime_request.updated")
+          return yield* Effect.die("No adapter-attested permission");
+        assert.deepEqual(pending.runtimeRequest.automaticDecision, {
+          policy: "full-access",
+          decision: "accept",
+        });
+        const duplicate = yield* permission(request, {
+          requestId: "native-permission-id",
+          method: "session/request_permission",
+        }).pipe(Effect.result);
+        assert.equal(
+          duplicate._tag,
+          "Failure",
+          "a duplicate transport identity cannot replace the original deferred",
+        );
+        const delivery = yield* runtime
+          .respondToRuntimeRequest({ requestId: pending.runtimeRequest.id, decision: "accept" })
+          .pipe(Effect.result, Effect.forkScoped);
+        const result = yield* Fiber.join(response);
+        assert.equal(result._tag, "Success");
+        if (result._tag === "Success")
+          assert.deepEqual(result.success.outcome, {
+            outcome: "selected",
+            optionId: "native-once-choice",
+          });
+        if (outcome === "delivery-failure")
+          yield* nativeInput!.onOutgoingResponseFailure!(
+            "native-permission-id",
+            new EffectAcpErrors.AcpTransportError({
+              cause: "ambiguous-delivery",
+              detail: "Native response delivery failed",
+            }),
+          );
+        else yield* nativeInput!.onOutgoingResponse!("native-permission-id");
+        assert.equal(
+          (yield* Fiber.join(delivery))._tag,
+          outcome === "delivery-failure" ? "Failure" : "Success",
+        );
+      }
+      if (outcome === "standing-only") {
+        const terminal = Option.getOrThrow(
+          yield* runtime.events.pipe(
+            Stream.filter((event) => event.type === "turn.terminal"),
+            Stream.runHead,
+          ),
+        );
+        assert.equal(
+          terminal.status,
+          "failed",
+          "an unsupported native decision must settle the T3 run, not leave it waiting for approval",
+        );
+      } else {
+        yield* runtime.interruptTurn({ providerThread, providerTurnId: started.providerTurn.id });
+      }
+      yield* Fiber.join(turn);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+);

@@ -137,6 +137,28 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
     undefined,
   );
 
+/** Device sessions can belong to an authenticated client instead of a thread. */
+export const actsOnDevice = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare(
+    (params: P) =>
+      writingCaller.pipe(
+        Effect.tap((caller) =>
+          caller.scope.thread !== undefined
+            ? Effect.void
+            : assertNotLinked(caller, "open standalone device sessions").pipe(
+                Effect.andThen(
+                  assertFullAccess(
+                    caller,
+                    "Device control needs a full-access/default MCP client.",
+                  ),
+                ),
+              ),
+        ),
+        Effect.flatMap(() => handle(params)),
+      ),
+    undefined,
+  );
+
 /**
  * Changes something that belongs to no thread, such as a pending upload or a
  * scheduled task. Work a linked environment started may not: none of it

@@ -28,11 +28,22 @@ export function interactionModeRank(mode: ProviderInteractionMode): number {
   return mode === "plan" ? 0 : 1;
 }
 
-/**
- * The mode a child runs at: the one asked for, never broader than its parent's.
- * An inherited mode the target provider does not offer steps down to the
- * broadest one it does; an explicitly requested one is refused instead.
- */
+/** Authority comparisons also serve Stop/read paths; do not normalize or elevate these ceilings. */
+export function assertRuntimeModeWithinLimit(
+  ceiling: RuntimeMode,
+  target: RuntimeMode,
+): Effect.Effect<void, OrchestratorMcpFailure> {
+  return runtimeModeRank(target) > runtimeModeRank(ceiling)
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "runtime_mode_escalation_denied",
+          message: `Runtime mode ${target} exceeds caller authority (${ceiling}).`,
+        }),
+      )
+    : Effect.void;
+}
+
+/** Launch selection is separate from the caller's real authority ceiling. */
 export function resolveRuntimeMode(
   parentMode: RuntimeMode,
   requested: OrchestratorMcpRuntimeMode | undefined,
@@ -41,34 +52,32 @@ export function resolveRuntimeMode(
     readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined;
   },
 ): Effect.Effect<RuntimeMode, OrchestratorMcpFailure> {
-  const inherited = requested === undefined || requested === "inherit";
-  const resolved = inherited ? parentMode : requested;
-  if (runtimeModeRank(resolved) > runtimeModeRank(parentMode)) {
+  if (parentMode !== "full-access") {
     return Effect.fail(
       new OrchestratorMcpFailure({
         code: "runtime_mode_escalation_denied",
-        message: `Child runtime mode ${resolved} is broader than parent mode ${parentMode}.`,
+        message: `Full-access execution exceeds caller authority (${parentMode}). The grant was not upgraded.`,
+      }),
+    );
+  }
+  if (requested !== undefined && requested !== "inherit" && requested !== "full-access") {
+    return Effect.fail(
+      new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Only Full-access execution is supported.",
       }),
     );
   }
   const supported = target?.supportedRuntimeModes;
-  if (supported === undefined || supported.length === 0 || supported.includes(resolved)) {
-    return Effect.succeed(resolved);
-  }
-  if (!inherited) {
+  if (supported !== undefined && !supported.includes("full-access")) {
     return Effect.fail(
       new OrchestratorMcpFailure({
         code: "invalid_request",
-        message: `Provider ${target?.modelSelection.instanceId} does not offer runtime mode ${resolved}, so it would run as approval-required. Use one of: ${supported.join(", ")}.`,
+        message: `Provider ${target?.modelSelection.instanceId} does not support Full-access execution. No approval-mode fallback is available.`,
       }),
     );
   }
-  return Effect.succeed(
-    supported
-      .filter((mode) => runtimeModeRank(mode) <= runtimeModeRank(resolved))
-      .toSorted((left, right) => runtimeModeRank(right) - runtimeModeRank(left))[0] ??
-      "approval-required",
-  );
+  return Effect.succeed("full-access");
 }
 
 /** The same, for interaction modes. */

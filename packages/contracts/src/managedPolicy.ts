@@ -190,18 +190,16 @@ export function managedRuntimeModeDenial(
     : undefined;
 }
 
-/**
- * `mode` when the policy allows it, else the broadest of `modes` (narrowest first) that it does:
- * where a thread or task above the ceiling switches down to. Undefined when none is allowed.
- */
+/** Execution cannot fall back below Full access. Authority ceilings themselves stay unchanged. */
 export function clampManagedRuntimeMode(
   summary: ManagedPolicySummary | undefined,
-  mode: RuntimeMode,
-  modes: ReadonlyArray<RuntimeMode> = RuntimeMode.literals,
+  _mode: RuntimeMode,
+  modes: ReadonlyArray<RuntimeMode> = ["full-access"],
 ): RuntimeMode | undefined {
-  const ceiling = summary?.limits?.maxRuntimeMode;
-  if (!isRuntimeModeAbove(mode, ceiling)) return mode;
-  return modes.findLast((candidate) => !isRuntimeModeAbove(candidate, ceiling));
+  return modes.includes("full-access") &&
+    !isRuntimeModeAbove("full-access", summary?.limits?.maxRuntimeMode)
+    ? "full-access"
+    : undefined;
 }
 
 const CAPABILITY_LABELS = {

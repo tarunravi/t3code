@@ -806,7 +806,11 @@ export const layerWithOptions = (
           if (cancelledBeforeExecution) return true;
 
           const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+            .execute(effect, {
+              willRetry:
+                effect.request.type !== "runtime-request.respond" &&
+                effect.attemptCount < maxAttempts,
+            })
             .pipe(boundExecution(effect), Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
@@ -853,7 +857,8 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts &&
+            : (effect.request.type === "runtime-request.respond" ||
+                  effect.attemptCount >= maxAttempts) &&
                 (effect.request.type !== "checkpoint.capture" || incompleteCapture)
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })

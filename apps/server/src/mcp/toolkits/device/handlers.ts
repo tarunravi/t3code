@@ -5,10 +5,12 @@ import {
   type DeviceId,
   type DevicePlatform,
   type DeviceSummary,
+  type DeviceSessionOwner,
   DeviceToolUnavailableError,
   LOCAL_DEVICE_HOST_ID,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as DeviceService from "../../../device/DeviceService.ts";
 import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
@@ -33,6 +35,7 @@ export function agentDeviceQuickStart(
   host?:
     | { readonly kind: "eas" }
     | { readonly kind: "simlock"; readonly installDirectory?: string },
+  inThread = true,
 ): string {
   const executable = shellWord(command);
   const target = targetArgs.map(shellWord).join(" ");
@@ -53,7 +56,9 @@ export function agentDeviceQuickStart(
           ? "First use builds an XCTest runner and can take a couple of minutes; later commands are fast."
           : "The Android snapshot helper installs itself on first use.";
   return [
-    `The user is watching ${device.name} (${device.version}) in the Device panel.`,
+    inThread
+      ? `The user is watching ${device.name} (${device.version}) in the Device panel.`
+      : `Opened ${device.name} (${device.version}) for this MCP client; it is not attached to a thread's Device panel.`,
     target === ""
       ? `Drive it with ${executable}. It is bound to this device and session, so it needs no --platform, --udid, --serial, --config or --session flags. Use this exact path; login shells may reset PATH.`
       : `Drive it with ${executable}. Use this exact path; login shells may reset PATH. Always pass ${target}.`,
@@ -83,14 +88,31 @@ export function agentDeviceQuickStart(
   ].join("\n");
 }
 
-const requireDeviceAccess = McpInvocationContext.requireThreadMcpCapability("device").pipe(
+const requireDeviceAccess = McpInvocationContext.requireMcpCapability("device").pipe(
   Effect.mapError(
-    () =>
+    (error) =>
       new DeviceToolUnavailableError({
         reason:
-          "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
+          error.threadId === undefined
+            ? "Agent device access is turned off for this environment. Ask the user to enable device support and Agent device access in Settings > Integrations > Devices, then retry."
+            : "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
       }),
   ),
+  Effect.flatMap((scope) => {
+    const owner: DeviceSessionOwner | undefined =
+      scope.thread !== undefined
+        ? { threadId: scope.thread.threadId }
+        : scope.client?.sessionId
+          ? { mcpClientSessionId: scope.client.sessionId }
+          : undefined;
+    return owner === undefined
+      ? Effect.fail(
+          new DeviceToolUnavailableError({
+            reason: "Device access requires an authenticated MCP client or T3 thread.",
+          }),
+        )
+      : Effect.succeed({ scope, owner });
+  }),
 );
 
 export const resolveHostId = Effect.fn("handlers.resolveHostId")(function* (
@@ -189,9 +211,9 @@ const pickDevice = Effect.fn("handlers.pickDevice")(function* (
 const toolError = (error: DeviceError | DeviceToolUnavailableError) => error;
 
 const handlers = {
-  device_list: McpToolAccess.readsAsCaller((input) =>
+  device_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const scope = yield* requireDeviceAccess;
+      const { owner } = yield* requireDeviceAccess;
       const devices = yield* DeviceService.DeviceService;
       const state = yield* devices.list;
       if (state.hostStatus === "disabled") {
@@ -202,7 +224,7 @@ const handlers = {
       }
       const hostId = yield* resolveHostId(state.hosts, input?.hostId);
       const open = state.sessions
-        .filter((session) => session.threadId === scope.thread.threadId)
+        .filter((session) => DeviceService.deviceSessionOwnedBy(session, owner))
         .map((session) => ({ hostId: session.hostId, deviceId: session.deviceId }));
       return {
         hostStatuses: Object.fromEntries(
@@ -216,9 +238,9 @@ const handlers = {
       };
     }).pipe(Effect.mapError(toolError)),
   ),
-  device_open: McpToolAccess.actsAsCaller((input) =>
+  device_open: McpToolAccess.actsOnDevice((input) =>
     Effect.gen(function* () {
-      const scope = yield* requireDeviceAccess;
+      const { scope, owner } = yield* requireDeviceAccess;
       const devices = yield* DeviceService.DeviceService;
       const state = yield* devices.list;
       if (state.hostStatus === "disabled") {
@@ -238,12 +260,46 @@ const handlers = {
       }
       const session = yield* devices.open(
         {
-          threadId: scope.thread.threadId,
+          ...owner,
           hostId: target.hostId,
           deviceId: target.id,
           platform: target.platform,
         },
-        { workspaceRoot: yield* threadWorkspaceRoot(scope.thread.threadId) },
+        scope.thread === undefined
+          ? undefined
+          : { workspaceRoot: yield* threadWorkspaceRoot(scope.thread.threadId) },
+      );
+      const wasOpen = state.sessions.some(
+        (existing) =>
+          DeviceService.deviceSessionOwnedBy(existing, owner) &&
+          existing.hostId === session.hostId &&
+          existing.deviceId === session.deviceId,
+      );
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isSuccess(exit) || scope.thread !== undefined || wasOpen
+          ? Effect.void
+          : devices
+              .close(
+                {
+                  ...owner,
+                  hostId: session.hostId,
+                  deviceId: session.deviceId,
+                  shutdown: state.hosts.some(
+                    (host) =>
+                      host.id === session.hostId &&
+                      (host.kind === "eas" || host.kind === "simlock"),
+                  ),
+                },
+                session,
+              )
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning(
+                    "Failed to clean up an external device session; call device_close with shutdown: true to release any paid lease.",
+                    { cause },
+                  ),
+                ),
+              ),
       );
       const after = yield* devices.state;
       const device =
@@ -253,7 +309,7 @@ const handlers = {
       // Target the opened device: an EAS device and its agent-device daemon
       // exist only once its session runs, and Android ids change on boot.
       const opened = {
-        threadId: scope.thread.threadId,
+        ...owner,
         hostId: session.hostId,
         deviceId: session.deviceId,
       };
@@ -288,38 +344,41 @@ const handlers = {
             : hostKind === "eas"
               ? { kind: "eas" }
               : undefined,
+          scope.thread !== undefined,
         ),
       };
-    }).pipe(Effect.mapError(toolError)),
+    }).pipe(Effect.scoped, Effect.mapError(toolError)),
   ),
-  device_screenshot: McpToolAccess.readsAsCaller((input) =>
+  device_screenshot: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const scope = yield* requireDeviceAccess;
+      const { scope, owner } = yield* requireDeviceAccess;
       const devices = yield* DeviceService.DeviceService;
-      const threadId = scope.thread.threadId;
+      const ownerLabel = scope.thread === undefined ? "this MCP client" : "this thread";
       const hostId =
         input.hostId === undefined
           ? undefined
           : yield* resolveHostId((yield* devices.state).hosts, input.hostId);
       const target =
         input.deviceId === undefined
-          ? (yield* devices.sessionsForThread(threadId)).findLast(
+          ? (yield* scope.thread === undefined
+              ? devices.sessionsForOwner(owner)
+              : devices.sessionsForThread(scope.thread.threadId)).findLast(
               (session) => hostId === undefined || session.hostId === hostId,
             )
           : Option.getOrUndefined(
               yield* devices
-                .locateSession({ threadId, deviceId: input.deviceId, hostId })
+                .locateSession({ ...owner, deviceId: input.deviceId, hostId })
                 .pipe(mapLocateErrors),
             );
       if (!target) {
         return yield* new DeviceToolUnavailableError({
           reason:
             input.deviceId === undefined
-              ? "No device is open in this thread. Call device_open first."
-              : `Device ${input.deviceId} is not open in this thread. Call device_open first.`,
+              ? `No device is open in ${ownerLabel}. Call device_open first.`
+              : `Device ${input.deviceId} is not open in ${ownerLabel}. Call device_open first.`,
         });
       }
-      const shot = yield* devices.screenshot(target);
+      const shot = yield* devices.screenshot({ ...target, owner });
       return {
         device: shot.device,
         screenshot: {
@@ -330,9 +389,9 @@ const handlers = {
       };
     }).pipe(Effect.mapError(toolError)),
   ),
-  device_close: McpToolAccess.actsAsCaller((input) =>
+  device_close: McpToolAccess.actsOnDevice((input) =>
     Effect.gen(function* () {
-      const scope = yield* requireDeviceAccess;
+      const { owner } = yield* requireDeviceAccess;
       const devices = yield* DeviceService.DeviceService;
       const deviceId = input.deviceId;
       const inputHostId =
@@ -343,11 +402,11 @@ const handlers = {
         deviceId === undefined
           ? Option.none()
           : yield* devices
-              .locateSession({ threadId: scope.thread.threadId, deviceId, hostId: inputHostId })
+              .locateSession({ ...owner, deviceId, hostId: inputHostId })
               .pipe(mapLocateErrors);
       const hostId = Option.isSome(open) ? open.value.hostId : inputHostId;
       yield* devices.close({
-        threadId: scope.thread.threadId,
+        ...owner,
         ...(hostId === undefined ? {} : { hostId }),
         ...(deviceId === undefined ? {} : { deviceId }),
         ...(input.shutdown === undefined ? {} : { shutdown: input.shutdown }),

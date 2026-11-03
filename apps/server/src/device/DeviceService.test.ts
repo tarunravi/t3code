@@ -88,6 +88,7 @@ const fixture = Effect.fn("fixture")(function* (
     readonly routesStreams?: boolean;
     readonly onClose?: Effect.Effect<"ok" | "missing" | "reject" | "http_error" | "malformed">;
     readonly onPlatformAvailability?: Effect.Effect<void>;
+    readonly launchers?: DeviceService.AgentDeviceLaunchers;
   } = {},
 ) {
   const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
@@ -283,6 +284,7 @@ const fixture = Effect.fn("fixture")(function* (
     undefined,
     () => Effect.succeed("/host.json"),
     installTool,
+    options.launchers,
   ).pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
@@ -1506,6 +1508,160 @@ it.effect("a failed tool update reports npm's exit code but not its output", () 
 );
 
 describe("agent session release on close", () => {
+  it.effect("isolates external owners and cleans up only their real agent session", () =>
+    Effect.gen(function* () {
+      const liveLaunchers = new Set<string>();
+      const releasedLaunchers: string[] = [];
+      const { service, closedSessions, requests } = yield* fixture(
+        Effect.void,
+        undefined,
+        false,
+        undefined,
+        false,
+        undefined,
+        {
+          launchers: {
+            bind: ({ session }) =>
+              Effect.sync(() => {
+                liveLaunchers.add(session);
+                return session;
+              }),
+            prune: (live) =>
+              Effect.sync(() => {
+                for (const session of liveLaunchers)
+                  if (!live.has(session)) liveLaunchers.delete(session);
+              }),
+            release: (session) =>
+              Effect.sync(() => {
+                releasedLaunchers.push(session);
+              }),
+          },
+        },
+      );
+      yield* service.configure({ enabled: true, agentAccessEnabled: true });
+      const owner = { mcpClientSessionId: "external-a" };
+      const other = { mcpClientSessionId: "external-b" };
+      const session = yield* service.open({
+        ...owner,
+        deviceId: "Pixel_API_35",
+        platform: "android",
+      });
+      expect(session).toMatchObject(owner);
+      expect(session.threadId).toBeUndefined();
+      const target = { ...owner, hostId: session.hostId, deviceId: session.deviceId };
+      const agent = yield* service.agentTarget(target);
+      expect(yield* service.agentLauncher({ ...target, targetArgs: agent.args })).toEqual(
+        Option.some(agent.session),
+      );
+      expect(agent.session).not.toBe(
+        yield* agentDeviceSession("external-a", session.hostId, session.deviceId).pipe(
+          Effect.provide(NodeCrypto.layer),
+        ),
+      );
+      expect(agent.session).not.toBe(
+        yield* agentDeviceSession(
+          undefined,
+          session.hostId,
+          session.deviceId,
+          other.mcpClientSessionId,
+        ).pipe(Effect.provide(NodeCrypto.layer)),
+      );
+      const foreign = { ...target, ...other };
+      for (const caller of [other, { threadId: ThreadId.make("external-a") }]) {
+        const failure = yield* service
+          .open({ ...caller, deviceId: session.deviceId, platform: "android" })
+          .pipe(Effect.flip);
+        expect(failure.message).toContain("owned by another caller");
+      }
+      expect(yield* service.sessionsForOwner(other)).toEqual([]);
+      expect(yield* service.locateSession(foreign)).toEqual(Option.none());
+      expect(yield* service.agentLauncher({ ...foreign, targetArgs: [] })).toEqual(Option.none());
+      expect(yield* service.agentTarget(foreign).pipe(Effect.flip)).toMatchObject({
+        _tag: "DeviceHostUnavailableError",
+      });
+      expect(
+        yield* service.screenshot({ ...target, owner: other }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "DeviceNotFoundError" });
+      expect((yield* service.screenshot({ ...target, owner })).device.id).toBe(session.deviceId);
+      yield* service.close({ ...other, shutdown: true });
+      expect((yield* service.state).sessions).toEqual([session]);
+      expect(liveLaunchers).toEqual(new Set([agent.session]));
+      expect(releasedLaunchers).toEqual([]);
+      expect(requests.filter((url) => url.endsWith("/shutdown"))).toEqual([]);
+      yield* service.close({ ...owner, shutdown: true });
+      expect((yield* service.state).sessions).toEqual([]);
+      expect(liveLaunchers.size).toBe(0);
+      expect(releasedLaunchers).toEqual([agent.session]);
+      expect(closedSessions).toEqual([
+        expect.objectContaining({ params: expect.objectContaining({ session: agent.session }) }),
+      ]);
+      expect(requests.filter((url) => url.endsWith("/shutdown"))).toHaveLength(1);
+      expect(yield* service.screenshot({ ...target, owner }).pipe(Effect.flip)).toMatchObject({
+        _tag: "DeviceNotFoundError",
+      });
+      yield* service.close({ ...owner, shutdown: true });
+      expect(closedSessions).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not let stale acquisition cleanup retire a newer same-owner session", () =>
+    Effect.gen(function* () {
+      const { service, closedSessions, requests } = yield* fixture();
+      yield* service.configure({ enabled: true, agentAccessEnabled: true });
+      const owner = { mcpClientSessionId: "reopened-client" };
+      const first = yield* service.open({
+        ...owner,
+        deviceId: "Pixel_API_35",
+        platform: "android",
+      });
+      const second = yield* service.open({
+        ...owner,
+        deviceId: first.deviceId,
+        platform: "android",
+      });
+      expect(first).not.toBe(second);
+      expect(first.openedAt).toBe(second.openedAt);
+      const close = { ...owner, deviceId: second.deviceId, shutdown: true };
+      yield* service.close(close, first);
+      expect((yield* service.state).sessions).toEqual([second]);
+      expect(closedSessions).toEqual([]);
+      expect(requests.some((url) => url.endsWith("/shutdown"))).toBe(false);
+      yield* service.close(close, second);
+      expect((yield* service.state).sessions).toEqual([]);
+      expect(requests.filter((url) => url.endsWith("/shutdown"))).toHaveLength(1);
+    }),
+  );
+
+  it.effect("reserves a booting device for its external caller and releases failed opens", () =>
+    Effect.gen(function* () {
+      const booting = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const { service } = yield* fixture(
+        Deferred.succeed(booting, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+        "Boot failed",
+      );
+      yield* service.configure({ enabled: true });
+      const first = yield* service
+        .open({ mcpClientSessionId: "boot-a", deviceId: "Pixel_API_35", platform: "android" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(booting);
+      const failure = yield* service
+        .open({ mcpClientSessionId: "boot-b", deviceId: "Pixel_API_35", platform: "android" })
+        .pipe(Effect.flip);
+      expect(failure.message).toContain("owned by another caller");
+      yield* Deferred.succeed(finish, undefined);
+      expect(Exit.isFailure(yield* Fiber.await(first))).toBe(true);
+      expect(
+        (yield* service.open({
+          mcpClientSessionId: "boot-b",
+          deviceId: "emulator-5554",
+          platform: "android",
+          boot: false,
+        })).mcpClientSessionId,
+      ).toBe("boot-b");
+    }).pipe(Effect.scoped),
+  );
+
   const openClaim = (
     service: DeviceService.DeviceService["Service"],
     threadId: ThreadId,

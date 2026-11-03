@@ -1,3 +1,4 @@
+import { ExecutionRuntimeMode } from "./providerPolicy.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -284,7 +285,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
-  runtimeMode: RuntimeMode,
+  runtimeMode: ExecutionRuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),

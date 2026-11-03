@@ -1307,14 +1307,11 @@ function selectPermissionOptionId(
   return request.options.find((option) => option.kind === kind)?.optionId.trim() || undefined;
 }
 
-// Prefer allow-once; allow-always can persist beyond the session.
+// Automatic decisions must never create a persisted/session grant.
 function selectAutoApprovedPermissionOption(
   request: EffectAcpSchema.RequestPermissionRequest,
 ): string | undefined {
-  return (
-    selectPermissionOptionId(request, "accept") ??
-    selectPermissionOptionId(request, "acceptForSession")
-  );
+  return selectPermissionOptionId(request, "accept");
 }
 
 function elicitationContent(
@@ -5496,6 +5493,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           params: EffectAcpSchema.RequestPermissionRequest,
           generation: number,
           transportRequestId: string,
+          automaticDecision?: OrchestrationV2RuntimeRequest["automaticDecision"],
         ) {
           yield* closeTextStreams(context);
           const parsed = parsePermissionRequest(params);
@@ -5507,6 +5505,19 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             nativeRequestId,
           });
           const decision = yield* Deferred.make<ProviderApprovalDecision>();
+          if (
+            [...(yield* Ref.get(pendingRuntimeRequests)).values()].some(
+              (pending) =>
+                pending.generation === generation &&
+                pending.transportRequestId === transportRequestId,
+            )
+          ) {
+            return yield* new EffectAcpErrors.AcpTransportError({
+              cause: "duplicate-native-permission",
+              detail:
+                "An ACP permission with this native request identity is already pending. The duplicate was not answered or rerouted.",
+            });
+          }
           const nativeResponseAcknowledgement = yield* Deferred.make<
             void,
             EffectAcpErrors.AcpError
@@ -5530,6 +5541,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             providerTurnId: context.providerTurnId,
             nativeRequestRef: nativeItemRef,
             kind: requestKind,
+            ...(automaticDecision === undefined ? {} : { automaticDecision }),
             status: "pending",
             responseCapability: {
               type: "live",
@@ -5596,16 +5608,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             node,
           });
+          yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
           yield* emitProviderEvent({
             type: "runtime_request.updated",
             driver,
             threadId: context.input.threadId,
             runtimeRequest,
-          });
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
           });
           return {
             context,
@@ -5721,16 +5729,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             node,
           });
+          yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
           yield* emitProviderEvent({
             type: "runtime_request.updated",
             driver,
             threadId: context.input.threadId,
             runtimeRequest,
-          });
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
           });
           return {
             answers,
@@ -6411,6 +6415,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       trackedTurn.tools.get(nativeParams.toolCall.toolCallId),
                     )
                   : nativeParams;
+              if (params.sessionId !== (yield* Ref.get(activeSessionId))) {
+                return yield* new EffectAcpErrors.AcpTransportError({
+                  cause: "session-mismatch",
+                  detail: "Permission request belongs to a different ACP session.",
+                });
+              }
               const transportRequestId = requestContext.requestId;
               const permissionQuestion = flavor.extractPermissionQuestion?.(params);
               if (permissionQuestion !== undefined) {
@@ -6432,6 +6442,27 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* userInput.acknowledgeNativeResponse;
                 return response ?? ({ outcome: { outcome: "cancelled" } } as const);
               }
+              const refuseFullAccessPermission = (context: ActiveAcpTurn | null, detail: string) =>
+                Effect.gen(function* () {
+                  const error = new EffectAcpErrors.AcpTransportError({
+                    cause: "unsupported-full-access-permission",
+                    detail,
+                  });
+                  yield* Ref.set(runtimeRestartRequired, true);
+                  if (context !== null) {
+                    yield* terminalizeOpenForegroundTools(context, "failed");
+                    yield* finalizeTurn(
+                      context,
+                      "failed",
+                      makeProviderFailure({
+                        class: "provider_error",
+                        message: detail,
+                        cause: error,
+                      }),
+                    );
+                  }
+                  return yield* error;
+                });
               const dispositionFor = (
                 policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
                 request: EffectAcpSchema.RequestPermissionRequest = params,
@@ -6459,6 +6490,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   );
                   if (disposition === "allow") {
                     const optionId = selectAutoApprovedPermissionOption(params);
+                    const policy = context?.input.runtimePolicy ?? latestRuntimePolicy;
+                    if (policy.runtimeMode === "full-access") {
+                      const automaticDecision = ProviderAdapter.fullAccessPermissionDecision(
+                        policy,
+                        optionId !== undefined,
+                      );
+                      if (automaticDecision === undefined || context === null) {
+                        return yield* refuseFullAccessPermission(
+                          context,
+                          "ACP cannot supply an eligible allow-once permission under the effective Full-access policy. No standing grant or approval fallback was used.",
+                        );
+                      }
+                      return {
+                        _tag: "Pending" as const,
+                        pending: yield* beginApprovalRequest(
+                          context,
+                          params,
+                          handlerGeneration,
+                          transportRequestId,
+                          automaticDecision,
+                        ),
+                      };
+                    }
                     return {
                       _tag: "Immediate" as const,
                       response:
@@ -6476,6 +6530,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           ? ({ outcome: { outcome: "cancelled" } } as const)
                           : ({ outcome: { outcome: "selected", optionId } } as const),
                     };
+                  }
+                  if (
+                    (context?.input.runtimePolicy ?? latestRuntimePolicy).runtimeMode ===
+                    "full-access"
+                  ) {
+                    return yield* refuseFullAccessPermission(
+                      context,
+                      "ACP requires a narrower approval policy for this operation; Full-access execution refused it.",
+                    );
                   }
                   return {
                     _tag: "Pending" as const,
@@ -7223,6 +7286,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 option.id === id &&
                 (option.category === "mode" || option.category === "collaboration_mode"),
             );
+          for (const selection of modelSelection.options ?? []) {
+            if (
+              runtimePolicy.runtimeMode === "full-access" &&
+              isModeChoice(selection.id) &&
+              typeof selection.value === "string"
+            ) {
+              const selectedMode = flavor.runtimeModeForSessionMode?.(selection.value);
+              if (selectedMode !== undefined && selectedMode !== "full-access") {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver,
+                  detail: "Native permission-mode selection conflicts with Full-access execution.",
+                });
+              }
+            }
+          }
           const withinCeiling = (selection: { readonly id: string; readonly value: unknown }) => {
             if (ceiling === undefined || ceiling === "full-access" || !isModeChoice(selection.id)) {
               return true;
@@ -7293,11 +7371,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const option = (yield* runtime.getConfigOptions).find(
               (candidate) => candidate.id === selection.id,
             );
-            if (option?.type !== "select" || option.currentValue === selection.value) continue;
+            if (option?.type !== "select") {
+              if (runtimePolicy.runtimeMode === "full-access")
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver,
+                  detail: `Required Full-access configuration ${selection.id} is unavailable.`,
+                });
+              continue;
+            }
+            if (option.currentValue === selection.value) continue;
             const advertisedValues = option.options.flatMap((entry) =>
               "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
             );
-            if (!advertisedValues.includes(selection.value)) continue;
+            if (!advertisedValues.includes(selection.value)) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver,
+                detail: `Required Full-access configuration ${selection.id}=${selection.value} is unsupported.`,
+              });
+            }
             yield* runtime.setConfigOption(selection.id, selection.value);
           }
           const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
@@ -7307,6 +7398,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const modeState = yield* runtime.getModeState;
           if (
             modeSelection !== undefined &&
+            (runtimePolicy.runtimeMode !== "full-access" || policyMode === undefined) &&
             typeof modeSelection.value === "string" &&
             modeState?.availableModes.some((mode) => mode.id === modeSelection.value) === true &&
             modeState.currentModeId !== modeSelection.value

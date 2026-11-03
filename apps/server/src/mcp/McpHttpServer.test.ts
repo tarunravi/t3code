@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DeviceId,
   DeviceOperationError,
+  type DeviceSession,
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -22,6 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
@@ -959,6 +961,252 @@ it.effect("admits provider and OAuth client credentials and points only clients 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "serves standalone devices over authenticated OAuth HTTP without thread impersonation",
+  () => {
+    const phone = {
+      hostId: "local",
+      id: "phone",
+      platform: "ios" as const,
+      name: "Phone",
+      version: "iOS",
+      booted: true,
+      physical: false,
+    };
+    const sessions: DeviceSession[] = [];
+    const opened: unknown[] = [];
+    const closed: unknown[] = [];
+    const state = Effect.sync(() => ({
+      hosts: [
+        {
+          id: "local",
+          kind: "local" as const,
+          label: "Local",
+          platforms: [],
+          hubInstalled: true,
+          agentDeviceInstalled: true,
+        },
+      ],
+      devices: [phone],
+      sessions: [...sessions],
+      hostStatus: "ready" as const,
+      hostStatuses: {},
+      onboardingCompleted: true,
+      agentAccessEnabled: true,
+      hubBasePath: "/api/device-hub",
+      revision: 1,
+    }));
+    const layerDevices = Layer.mock(DeviceService.DeviceService)({
+      state,
+      list: state,
+      locateDevice: () => Effect.succeedSome(phone),
+      agentReadinessIfSupported: () => Effect.succeed({} as DeviceService.DeviceAgentReadiness),
+      open: (input, context) =>
+        Effect.sync(() => {
+          opened.push({ input, context });
+          const session: DeviceSession = {
+            ...input,
+            hostId: "local",
+            openedAt: "2026-11-03T00:00:00Z",
+          };
+          sessions.push(session);
+          return session;
+        }),
+      agentTarget: () =>
+        Effect.succeed({ agentDeviceId: "phone", args: [], session: "owned-agent-session" }),
+      agentLauncher: () => Effect.succeedSome("/test/owned-agent-device"),
+      sessionsForOwner: (owner) =>
+        Effect.sync(() => sessions.filter((s) => DeviceService.deviceSessionOwnedBy(s, owner))),
+      locateSession: (input) =>
+        Effect.sync(() =>
+          Option.fromUndefinedOr(
+            sessions.find(
+              (s) => DeviceService.deviceSessionOwnedBy(s, input) && s.deviceId === input.deviceId,
+            ),
+          ),
+        ),
+      screenshot: () => Effect.succeed({ device: phone, png: new Uint8Array(24) }),
+      close: (input) =>
+        Effect.sync(() => {
+          closed.push(input);
+          for (let i = sessions.length - 1; i >= 0; i--)
+            if (DeviceService.deviceSessionOwnedBy(sessions[i]!, input)) sessions.splice(i, 1);
+        }),
+    });
+    const layerAuth = Layer.mergeAll(EnvironmentAuth.layer, McpSessionRegistry.layer).pipe(
+      Layer.provideMerge(
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getEnvironmentId: Effect.succeed(environmentId),
+        }),
+      ),
+      Layer.provideMerge(Sqlite.layerMemory),
+      Layer.provide(ServerSecretStore.layer),
+      Layer.provide(ManagedPolicy.layerTest()),
+      Layer.provideMerge(ServerEnvironment.layerIdentity),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-external-device-http-" })),
+      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const issue = (access: "full-access" | "read-only" | "auto") =>
+          auth.issueMcpClientSession({
+            label: "External device agent",
+            access,
+            peerLink: false,
+            client: { deviceType: "bot" },
+          });
+        const full = yield* issue("full-access");
+        const other = yield* issue("full-access");
+        const read = yield* issue("read-only");
+        const limited = yield* issue("auto");
+        yield* HttpRouter.serve(
+          McpHttpServer.layerMcpTransport(
+            Layer.mergeAll(
+              McpHttpServer.layerDeviceToolkit,
+              McpHttpServer.layerPreviewToolkit,
+            ).pipe(
+              Layer.provide(layerDevices),
+              Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+              Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+              Layer.provide(PreviewAutomationBroker.layer),
+            ),
+          ).pipe(Layer.provide(McpOAuth.layerMcpClientAuthenticator)),
+          { disableListenLog: true, disableLogger: true },
+        ).pipe(Layer.build);
+        const http = yield* HttpClient.HttpClient;
+        const decode = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Schema.Struct({ result: McpSchema.CallToolResult })),
+        );
+        const call = (
+          token: string,
+          name: string,
+          args: Record<string, unknown> = {},
+          limit?: string,
+        ) =>
+          Effect.gen(function* () {
+            const headers = {
+              authorization: `Bearer ${token}`,
+              accept: "application/json, text/event-stream",
+              ...(limit ? { "t3-mode-limit": limit } : {}),
+            };
+            const init = yield* http.post("/mcp", {
+              headers,
+              body: HttpBody.text(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: 1,
+                  method: "initialize",
+                  params: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: {},
+                    clientInfo: { name: "external-device", version: "1" },
+                  },
+                }),
+                "application/json",
+              ),
+            });
+            if (init.status !== 200) return { status: init.status, result: undefined };
+            const response = yield* http.post("/mcp", {
+              headers: {
+                ...headers,
+                "mcp-session-id": init.headers["mcp-session-id"]!,
+                "mcp-protocol-version": "2025-06-18",
+              },
+              body: HttpBody.text(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: 2,
+                  method: "tools/call",
+                  params: { name, arguments: args },
+                }),
+                "application/json",
+              ),
+            });
+            return { status: response.status, result: decode(yield* response.text).result };
+          });
+        expect((yield* call("invalid.signature", "device_list")).status).toBe(401);
+        expect((yield* call(full.token, "device_list")).result?.isError).toBe(false);
+        expect(
+          (yield* call(full.token, "device_open", {
+            deviceId: "phone",
+            threadId: "forged-thread",
+            mcpClientSessionId: other.sessionId,
+          })).result?.isError,
+        ).toBe(false);
+        expect(opened).toEqual([
+          {
+            input: {
+              mcpClientSessionId: full.sessionId,
+              hostId: "local",
+              deviceId: "phone",
+              platform: "ios",
+            },
+            context: undefined,
+          },
+        ]);
+        expect((yield* call(full.token, "device_list")).result?.structuredContent).toMatchObject({
+          open: [{ hostId: "local", deviceId: "phone" }],
+        });
+        expect((yield* call(other.token, "device_list")).result?.structuredContent).toMatchObject({
+          open: [],
+        });
+        expect(
+          (yield* call(full.token, "device_screenshot")).result?.content.map((part) => part.type),
+        ).toEqual(["text", "image"]);
+        expect(
+          (yield* call(other.token, "device_screenshot", { deviceId: "phone" })).result?.isError,
+        ).toBe(true);
+        for (const token of [read.token, limited.token]) {
+          expect((yield* call(token, "device_list")).result?.isError).toBe(false);
+          expect((yield* call(token, "device_open", { deviceId: "phone" })).result?.isError).toBe(
+            true,
+          );
+          expect((yield* call(token, "device_close", { shutdown: true })).result?.isError).toBe(
+            true,
+          );
+        }
+        for (const limit of ["auto/default", "full-access/plan"]) {
+          expect(
+            (yield* call(full.token, "device_open", { deviceId: "phone" }, limit)).result?.isError,
+          ).toBe(true);
+        }
+        expect(opened).toHaveLength(1);
+        expect(closed).toEqual([]);
+        expect(
+          (yield* call(full.token, "preview_act", { action: "click", locator: "text=Send" })).result
+            ?.isError,
+        ).toBe(true);
+        for (const flag of ["enableDeviceSupport", "enableAgentDeviceAccess"] as const) {
+          yield* settings.updateSettings({ [flag]: false });
+          expect((yield* call(full.token, "device_list")).result?.isError).toBe(true);
+          yield* settings.updateSettings({ [flag]: true });
+        }
+        expect((yield* call(full.token, "device_close", { shutdown: true })).result?.isError).toBe(
+          false,
+        );
+        expect(closed).toEqual([{ mcpClientSessionId: full.sessionId, shutdown: true }]);
+        expect(sessions).toEqual([]);
+        yield* auth.revokeSession(full.sessionId);
+        expect((yield* call(full.token, "device_list")).status).toBe(401);
+      }),
+    ).pipe(
+      Effect.provide(
+        layerAuth.pipe(
+          Layer.provideMerge(
+            ServerSettings.layerTest({ enableDeviceSupport: true, enableAgentDeviceAccess: true }),
+          ),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-external-device-tools-" }),
+          ),
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        ),
+      ),
+    );
+  },
+);
+
 it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected credentials", () => {
   const messages: Array<unknown> = [];
   const logger = Logger.make(({ message }) => messages.push(message));
@@ -1277,11 +1525,11 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const clientToken = "client-payload.client-signature";
-        const clientScope: McpInvocationContext.McpInvocationScope = {
+        let clientScope: McpInvocationContext.McpInvocationScope = {
           environmentId,
           requestNamespace: "client:linked",
           thread: undefined,
-          client: { sessionId: "linked", label: "T3 Code · laptop", access: "auto" },
+          client: { sessionId: "linked", label: "T3 Code · laptop", access: "full-access" },
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
         };
@@ -1394,18 +1642,24 @@ it.effect(
             return "code" in outcome ? outcome.code : outcome.modes;
           });
 
-        // Approved for auto: without the header the client keeps its ceiling.
-        expect(yield* start(undefined)).toBe("auto/default");
-        // The header narrows both modes, and asking above it is refused.
-        expect(yield* start("approval-required/plan")).toBe("approval-required/plan");
-        expect(yield* start("approval-required/plan", { runtimeMode: "auto" })).toBe(
+        expect(yield* start(undefined)).toBe("full-access/default");
+        expect(yield* start("full-access/plan")).toBe("full-access/plan");
+        expect(yield* start("full-access/plan", { interactionMode: "default" })).toBe(
+          "interaction_mode_escalation_denied",
+        );
+        // A narrower header is real authority, not an executable mode or an upgrade.
+        expect(yield* start("approval-required/plan")).toBe("runtime_mode_escalation_denied");
+        expect(yield* start("approval-required/plan", { runtimeMode: "full-access" })).toBe(
           "runtime_mode_escalation_denied",
         );
         expect(yield* start("auto-accept-edits/plan", { interactionMode: "default" })).toBe(
-          "interaction_mode_escalation_denied",
+          "runtime_mode_escalation_denied",
         );
-        // A broader header changes nothing: the approved ceiling still holds.
-        expect(yield* start("full-access/default")).toBe("auto/default");
+        expect(yield* start(undefined, { runtimeMode: "auto" })).toBe("invalid_request");
+        // A broader header cannot widen the approved client grant.
+        clientScope = { ...clientScope, client: { ...clientScope.client!, access: "auto" } };
+        expect(yield* start(undefined)).toBe("runtime_mode_escalation_denied");
+        expect(yield* start("full-access/default")).toBe("runtime_mode_escalation_denied");
         expect(yield* start("full-access/default", { runtimeMode: "full-access" })).toBe(
           "runtime_mode_escalation_denied",
         );

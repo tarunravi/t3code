@@ -673,6 +673,30 @@ describe("t3_worktree_handoff", () => {
 });
 
 describe("t3_worktree_status", () => {
+  it.effect(
+    "still requires a thread for worktree status and handoff with device capability",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const service = yield* resolveService(harness);
+        const scope: McpInvocationContext.McpInvocationScope = {
+          ...harness.scope,
+          thread: undefined,
+          client: { sessionId: "external-device", label: "External agent", access: "full-access" },
+          capabilities: new Set(["device", "worktree"]),
+        };
+        expectTypedFailure(yield* service.status(scope).pipe(Effect.exit), {
+          code: "thread_credential_required",
+        });
+        expectTypedFailure(
+          yield* service.handoff(scope, { branch: "feature/external" }).pipe(Effect.exit),
+          { code: "thread_credential_required" },
+        );
+        expect(harness.createWorktree).not.toHaveBeenCalled();
+      });
+    },
+  );
+
   it.effect("reports an attached thread's worktree and branch", () => {
     const harness = makeHarness({
       thread: {

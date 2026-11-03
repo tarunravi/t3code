@@ -172,6 +172,7 @@ export function applyDeviceSnapshot(
   );
   if (!previous || options.sheetLayout) return;
   for (const session of state.sessions) {
+    if (session.threadId === undefined) continue;
     if (previous.has(sessionKey(session))) continue;
     const device = deviceFor(session);
     if (!device) continue;

@@ -764,30 +764,45 @@ export const layerFromServices: Layer.Layer<
       const { isCurrentAttemptInStatus } = runControls;
 
       if (!(yield* admitPreparation())) return;
-      // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
       const resolvedPolicy = yield* runtimePolicy
         .resolve({
-          thread:
-            projection.thread.lineage.sideChat === true &&
-            (sideChatHandoff !== undefined ||
-              !projection.runs.some((previous) => previous.ordinal < run.ordinal))
-              ? { ...projection.thread, runtimeMode: "approval-required" }
-              : projection.thread,
+          thread: projection.thread,
           modelSelection: run.modelSelection,
         })
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
+        if (
+          error._tag !== "RuntimePolicyAboveCeilingError" &&
+          error._tag !== "RuntimePolicyFullAccessUnavailableError"
+        )
+          return yield* error;
         yield* settleStartFailure({
           signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
+          title: "Full-access execution is unavailable",
           error,
           message: error.message,
         });
         return;
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;
+      if (
+        projection.thread.runtimeMode !== "full-access" ||
+        resolvedRuntimePolicy.runtimeMode !== "full-access"
+      ) {
+        const error = new RuntimePolicy.RuntimePolicyFullAccessUnavailableError({
+          providerInstanceId: run.providerInstanceId,
+          detail:
+            "This saved run has no Full-access admission. Start or retry through an authorized Full-access caller; its historical narrow authority was not upgraded.",
+        });
+        yield* settleStartFailure({
+          signal: "full-access-admission-required",
+          title: "Full-access admission required",
+          error,
+          message: error.message,
+        });
+        return;
+      }
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,

@@ -122,6 +122,7 @@ import {
   interactionModeRank,
   resolveInteractionMode,
   resolveRuntimeMode,
+  assertRuntimeModeWithinLimit,
   runtimeModeRank,
 } from "./delegatedTaskModes.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
@@ -2018,7 +2019,7 @@ const make = Effect.gen(function* () {
     },
     modes: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
   ) =>
-    runtimeModeRank(modes.runtimeMode) <= runtimeModeRank(limits.runtimeMode) &&
+    runtimeModeRank("full-access") <= runtimeModeRank(limits.runtimeMode) &&
     interactionModeRank(modes.interactionMode) <= interactionModeRank(limits.interactionMode);
 
   /**
@@ -2076,7 +2077,7 @@ const make = Effect.gen(function* () {
       return yield* failure("task_not_found", `Scheduled task ${scheduledTaskId} was not found.`);
     }
     for (const modes of yield* scheduledTaskRunModes(task)) {
-      yield* resolveRuntimeMode(limits.runtimeMode, modes.runtimeMode);
+      yield* resolveRuntimeMode(limits.runtimeMode, "full-access");
       yield* resolveInteractionMode(limits.interactionMode, modes.interactionMode);
     }
     return task;
@@ -2203,6 +2204,7 @@ const make = Effect.gen(function* () {
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
+      const runtimeMode = yield* resolveRuntimeMode(limits.runtimeMode, "full-access");
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
@@ -2231,7 +2233,7 @@ const make = Effect.gen(function* () {
         threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
-        runtimeMode: limits.runtimeMode,
+        runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
@@ -2312,7 +2314,7 @@ const make = Effect.gen(function* () {
           threadId,
           workspaceStrategy,
           modelSelection: existing.modelSelection,
-          runtimeMode: existing.runtimeMode,
+          runtimeMode: "full-access",
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
@@ -2717,7 +2719,10 @@ const make = Effect.gen(function* () {
           .getThreadShell(threadId)
           .pipe(Effect.mapError(threadManagementFailure));
         if (shell !== null && shell.deletedAt === null) {
-          yield* resolveRuntimeMode(parentProjection.thread.runtimeMode, shell.runtimeMode);
+          yield* assertRuntimeModeWithinLimit(
+            parentProjection.thread.runtimeMode,
+            shell.runtimeMode,
+          );
           yield* resolveInteractionMode(
             parentProjection.thread.interactionMode,
             shell.interactionMode,
@@ -3233,7 +3238,7 @@ const make = Effect.gen(function* () {
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
-      yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+      yield* resolveRuntimeMode(limits.runtimeMode, "full-access");
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
       const mode = input.mode ?? "auto";
@@ -3333,7 +3338,7 @@ const make = Effect.gen(function* () {
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
-      yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+      yield* assertRuntimeModeWithinLimit(limits.runtimeMode, target.thread.runtimeMode);
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
       const key = yield* requestKey(input.clientRequestId);
       // A peer from before `stop` drops it when decoding, so it interrupts

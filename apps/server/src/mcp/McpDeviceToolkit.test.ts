@@ -118,10 +118,8 @@ const layerDeviceServiceMock = Layer.mock(DeviceService.DeviceService)({
   agentReadinessIfSupported: () => Effect.succeed(readiness),
   open: (input) =>
     Effect.succeed({
-      threadId: input.threadId,
+      ...input,
       hostId: "local",
-      deviceId: input.deviceId,
-      platform: input.platform,
       openedAt: "2026-09-08T00:00:00.000Z",
     }),
 
@@ -153,6 +151,102 @@ const layerTest = McpHttpServer.layerDeviceToolkit.pipe(
   Layer.provide(layerProjectsMock),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-device-toolkit-test-" })),
   Layer.provide(NodeServices.layer),
+);
+
+it.effect("lists devices for an authenticated client without a T3 thread", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server.callTool({ name: "device_list", arguments: {} }).pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        ...invocation(["device"]),
+        thread: undefined,
+        requestNamespace: "client:external-device",
+        client: { sessionId: "external-device", label: "External agent", access: "full-access" },
+      }),
+      Effect.provideService(McpSchema.McpServerClient, client),
+    );
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({ devices: [device], open: [] });
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["eas", "simlock"] as const)(
+  "cleans up a failed external %s open without losing lease guidance",
+  (kind) => {
+    const closed: unknown[] = [];
+    const cleanupSessions: unknown[] = [];
+    const cloudState = { ...state, hosts: state.hosts.map((host) => ({ ...host, kind })) };
+    let prepare = true;
+    let previouslyOpen = false;
+    const { threadId: _threadId, ...sessionFields } = openSession;
+    const externalSession = { ...sessionFields, mcpClientSessionId: "external-cloud" };
+    const layerDevices = Layer.mock(DeviceService.DeviceService)({
+      list: Effect.sync(() => ({
+        ...cloudState,
+        sessions: previouslyOpen ? [externalSession] : [],
+      })),
+      state: Effect.succeed(cloudState),
+      agentReadinessIfSupported: () => Effect.succeed(readiness),
+      open: () => Effect.succeed(externalSession),
+      agentTarget: () => Effect.succeed({ agentDeviceId: device.id, session: "lease", args: [] }),
+      agentLauncher: () =>
+        Effect.sync(() => (prepare ? Option.some("/test/agent-device") : Option.none())),
+      close: (input, expectedSession) =>
+        Effect.sync(() => {
+          closed.push(input);
+          cleanupSessions.push(expectedSession);
+        }),
+    });
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = () =>
+        server.callTool({ name: "device_open", arguments: { platform: "ios" } }).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...invocation(["device"]),
+            thread: undefined,
+            client: { sessionId: "external-cloud", label: "External agent", access: "full-access" },
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      const success = yield* call();
+      expect(success.isError).toBe(false);
+      expect(success.structuredContent).toMatchObject({
+        quickStart: expect.stringContaining("call device_close with shutdown: true"),
+      });
+      expect(success.structuredContent).toMatchObject({
+        quickStart: expect.stringContaining(kind === "eas" ? "bills" : "wiped"),
+      });
+      expect(closed).toEqual([]);
+      prepare = false;
+      expect((yield* call()).isError).toBe(true);
+      expect(closed).toEqual([
+        {
+          mcpClientSessionId: "external-cloud",
+          hostId: "local",
+          deviceId: device.id,
+          shutdown: true,
+        },
+      ]);
+      expect(cleanupSessions[0]).toBe(externalSession);
+      previouslyOpen = true;
+      expect((yield* call()).isError).toBe(true);
+      expect(closed).toHaveLength(1);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        McpHttpServer.layerDeviceToolkit.pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provide(layerDevices),
+          Layer.provide(layerProjectsMock),
+          Layer.provide(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-external-device-cleanup-" }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+  },
 );
 
 it.effect("registers the device tools and returns the screenshot as image content", () =>

@@ -75,6 +75,7 @@ import {
   UserInputAttachments,
   UserInputAttachmentAnswerPayload,
   RuntimeMode,
+  ExecutionRuntimeMode,
 } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
@@ -1234,6 +1235,13 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
   ]),
   createdAt: Schema.DateTimeUtc,
   resolvedAt: Schema.NullOr(Schema.DateTimeUtc),
+  /** Adapter-attested permission decision, never inferred from a UI label or a generic question. */
+  automaticDecision: Schema.optional(
+    Schema.Struct({
+      policy: Schema.Literal("full-access"),
+      decision: Schema.Literal("accept"),
+    }),
+  ),
   decision: Schema.optional(ProviderApprovalDecision),
   feedback: Schema.optional(Schema.String),
   answers: Schema.optional(ProviderUserInputAnswers),
@@ -2923,7 +2931,7 @@ export const OrchestrationV2Command = Schema.Union([
     projectId: ProjectId,
     title: TrimmedNonEmptyString,
     modelSelection: ModelSelection,
-    runtimeMode: RuntimeMode,
+    runtimeMode: ExecutionRuntimeMode,
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
@@ -3134,7 +3142,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.runtime-mode.set"),
     commandId: CommandId,
     threadId: ThreadId,
-    runtimeMode: RuntimeMode,
+    runtimeMode: ExecutionRuntimeMode,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.interaction-mode.set"),
@@ -3345,7 +3353,7 @@ export const OrchestrationV2Command = Schema.Union([
     task: TrimmedNonEmptyString,
     title: Schema.optional(TrimmedNonEmptyString),
     modelSelection: ModelSelection,
-    runtimeMode: RuntimeMode,
+    runtimeMode: ExecutionRuntimeMode,
     interactionMode: ProviderInteractionMode,
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.

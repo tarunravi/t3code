@@ -1,6 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   type DeviceServiceState,
+  type DeviceSession,
   type EnvironmentId,
   type PreviewSessionSnapshot,
   ThreadId,
@@ -53,9 +54,7 @@ const session = {
 } as const;
 
 const deviceState = (input: {
-  readonly sessions?: ReadonlyArray<
-    Omit<typeof session, "openedAt"> & { readonly openedAt: string }
-  >;
+  readonly sessions?: ReadonlyArray<DeviceSession>;
   readonly devices?: ReadonlyArray<typeof device>;
 }) =>
   ({
@@ -82,6 +81,19 @@ function setup() {
 const miniPlayerSource = () => usePreviewMiniPlayerStore.getState().byThreadKey[threadKey]?.source;
 
 describe("applyDeviceSnapshot", () => {
+  it("does not attach standalone MCP devices to a thread's panel or floating preview", () => {
+    const { threadId: _threadId, ...sessionFields } = session;
+    const external = { ...sessionFields, mcpClientSessionId: "external-device" };
+    for (const autoShowFloatingPreview of [true, false]) {
+      setup();
+      const options = { ...floating, autoShowFloatingPreview };
+      applyDeviceSnapshot(ref.environmentId, deviceState({}), options);
+      applyDeviceSnapshot(ref.environmentId, deviceState({ sessions: [external] }), options);
+      expect(usePreviewMiniPlayerStore.getState().byThreadKey).toEqual({});
+      expect(useRightPanelStore.getState().byThreadKey).toEqual({});
+    }
+  });
+
   it("treats the first snapshot as a baseline and floats sessions that start later", () => {
     setup();
     applyDeviceSnapshot(ref.environmentId, deviceState({ sessions: [session] }), floating);

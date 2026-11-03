@@ -2677,12 +2677,12 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
   availability: ClaudeBypassAvailability = CLAUDE_BYPASS_FULLY_AVAILABLE,
 ): ClaudeRuntimeQueryPolicy {
   const requestedMode = permissionModeForClaudeRuntimePolicy(runtimePolicy);
-  const downgraded = requestedMode === "bypassPermissions" && availability.bypassDisabled;
-  const permissionMode = downgraded
-    ? availability.autoDisabled
-      ? "default"
-      : "auto"
-    : requestedMode;
+  if (runtimePolicy.runtimeMode === "full-access" && availability.bypassDisabled) {
+    throw new Error(
+      "Claude bypass permissions are disabled or could not be verified. Full-access execution is unavailable; no Auto/default fallback will be used.",
+    );
+  }
+  const permissionMode = requestedMode;
   const readOnlyTools =
     sandboxPolicyKindForClaudeRuntimePolicy(runtimePolicy) === "readOnly"
       ? CLAUDE_READ_ONLY_ALLOWED_TOOLS
@@ -2693,11 +2693,10 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
       : undefined;
   // acceptEdits approves edits before the callback; the callback must ask for everything else.
   const installPermissionCallback =
-    downgraded ||
-    (runtimePolicy.approvalPolicy === undefined
+    runtimePolicy.approvalPolicy === undefined
       ? runtimePolicy.runtimeMode === "approval-required" ||
         runtimePolicy.runtimeMode === "auto-accept-edits"
-      : runtimePolicy.approvalPolicy !== "never");
+      : runtimePolicy.approvalPolicy !== "never";
 
   if (permissionMode === "plan") {
     return {
@@ -2801,8 +2800,8 @@ function claudeBypassAvailability(
 }
 
 function requiresClaudeApproval(context: ActiveClaudeTurnContext): boolean {
-  // CLI-forwarded requests need a person's decision even under bypass (ask rules,
-  // safety checks, or settings fallback). Do not wait for queued init/status updates.
+  // Capture forwarded owner permissions even under bypass. Adapter eligibility, not the
+  // displayed mode or a generic provider_check label, determines their automatic decision.
   const policy = context.queryPolicy;
   return policy.installPermissionCallback || policy.permissionMode === "bypassPermissions";
 }
@@ -4697,7 +4696,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const customHome =
     adapterOptions.settings.homePath.trim().length > 0 ||
     adapterOptions.environment.CLAUDE_CONFIG_DIR !== hostEnvironment.CLAUDE_CONFIG_DIR;
-  const announcedBypassDowngrades = new Set<ThreadId>();
   const readBypassSettings = (filePath: string) =>
     fileSystem.readFileString(filePath).pipe(
       Effect.flatMap(decodeClaudeBypassSettings),
@@ -4926,23 +4924,42 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) !== "bypassPermissions"
           ) {
-            return claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
+            return yield* Effect.try({
+              try: () => claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy),
+              catch: (cause) =>
+                new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: String(cause),
+                }),
+            });
           }
           const cwd = turnInput.runtimePolicy.cwd;
           if (bypassCache === null || bypassCache.cwd !== cwd) {
-            const resolved = yield* resolveBypassAvailability(cwd).pipe(Effect.option);
-            if (Option.isNone(resolved)) {
-              return claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy, {
-                bypassDisabled: true,
-                autoDisabled: false,
-              });
-            }
-            bypassCache = { cwd, availability: resolved.value };
+            const availability = yield* resolveBypassAvailability(cwd).pipe(
+              Effect.mapError((cause) =>
+                cause instanceof ClaudeSettingsLaunchArgError
+                  ? cause
+                  : new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail:
+                        "Cannot verify Claude bypass availability. Full-access execution was refused.",
+                    }),
+              ),
+            );
+            bypassCache = { cwd, availability };
           }
-          return claudeRuntimeQueryPolicyForRuntimePolicy(
-            turnInput.runtimePolicy,
-            bypassCache.availability,
-          );
+          return yield* Effect.try({
+            try: () =>
+              claudeRuntimeQueryPolicyForRuntimePolicy(
+                turnInput.runtimePolicy,
+                bypassCache!.availability,
+              ),
+            catch: (cause) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: String(cause),
+              }),
+          });
         });
         const openedNativeThreads = yield* Ref.make(new Set<string>());
         const pdfBudgets = new Map<string, ReturnType<typeof makeClaudeAttachmentBudget>>();
@@ -7368,6 +7385,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly nativeItemId: string;
           readonly nativeRequestId: string;
           readonly parentNodeId?: OrchestrationV2ExecutionNode["id"];
+          readonly automaticDecision?: OrchestrationV2RuntimeRequest["automaticDecision"];
           readonly requestKind: OrchestrationV2RuntimeRequest["kind"];
           readonly prompt?: string;
           readonly appName?: string;
@@ -7431,6 +7449,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               strength: "strong",
             },
             kind: input.requestKind,
+            ...(input.automaticDecision === undefined
+              ? {}
+              : { automaticDecision: input.automaticDecision }),
             status: "pending",
             responseCapability: {
               type: "live",
@@ -10031,16 +10052,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
 
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
+          context: ActiveClaudeTurnContext,
+          liveQuery: ClaudeLiveQueryContext,
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
           callbackOptions: Parameters<CanUseTool>[2],
           options?: { readonly startToolCall?: boolean },
         ) {
-          const context = yield* Ref.get(activeTurn);
-          if (context === null) {
+          if (
+            callbackOptions.signal.aborted ||
+            liveQuery.stopping ||
+            (yield* Ref.get(queryContext)) !== liveQuery ||
+            (yield* Ref.get(activeTurn)) !== context
+          ) {
             return {
               behavior: "deny",
-              message: "Claude V2 adapter has no active turn for this tool request.",
+              message: "Claude tool request no longer belongs to the active query and turn.",
               toolUseID: callbackOptions.toolUseID,
             } satisfies PermissionResult;
           }
@@ -10196,8 +10223,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
-          const activePermissionMode =
-            (yield* Ref.get(queryContext))?.permissionMode ?? context.queryPolicy.permissionMode;
+          const activePermissionMode = liveQuery.permissionMode;
           const safetyReason = NodeUtil.stripVTControlCharacters(
             callbackOptions.decisionReason ?? "",
           ).trim();
@@ -10226,11 +10252,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             callbackOptions.description ??
             callbackOptions.decisionReason ??
             summarizeClaudeToolRequest(toolName, nativeToolInput);
+          const automaticDecision =
+            activePermissionMode === "bypassPermissions"
+              ? ProviderAdapter.fullAccessPermissionDecision(context.input.runtimePolicy, true)
+              : undefined;
+          if (
+            context.input.runtimePolicy.runtimeMode === "full-access" &&
+            automaticDecision === undefined
+          ) {
+            return {
+              behavior: "deny",
+              message:
+                "This operation cannot be approved under the effective Full-access/Plan policy. No approval fallback is available.",
+              toolUseID: callbackOptions.toolUseID,
+            } satisfies PermissionResult;
+          }
           const artifacts = yield* buildApprovalRequestArtifacts({
             context,
             nativeItemId: nativeRequestId,
             nativeRequestId,
             requestKind,
+            automaticDecision,
             prompt,
             presentation: claudeApprovalPresentation({
               permissionMode: context.queryPolicy.permissionMode,
@@ -10256,14 +10298,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 node: artifacts.node,
               }),
               emitProviderEvent({
-                type: "runtime_request.updated",
-                driver: CLAUDE_PROVIDER,
-                runtimeRequest: artifacts.request,
-              }),
-              emitProviderEvent({
                 type: "turn_item.updated",
                 driver: CLAUDE_PROVIDER,
                 turnItem: artifacts.turnItem,
+              }),
+              emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CLAUDE_PROVIDER,
+                runtimeRequest: artifacts.request,
               }),
             ],
             { concurrency: 1 },
@@ -10295,8 +10337,83 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
         });
 
-        const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
-          runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
+        const makeCanUseTool = (
+          getQuery: () => ClaudeLiveQueryContext | null,
+          options?: { readonly startToolCall?: boolean },
+        ): CanUseTool => {
+          const requests = new Map<
+            string,
+            {
+              readonly providerTurnId: ActiveClaudeTurnContext["providerTurnId"];
+              readonly payload: unknown;
+              readonly result: Promise<PermissionResult>;
+            }
+          >();
+          return (toolName, toolInput, callbackOptions) =>
+            runPromise(
+              Effect.gen(function* () {
+                const context = yield* Ref.get(activeTurn);
+                const owner = getQuery();
+                const deny = {
+                  behavior: "deny",
+                  toolUseID: callbackOptions.toolUseID,
+                  message: "Claude tool request no longer belongs to the active query and turn.",
+                } satisfies PermissionResult;
+                if (
+                  context === null ||
+                  owner === null ||
+                  owner.stopping ||
+                  callbackOptions.signal.aborted ||
+                  (yield* Ref.get(queryContext)) !== owner ||
+                  owner.lastTurn !== context
+                )
+                  return deny;
+                const { signal: _signal, ...nativeOptions } = callbackOptions;
+                const payload = { toolName, toolInput, nativeOptions };
+                const previous = requests.get(callbackOptions.requestId);
+                if (
+                  previous !== undefined &&
+                  (previous.providerTurnId !== context.providerTurnId ||
+                    !NodeUtil.isDeepStrictEqual(previous.payload, payload))
+                ) {
+                  return {
+                    ...deny,
+                    message:
+                      "Claude reused a native request identity with a different owner or payload.",
+                  };
+                }
+                // Reserve before starting the effect: concurrent/replayed callbacks share its decision.
+                const snapshot = previous === undefined ? structuredClone(payload) : undefined;
+                const result =
+                  previous?.result ??
+                  Promise.resolve().then(() =>
+                    runPromise(
+                      canUseToolEffect(
+                        context,
+                        owner,
+                        toolName,
+                        toolInput,
+                        callbackOptions,
+                        options,
+                      ),
+                    ),
+                  );
+                if (previous === undefined)
+                  requests.set(callbackOptions.requestId, {
+                    providerTurnId: context.providerTurnId,
+                    payload: snapshot,
+                    result,
+                  });
+                const decision = yield* Effect.promise(() => result);
+                return callbackOptions.signal.aborted ||
+                  owner.stopping ||
+                  (yield* Ref.get(queryContext)) !== owner ||
+                  (yield* Ref.get(activeTurn)) !== context
+                  ? deny
+                  : decision;
+              }),
+            );
+        };
 
         const onElicitationEffect = Effect.fn("ClaudeAdapterV2.onElicitation")(function* (
           request: ElicitationRequest,
@@ -10353,14 +10470,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 node: artifacts.node,
               }),
               emitProviderEvent({
-                type: "runtime_request.updated",
-                driver: CLAUDE_PROVIDER,
-                runtimeRequest: artifacts.request,
-              }),
-              emitProviderEvent({
                 type: "turn_item.updated",
                 driver: CLAUDE_PROVIDER,
                 turnItem: artifacts.turnItem,
+              }),
+              emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CLAUDE_PROVIDER,
+                runtimeRequest: artifacts.request,
               }),
             ],
             { concurrency: 1 },
@@ -10417,94 +10534,92 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           callbackOptions,
         ) => runPromise(onElicitationEffect(request, callbackOptions));
 
-        const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
-          request,
-          callbackOptions,
-        ) =>
-          runPromise(
-            Effect.gen(function* () {
-              if (request.dialogKind !== "resume_return") {
-                return { behavior: "cancelled" as const };
-              }
-              const idleCompaction = Option.isSome(serverSettings)
-                ? yield* serverSettings.value.getSettings.pipe(
-                    Effect.map((settings) =>
-                      resolveIdleCompaction(settings, adapterOptions.instanceId),
-                    ),
-                    Effect.orElseSucceed(() => adapterOptions.settings.idleCompaction),
-                  )
-                : adapterOptions.settings.idleCompaction;
-              if (idleCompaction === "off") {
-                return { behavior: "completed" as const, result: "continue" as const };
-              }
-              const ageMinutes =
-                typeof request.payload.sessionAgeMinutes === "number" &&
-                Number.isFinite(request.payload.sessionAgeMinutes)
-                  ? Math.max(0, Math.floor(request.payload.sessionAgeMinutes))
-                  : 0;
-              const estimatedTokens =
-                typeof request.payload.estimatedTokens === "number" &&
-                Number.isFinite(request.payload.estimatedTokens)
-                  ? Math.max(0, Math.floor(request.payload.estimatedTokens))
-                  : 0;
-              const question = formatClaudeResumeCompactionQuestion({
-                ageMinutes,
-                estimatedTokens,
-              });
-              const result = yield* canUseToolEffect(
-                "AskUserQuestion",
-                {
-                  questions: [
+        const makeOnUserDialog =
+          (canUseTool: CanUseTool): NonNullable<ClaudeQueryOptions["onUserDialog"]> =>
+          (request, callbackOptions) =>
+            runPromise(
+              Effect.gen(function* () {
+                if (request.dialogKind !== "resume_return") {
+                  return { behavior: "cancelled" as const };
+                }
+                const idleCompaction = Option.isSome(serverSettings)
+                  ? yield* serverSettings.value.getSettings.pipe(
+                      Effect.map((settings) =>
+                        resolveIdleCompaction(settings, adapterOptions.instanceId),
+                      ),
+                      Effect.orElseSucceed(() => adapterOptions.settings.idleCompaction),
+                    )
+                  : adapterOptions.settings.idleCompaction;
+                if (idleCompaction === "off") {
+                  return { behavior: "completed" as const, result: "continue" as const };
+                }
+                const ageMinutes =
+                  typeof request.payload.sessionAgeMinutes === "number" &&
+                  Number.isFinite(request.payload.sessionAgeMinutes)
+                    ? Math.max(0, Math.floor(request.payload.sessionAgeMinutes))
+                    : 0;
+                const estimatedTokens =
+                  typeof request.payload.estimatedTokens === "number" &&
+                  Number.isFinite(request.payload.estimatedTokens)
+                    ? Math.max(0, Math.floor(request.payload.estimatedTokens))
+                    : 0;
+                const question = formatClaudeResumeCompactionQuestion({
+                  ageMinutes,
+                  estimatedTokens,
+                });
+                const result = yield* Effect.promise(() =>
+                  canUseTool(
+                    "AskUserQuestion",
                     {
-                      header: "Resume session",
-                      question,
-                      options: [
+                      questions: [
                         {
-                          label: CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER,
-                          description: "Resume with a summary and use fewer tokens.",
-                        },
-                        {
-                          label: "Keep full history",
-                          description: "Resume without changing the conversation.",
-                        },
-                        {
-                          label: CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
-                          description: "Keep full history and skip future resume prompts.",
+                          header: "Resume session",
+                          question,
+                          options: [
+                            {
+                              label: CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER,
+                              description: "Resume with a summary and use fewer tokens.",
+                            },
+                            {
+                              label: "Keep full history",
+                              description: "Resume without changing the conversation.",
+                            },
+                            {
+                              label: CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
+                              description: "Keep full history and skip future resume prompts.",
+                            },
+                          ],
+                          multiSelect: false,
                         },
                       ],
-                      multiSelect: false,
                     },
-                  ],
-                },
-                {
-                  signal: callbackOptions.signal,
-                  requestId: callbackOptions.requestId,
-                  toolUseID: request.toolUseID ?? callbackOptions.requestId,
-                },
-                // The dialog is a control request, not a tool call, so no
-                // tool_result would ever settle a tool row started for it.
-                { startToolCall: false },
-              );
-              if (result.behavior !== "allow") return { behavior: "cancelled" as const };
-              const answers =
-                result.updatedInput === undefined
-                  ? undefined
-                  : Reflect.get(result.updatedInput, "answers");
-              const selection =
-                typeof answers === "object" && answers !== null
-                  ? Reflect.get(answers, question)
-                  : undefined;
-              return {
-                behavior: "completed" as const,
-                result:
-                  selection === CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER
-                    ? ("compact" as const)
-                    : selection === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER
-                      ? ("never" as const)
-                      : ("continue" as const),
-              };
-            }),
-          );
+                    {
+                      signal: callbackOptions.signal,
+                      requestId: callbackOptions.requestId,
+                      toolUseID: request.toolUseID ?? callbackOptions.requestId,
+                    },
+                  ),
+                );
+                if (result?.behavior !== "allow") return { behavior: "cancelled" as const };
+                const answers =
+                  result.updatedInput === undefined
+                    ? undefined
+                    : Reflect.get(result.updatedInput, "answers");
+                const selection =
+                  typeof answers === "object" && answers !== null
+                    ? Reflect.get(answers, question)
+                    : undefined;
+                return {
+                  behavior: "completed" as const,
+                  result:
+                    selection === CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER
+                      ? ("compact" as const)
+                      : selection === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER
+                        ? ("never" as const)
+                        : ("continue" as const),
+                };
+              }),
+            );
 
         const liveProcessRunsBackgroundWork = Effect.fnUntraced(function* (
           live: ClaudeLiveQueryContext,
@@ -10607,17 +10722,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (existing.permissionMode === "plan" && existing.openedPermissionMode !== "plan") {
               existing.permissionMode = yield* existing.query
                 .setPermissionMode(existing.openedPermissionMode)
-                .pipe(
-                  Effect.as(existing.openedPermissionMode),
-                  Effect.catchTags({
-                    ClaudeAgentSdkQueryRunnerError: (error) =>
-                      existing.openedPermissionMode === "bypassPermissions"
-                        ? existing.query
-                            .setPermissionMode("default")
-                            .pipe(Effect.as("default" as const))
-                        : Effect.fail(error),
-                  }),
-                );
+                .pipe(Effect.as(existing.openedPermissionMode));
+            }
+            if (
+              queryPolicy.permissionMode === "bypassPermissions" &&
+              existing.permissionMode !== "bypassPermissions"
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail:
+                  "Claude no longer permits bypass. Full-access execution was refused without retrying or selecting Auto/default.",
+              });
             }
             return existing;
           }
@@ -10667,6 +10782,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
+          let ownedQuery: ClaudeLiveQueryContext | null = null;
+          const canUseTool = makeCanUseTool(() => ownedQuery);
+          const onUserDialog = makeOnUserDialog(
+            makeCanUseTool(() => ownedQuery, { startToolCall: false }),
+          );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -10707,6 +10827,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
+          if (
+            turnInput.runtimePolicy.runtimeMode === "full-access" &&
+            queryOptions.permissionMode !== queryPolicy.permissionMode
+          ) {
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver: CLAUDE_PROVIDER,
+              detail:
+                "Claude launch arguments conflict with the effective Full-access permission policy. No narrower mode will be launched.",
+            });
+          }
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
@@ -10768,6 +10898,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               hostPlatform,
             ),
           };
+          ownedQuery = context;
           // One step, so the replaced process cannot exit between the install and the handoff.
           yield* Ref.update(queryContext, (replaced) => {
             if (replaced !== null) {
@@ -10797,6 +10928,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     (message.subtype === "init" || message.subtype === "status") &&
                     message.permissionMode !== undefined
                   ) {
+                    if (
+                      queryPolicy.permissionMode === "bypassPermissions" &&
+                      message.permissionMode !== "bypassPermissions" &&
+                      message.permissionMode !== "plan"
+                    ) {
+                      return Effect.fail(
+                        new ClaudeAgentSdkQueryRunnerError({
+                          method: "permissionMode",
+                          cause:
+                            "Claude disabled bypass during this run. Full-access execution cannot continue in a narrower permission mode.",
+                        }),
+                      );
+                    }
                     context.permissionMode = message.permissionMode;
                   }
                   if (message.type === "result") {
@@ -10972,51 +11116,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const attachTurn = Effect.gen(function* () {
               querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);
-              if (
-                !isClaudeProviderContinuationTurn(turnInput) &&
-                permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) ===
-                  "bypassPermissions" &&
-                context.queryPolicy.permissionMode !== "bypassPermissions" &&
-                !announcedBypassDowngrades.has(turnInput.threadId)
-              ) {
-                announcedBypassDowngrades.add(turnInput.threadId);
-                if (announcedBypassDowngrades.size > 1000) {
-                  const oldest = announcedBypassDowngrades.values().next().value;
-                  if (oldest !== undefined) announcedBypassDowngrades.delete(oldest);
-                }
-                const nativeItemId = `bypass-policy-downgrade:${context.providerTurnId}`;
-                const notice =
-                  "T3 could not confirm Claude bypass permissions here, so Full access is running with approval checks.";
-                yield* emitProviderEvent({
-                  type: "turn_item.updated",
-                  driver: CLAUDE_PROVIDER,
-                  turnItem: {
-                    id: idAllocator.derive.turnItemFromProviderItem({
-                      driver: CLAUDE_PROVIDER,
-                      nativeItemId,
-                    }),
-                    threadId: turnInput.threadId,
-                    runId: turnInput.runId,
-                    nodeId: turnInput.rootNodeId,
-                    providerThreadId: turnInput.providerThread.id,
-                    providerTurnId: context.providerTurnId,
-                    nativeItemRef: {
-                      driver: CLAUDE_PROVIDER,
-                      nativeId: nativeItemId,
-                      strength: "weak",
-                    },
-                    parentItemId: null,
-                    ordinal: yield* resolveItemOrdinal(context, nativeItemId),
-                    type: "system_notice",
-                    status: "completed",
-                    title: notice,
-                    message: notice,
-                    startedAt,
-                    completedAt: startedAt,
-                    updatedAt: startedAt,
-                  },
-                });
-              }
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,

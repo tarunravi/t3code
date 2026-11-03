@@ -288,6 +288,25 @@ const layerBase: Layer.Layer<
     const guardUserInputCancellations =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (events: ReadonlyArray<OrchestrationV2DomainEvent>) {
+        const staleAutomaticEvents = new Set<OrchestrationV2DomainEvent>();
+        for (const event of events) {
+          const requestId =
+            event.type === "runtime-request.updated" && event.payload.status === "pending"
+              ? event.payload.id
+              : event.type === "node.updated" &&
+                  event.payload.kind === "approval_request" &&
+                  event.payload.status === "waiting"
+                ? event.payload.runtimeRequestId
+                : event.type === "turn-item.updated" &&
+                    event.payload.type === "approval_request" &&
+                    event.payload.status === "waiting"
+                  ? event.payload.requestId
+                  : null;
+          if (requestId === null) continue;
+          const current = yield* projectionStore.getRuntimeRequest(event.threadId, requestId);
+          if (current?.automaticDecision !== undefined && current.status !== "pending")
+            staleAutomaticEvents.add(event);
+        }
         const staleRequests = new Set<RuntimeRequestId>();
         const staleNodes = new Set<NodeId>();
         for (const event of events) {
@@ -312,6 +331,7 @@ const layerBase: Layer.Layer<
           }
         }
         return events.filter((event) => {
+          if (staleAutomaticEvents.has(event)) return false;
           switch (event.type) {
             case "runtime-request.updated":
               return event.payload.status !== "cancelled" || !staleRequests.has(event.payload.id);

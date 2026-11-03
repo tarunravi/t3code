@@ -115,6 +115,42 @@ export const layer: Layer.Layer<
               requestId: input.requestId,
             });
           }
+          if (request.automaticDecision !== undefined) {
+            const context = yield* projections.getRuntimeResponseContext(
+              input.threadId,
+              input.requestId,
+            );
+            const { runs, providerTurns, providerThreads } = yield* projections.getThreadRecords(
+              input.threadId,
+              ["runs", "providerTurns", "providerThreads"],
+            );
+            const run = runs.find((candidate) => candidate.id === context.node?.runId);
+            const turn = providerTurns.find((candidate) => candidate.id === request.providerTurnId);
+            const thread = providerThreads.find(
+              (candidate) => candidate.id === context.node?.providerThreadId,
+            );
+            if (
+              input.decision !== request.decision ||
+              session.value.providerSession.status === "stopped" ||
+              session.value.providerSession.status === "error" ||
+              context.node?.providerTurnId !== request.providerTurnId ||
+              (context.node?.runId != null &&
+                (run === undefined ||
+                  run.status !== "running" ||
+                  turn === undefined ||
+                  turn.status !== "running" ||
+                  turn.runAttemptId !== run.activeAttemptId ||
+                  turn.providerThreadId !== context.node.providerThreadId ||
+                  thread?.providerSessionId !== input.providerSessionId))
+            ) {
+              return yield* new RuntimeRequestResponseExecutionError({
+                reason: "request-not-resumable",
+                threadId: input.threadId,
+                providerSessionId: input.providerSessionId,
+                requestId: input.requestId,
+              });
+            }
+          }
           yield* session.value.respondToRuntimeRequest({
             requestId: input.requestId,
             ...(input.decision === undefined ? {} : { decision: input.decision }),

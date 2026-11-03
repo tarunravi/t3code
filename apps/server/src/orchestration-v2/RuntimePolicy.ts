@@ -47,15 +47,25 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
   },
 ) {
   override get message(): string {
-    return `${managedRuntimeModeCeilingMessage(this.organization, this.maxRuntimeMode)} Switch this thread's mode to continue.`;
+    return `${managedRuntimeModeCeilingMessage(this.organization, this.maxRuntimeMode)} Full-access execution is unavailable under this policy.`;
   }
 }
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
+export class RuntimePolicyFullAccessUnavailableError extends Schema.TaggedError<RuntimePolicyFullAccessUnavailableError>()(
+  "RuntimePolicyFullAccessUnavailableError",
+  { providerInstanceId: ProviderInstanceId, detail: Schema.String },
+) {
+  override get message(): string {
+    return `Full-access execution is unavailable for ${this.providerInstanceId}: ${this.detail}`;
+  }
+}
+
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
+  RuntimePolicyFullAccessUnavailableError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
 
@@ -81,23 +91,12 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
   resolve: Effect.fn("RuntimePolicyV2.resolve")(function (input) {
     return Effect.succeed({
-      runtimeMode: input.thread.runtimeMode,
+      runtimeMode: "full-access" as const,
       interactionMode: input.thread.interactionMode,
       cwd: input.thread.worktreePath,
     });
   }),
 });
-
-function providerRuntimeMode(
-  runtimeMode: RuntimeMode,
-  supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
-): RuntimeMode {
-  return supportedRuntimeModes === undefined ||
-    supportedRuntimeModes.length === 0 ||
-    supportedRuntimeModes.includes(runtimeMode)
-    ? runtimeMode
-    : "approval-required";
-}
 
 const refuseAboveCeiling = (
   managedPolicy: ServerSettings.ServerSettingsService["Service"]["managedPolicy"],
@@ -106,11 +105,11 @@ const refuseAboveCeiling = (
   const maxRuntimeMode = managedPolicy?.limits?.maxRuntimeMode;
   return managedPolicy !== undefined &&
     maxRuntimeMode !== undefined &&
-    isRuntimeModeAbove(thread.runtimeMode, maxRuntimeMode)
+    isRuntimeModeAbove("full-access", maxRuntimeMode)
     ? Effect.fail(
         new RuntimePolicyAboveCeilingError({
           threadId: thread.id,
-          runtimeMode: thread.runtimeMode,
+          runtimeMode: "full-access",
           maxRuntimeMode,
           organization: managedPolicy.organization,
         }),
@@ -155,10 +154,23 @@ export const layerFromProjectStore: Layer.Layer<
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-        const supportedRuntimeModes =
-          instance === undefined
-            ? undefined
-            : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
+        const snapshot = instance === undefined ? undefined : yield* instance.snapshot.getSnapshot;
+        // These built-in adapters predate explicit capability advertising. Registry agents must opt in.
+        const legacyFullAccessDriver =
+          snapshot !== undefined &&
+          ["codex", "claudeAgent", "cursor", "antigravity"].includes(snapshot.driver);
+        if (
+          snapshot === undefined ||
+          (snapshot.supportedRuntimeModes === undefined
+            ? !legacyFullAccessDriver
+            : !snapshot.supportedRuntimeModes.includes("full-access"))
+        ) {
+          return yield* new RuntimePolicyFullAccessUnavailableError({
+            providerInstanceId: input.modelSelection.instanceId,
+            detail:
+              "The provider does not advertise supported Full access. No narrower fallback will be used.",
+          });
+        }
         const cwd =
           input.thread.worktreePath ??
           (yield* projects.get(input.thread.projectId).pipe(
@@ -185,7 +197,7 @@ export const layerFromProjectStore: Layer.Layer<
             ),
           ));
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-          runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
+          runtimeMode: "full-access",
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
@@ -205,21 +217,40 @@ export function layerWithOverride(
       return {
         resolve: (input) =>
           base.resolve(input).pipe(
-            Effect.map((policy) =>
-              ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-                ...policy,
-                ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
-                ...(override.approvalPolicy === undefined
-                  ? {}
-                  : { approvalPolicy: override.approvalPolicy }),
-                ...(override.sandboxPolicy === undefined
-                  ? {}
-                  : { sandboxPolicy: override.sandboxPolicy }),
-                ...(override.reasoningEffort === undefined
-                  ? {}
-                  : { reasoningEffort: override.reasoningEffort }),
-              }),
-            ),
+            Effect.flatMap((policy) => {
+              const approvalPolicy = override.approvalPolicy ?? policy.approvalPolicy;
+              const sandboxPolicy = override.sandboxPolicy ?? policy.sandboxPolicy;
+              if (
+                (approvalPolicy !== undefined && approvalPolicy !== "never") ||
+                (sandboxPolicy !== undefined &&
+                  (typeof sandboxPolicy !== "object" ||
+                    sandboxPolicy === null ||
+                    !("type" in sandboxPolicy) ||
+                    sandboxPolicy.type !== "dangerFullAccess"))
+              ) {
+                return Effect.fail(
+                  new RuntimePolicyFullAccessUnavailableError({
+                    providerInstanceId: input.modelSelection.instanceId,
+                    detail: "Restrictive runtime overrides cannot be presented as Full access.",
+                  }),
+                );
+              }
+              // Canonical Full access has no provider-shaped override. Several adapters interpret any
+              // override as a request for supervised execution, even when it says never/unrestricted.
+              return Effect.succeed(
+                ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                  runtimeMode: "full-access",
+                  interactionMode: policy.interactionMode,
+                  cwd: override.cwd ?? policy.cwd,
+                  ...(policy.maxRuntimeMode === undefined
+                    ? {}
+                    : { maxRuntimeMode: policy.maxRuntimeMode }),
+                  ...(override.reasoningEffort === undefined
+                    ? {}
+                    : { reasoningEffort: override.reasoningEffort }),
+                }),
+              );
+            }),
           ),
       } satisfies RuntimePolicyV2Shape;
     }),

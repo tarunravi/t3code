@@ -2181,6 +2181,37 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "attests a Full-access native permission and delivers its actual one-time decision",
+    () =>
+      Effect.gen(function* () {
+        const { runtime, thread } = yield* resumed([
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          shellAskEvent,
+          out("permission.reply", {
+            sessionID: SESSION,
+            requestID: shellAsk.data.id,
+            decision: "once",
+          }),
+          reply("permission.reply", null),
+          event("permission.replied", {
+            sessionID: SESSION,
+            requestID: shellAsk.data.id,
+            reply: "once",
+          }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ]);
+        const requested = yield* requestOf(runtime).pipe(Effect.forkScoped);
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        yield* runtime.startTurn(turnInput(thread));
+        const request = yield* Fiber.join(requested);
+        assert.deepEqual(request?.automaticDecision, { policy: "full-access", decision: "accept" });
+        yield* runtime.respondToRuntimeRequest({ requestId: request!.id, decision: "accept" });
+        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("asks a subagent's permission request on the parent thread's turn", () =>
     Effect.gen(function* () {
       const child = "ses_f0e5aa64cffelFnoQRL0DAA9BH";
