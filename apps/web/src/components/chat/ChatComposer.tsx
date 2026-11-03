@@ -1216,7 +1216,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isLoading: isComposerMenuLoading,
     emptyState: composerMenuEmptyState,
   } = useComposerMenuItems({
-    routeKind,
     composerTrigger,
     environmentId,
     linkedEnvironments,
