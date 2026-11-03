@@ -876,12 +876,14 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const getTurnStartHistory = vi.fn(() =>
-    Effect.fail(
-      new ProjectionStore.ProjectionStoreReadError({
-        threadId,
-        cause: input.historyReadFailureAfterFallback,
-      }),
-    ),
+    input.sideChat !== undefined
+      ? Effect.succeed([])
+      : Effect.fail(
+          new ProjectionStore.ProjectionStoreReadError({
+            threadId,
+            cause: input.historyReadFailureAfterFallback,
+          }),
+        ),
   );
   const write = vi.fn(
     ({ events: incoming }: { events: ReadonlyArray<OrchestrationV2DomainEvent> }) =>

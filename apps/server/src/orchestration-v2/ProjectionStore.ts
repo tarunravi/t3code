@@ -290,6 +290,7 @@ export interface ProjectionCheckpointRollbackContext {
   readonly runsToRollback: ReadonlyArray<OrchestrationV2Run>;
   readonly rootNodes: ReadonlyArray<OrchestrationV2ExecutionNode>;
   readonly staleCheckpoints: ReadonlyArray<OrchestrationV2Checkpoint>;
+  readonly hasActiveRuns: boolean;
 }
 
 export interface ProjectionProviderControlContext {
@@ -346,6 +347,7 @@ export interface ProjectionRecordFilter {
   readonly turnItemRunId?: RunId;
   readonly messageIds?: ReadonlyArray<MessageId>;
   readonly messageRunIds?: ReadonlyArray<RunId>;
+  readonly delegatedCompletionParentRunId?: RunId;
   readonly turnItemRunIds?: ReadonlyArray<RunId | null>;
   readonly turnItemNodeIds?: ReadonlyArray<NodeId>;
   readonly runIds?: ReadonlyArray<RunId>;
@@ -3533,6 +3535,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${filter?.messageRoles === undefined ? sql`` : sql`AND role IN (SELECT value FROM json_each(${encodeIdList(filter.messageRoles)}))`}
                   ${filter?.monitorNotificationsOnly === true ? sql`AND json_extract(payload_json, '$.notification.source.kind') = 'monitor'` : sql``}
                   ${filter?.messageRunIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.messageRunIds)}))`}
+                  ${filter?.delegatedCompletionParentRunId === undefined ? sql`` : sql`AND json_extract(payload_json, '$.delegatedCompletion.parentRunId') = ${filter.delegatedCompletionParentRunId}`}
                 ORDER BY created_at ASC, message_id ASC
               `
               : sql<PayloadRow>`
@@ -5307,6 +5310,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ? undefined
                 : yield* decodeCheckpointScopePayload(scopeRows[0].payload_json);
             const context: ProjectionCheckpointRollbackContext = {
+              hasActiveRuns: false,
               thread,
               providerThread,
               checkpoint,
@@ -5356,7 +5360,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             WHERE run.thread_id = ${threadId} AND run.status = 'rolled_back'
               AND attempt.thread_id = ${threadId}`,
                 sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoints
-            WHERE thread_id = ${threadId} AND scope_id = ${scope.id} AND status = 'ready'
+            WHERE thread_id = ${threadId} AND scope_id = ${scope.id} AND status IN ('ready', 'missing')
               AND app_run_ordinal > ${targetOrdinal}
             ORDER BY ordinal_within_scope ASC`,
               ]);
@@ -5376,8 +5380,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               OR run_attempt_id = ${targetAttempt?.id ?? null})
             ORDER BY provider_thread_id ASC, ordinal ASC`,
             ]);
+            const [active] = yield* sql<{ active: number }>`SELECT EXISTS(
+              SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId}
+              AND status IN ('preparing', 'starting', 'running', 'waiting', 'queued')) AS active`;
             return {
               ...context,
+              hasActiveRuns: active?.active === 1,
               targetAttempt,
               runsToRollback,
               providerSession:

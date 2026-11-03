@@ -1484,7 +1484,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(result.status, "completed");
           if (wake === "parent completion") assert.equal(result.summary, "done");
         } else {
-          assert.equal(result.status, "running");
+          assert.equal(result.status, "waiting");
           if (wake === "child question") assert.isTrue(result.hasPendingQuestion);
           else {
             assert.deepEqual(result.pendingApproval, {

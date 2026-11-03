@@ -90,7 +90,7 @@ export function buildAntigravityModelsFromSession(
           })) ?? [])
         : [];
   const currentThinking = antigravityThinkingConfig(setup.configOptions);
-  if (currentThinking == null && thinkingLevels.size === 0)
+  if (currentThinking == null && ![...thinkingLevels.values()].some((config) => config != null))
     return buildAntigravityModels(entries, currentValue);
   const seen = new Set<string>();
   // The agent can list two IDs under one name; label the later ones so the picker tells them apart.

@@ -77,7 +77,7 @@ export function FallbackModelSetting() {
       serverScoped
       settingKeys={settingKeys}
       mixed={mixed}
-      {...searchableSetting("fallback-model")}
+      {...searchableSetting("provider-error-fallback-model")}
       description="Retry with this provider and model after two consecutive provider errors. Off keeps recovery manual."
       resetAction={
         settings.fallbackProviderInstanceId !== null || settings.fallbackModel !== null ? (

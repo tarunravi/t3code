@@ -167,7 +167,7 @@ it.effect.each([
           appRunOrdinal: targetOrdinal || null,
         },
       ],
-      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+      checkpointScopes: [{ id: scopeId, kind: "root_run", cwd: process.cwd() }],
       runs,
       turnItems: runs.map((run, ordinal) => ({
         id: `item-${run.id}`,
@@ -202,6 +202,24 @@ it.effect.each([
           }),
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed(projection.thread),
+            getCheckpointRollbackContext: () =>
+              Effect.succeed({
+                thread: projection.thread,
+                providerThread: original,
+                providerSession: undefined,
+                checkpoint: projection.checkpoints[0],
+                scope: projection.checkpointScopes[0],
+                targetAttempt: undefined,
+                providerTurns: [],
+                rolledBackAttemptIds: [],
+                runsToRollback: projection.runs.filter(
+                  (run) => run.ordinal > targetOrdinal && run.status !== "rolled_back",
+                ),
+                rootNodes: [],
+                staleCheckpoints: [],
+                hasActiveRuns: busy,
+              } as never),
             getThreadRecords: () => Effect.succeed(projection),
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
@@ -586,10 +604,15 @@ it.effect("rejects an unavailable native rollback target before restoring files"
   const scopeId = CheckpointScopeId.make("checkpoint-scope:rollback-provider-turn-unavailable");
   const providerInstanceId = ProviderInstanceId.make("provider_rollback_provider_turn_unavailable");
   const restore = vi.fn(() => Effect.die("checkpoint restore must not run"));
-  // The fork opens the session first: its capabilities decide whether a
-  // portable rewrite can replace the missing native turn.
   const open = vi.fn(() =>
-    Effect.succeed({ providerSession: { capabilities: CodexProviderCapabilitiesV2 } } as never),
+    Effect.succeed({
+      providerSession: {
+        capabilities: {
+          ...CodexProviderCapabilitiesV2,
+          context: { ...CodexProviderCapabilitiesV2.context, canConsumeHandoffSummaries: false },
+        },
+      },
+    } as never),
   );
   const projection = {
     thread: {
@@ -601,7 +624,7 @@ it.effect("rejects an unavailable native rollback target before restoring files"
     providerThreads: [{ id: providerThreadId, providerSessionId, providerInstanceId }],
     providerSessions: [],
     checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 1 }],
-    checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+    checkpointScopes: [{ id: scopeId, kind: "root_run", cwd: process.cwd() }],
     runs: [],
     attempts: [],
     providerTurns: [],
@@ -628,6 +651,7 @@ it.effect("rejects an unavailable native rollback target before restoring files"
               runsToRollback: [],
               rootNodes: [],
               staleCheckpoints: [],
+              hasActiveRuns: false,
             }),
           getShellSnapshot: () =>
             Effect.succeed({
@@ -911,6 +935,7 @@ const seedRollbackHistory = Effect.gen(function* () {
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open: () =>
             Effect.succeed({
+              providerSession: { capabilities: CodexProviderCapabilitiesV2 },
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));

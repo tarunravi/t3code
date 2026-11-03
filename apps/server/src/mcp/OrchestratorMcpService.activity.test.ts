@@ -416,7 +416,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
     const result = yield* service.taskStatus(makeScope(), taskId);
     expect(result.providerInstanceId).toBe(customCodexInstanceId);
     expect(result.providerInstanceId).not.toBe(ProviderInstanceId.make(String(codexDriver)));
-    expect(result.status).toBe("running");
+    expect(result.status).toBe("waiting");
     expect(result.taskId).toBe(taskId);
     expect(result.childThreadId).toBe(childThreadId);
   }).pipe(Effect.provide(layer), Effect.runPromise);

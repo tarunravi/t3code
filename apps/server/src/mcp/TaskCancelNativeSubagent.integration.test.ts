@@ -344,7 +344,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
           issuedAt: 1,
         };
         const before = yield* service.taskStatus(scope, task.id);
-        assert.equal(before.status, "running");
+        assert.equal(before.status, "waiting");
         assert.equal(before.workState, "waiting_for_children");
 
         const cancelled = yield* service.cancelTask(scope, {

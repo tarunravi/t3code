@@ -4272,7 +4272,41 @@ it.layer(layerDeliveryTest)("legacy checkpoint recovery", (it) => {
         });
         const resumed = yield* orchestrator.getThreadProjection(threadId);
         assert.isFalse(resumed.runs.find((run) => run.id === queued.id)?.queueHeld);
-        assert.equal(resumed.runs.find((run) => run.id === queued.id)?.status, "starting");
+        assert.equal(resumed.runs.find((run) => run.id === queued.id)?.status, "queued");
+        const deliveryRun = resumed.runs.find((run) => run.status === "starting")!;
+        const deliveryMessage = resumed.messages.find(
+          (message) => message.id === deliveryRun.userMessageId,
+        )!;
+        assert.isTrue(deliveryMessage.delegatedCompletion?.taskIds.includes(child.taskId));
+        yield* orchestrator.dispatch({
+          type: "notification.delivery.accept",
+          commandId: CommandId.make("legacy:accept-completion"),
+          threadId,
+          messageId: deliveryMessage.id,
+        });
+        const afterSequence = yield* sink.latestSequence();
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("legacy:completion-delivered"),
+              type: "run.updated",
+              threadId,
+              runId: deliveryRun.id,
+              occurredAt: now,
+              payload: { ...deliveryRun, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+        const started = yield* sink.stream({ afterSequence, eventType: "run.updated" }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === queued.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+        );
+        assert.isTrue(started._tag === "Some");
       }),
   );
 });

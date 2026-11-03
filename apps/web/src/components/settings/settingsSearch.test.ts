@@ -400,7 +400,7 @@ describe("fork notification search", () => {
 
 it("finds provider fallback", () => {
   expect(searchSettings("provider fallback")[0]).toMatchObject({
-    id: "fallback-model",
+    id: "provider-error-fallback-model",
     to: "/settings/general",
   });
 });

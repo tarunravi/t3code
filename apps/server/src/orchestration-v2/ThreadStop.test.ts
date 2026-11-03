@@ -1590,7 +1590,7 @@ it.effect("manual Stop wins over a delayed automatic fallback and its repeated o
     };
     const first = yield* orchestrator.dispatch(fallback);
     const repeated = yield* orchestrator.dispatch(fallback);
-    assert.deepEqual(repeated, first);
+    assert.deepEqual(repeated, { ...first, replayed: true });
     const after = yield* orchestrator.getThreadProjection(threadId);
     assert.deepEqual(
       after.runs.map((row) => row.id),

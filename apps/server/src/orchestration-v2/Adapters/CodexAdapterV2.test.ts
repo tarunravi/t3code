@@ -1937,6 +1937,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           assert.deepEqual(completed.providerTurn.turnTokenUsage, {
             usageStatus: "complete",
+            models: ["gpt-5.4"],
             usageScope: "main_agent",
             hasSubagents: false,
             inputTokens: 10,

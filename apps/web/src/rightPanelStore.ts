@@ -1231,8 +1231,7 @@ useRightPanelStore.subscribe((next, previous) => {
   }
 });
 
-const isSessionSurface = (surface: RightPanelSurface) =>
-  surface.kind === "side-chat" || surface.kind === "background-task";
+const isSessionSurface = (surface: RightPanelSurface) => surface.kind === "background-task";
 
 /** Session-backed surfaces are ephemeral, so a restored panel never points at one. */
 function withoutSessionSurfaces(state: ThreadRightPanelState): ThreadRightPanelState {

@@ -1161,10 +1161,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
   ),
 );
 
-// Compaction keeps the oldest and newest event per message, so a cursor older
-// than the deleted rows still replays each message where the client would
-// first have seen it (reducers append on first sight) and reaches the same
-// final state. No snapshot fallback is needed.
+// Message history remains lossless so replay preserves first-seen order and final state.
 it.effect("thread resume across compacted history keeps message order and final state", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -1197,7 +1194,7 @@ it.effect("thread resume across compacted history keeps message order and final 
     `;
     const [first] = yield* insertMessage(0, "message:a", "a created");
     const [second] = yield* insertMessage(1, "message:b", "b created");
-    yield* insertMessage(2, "message:a", "a superseded");
+    const [middle] = yield* insertMessage(2, "message:a", "a superseded");
     const [head] = yield* insertMessage(3, "message:a", "a final");
     // thread.deleted is never superseded: clients switch on the event type.
     for (const version of [0, 1]) {
@@ -1211,7 +1208,7 @@ it.effect("thread resume across compacted history keeps message order and final 
         )
       `;
     }
-    assert.equal((yield* maintenance.compactEventStore()).deletedEventCount, 1);
+    assert.equal((yield* maintenance.compactEventStore()).deletedEventCount, 0);
 
     const items = yield* subscribeOrchestrationV2Thread({
       threadId,
@@ -1238,6 +1235,7 @@ it.effect("thread resume across compacted history keeps message order and final 
       [
         [first!.sequence, "a created"],
         [second!.sequence, "b created"],
+        [middle!.sequence, "a superseded"],
         [head!.sequence, "a final"],
         ["synchronized"],
       ],

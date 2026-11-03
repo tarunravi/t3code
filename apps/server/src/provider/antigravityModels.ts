@@ -111,7 +111,10 @@ export function buildAntigravityModels(
   }
 
   const currentFamily = currentValue ? (splitEffort(currentValue)?.base ?? currentValue) : null;
+  const seenNames = new Set<string>();
   return [...families.values()].map((family): ServerProviderModel => {
+    const name = seenNames.has(family.name) ? `${family.name} (${family.slug})` : family.name;
+    seenNames.add(family.name);
     const isCurrent =
       family.exact !== undefined ? family.exact === currentValue : family.slug === currentFamily;
     const currentEffort = isCurrent && currentValue ? splitEffort(currentValue)?.effort : undefined;
@@ -123,7 +126,7 @@ export function buildAntigravityModels(
           : family.efforts[0];
     return {
       slug: family.slug,
-      name: family.name,
+      name,
       isCustom: false,
       ...(isCurrent ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] } : {}),
       capabilities:

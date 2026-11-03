@@ -300,6 +300,7 @@ describe("Antigravity model catalog", () => {
     expect(models.map((model) => model.name)).toEqual([
       "Gemini 3.8 Flash",
       "Gemini 3.8 Flash (gemini-3.8-flash-preview)",
+      "Claude Opus 5.5",
     ]);
   });
 

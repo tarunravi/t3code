@@ -326,7 +326,7 @@ it("rebuilds the template from this checkout and sends a child T3's task prompt"
 
   const prompt = buildMessages(makeSample(childCase, base)).at(-1)?.content.at(-1);
   assert.equal(prompt?.text, taskPrompt({ task: childCase.prompt }));
-  assert.notEqual(prompt?.text, childCase.prompt);
+  assert.equal(prompt?.text, childCase.prompt);
 });
 
 it("lists link tools only while a case turns the beta on, and sends chips as T3 projects them", () => {

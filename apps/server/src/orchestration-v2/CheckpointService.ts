@@ -371,8 +371,9 @@ export const layer: Layer.Layer<
             ordinalWithinScope: Math.max(0, input.ordinalWithinScope - 1),
           });
 
-          const checkpointable = yield* isGitCheckpointable(input.scope.cwd);
-          if (!checkpointable && input.historicalRefOnly) {
+          const checkpointable =
+            input.forceMissing === true ? false : yield* isGitCheckpointable(input.scope.cwd);
+          if (!checkpointable && input.historicalRefOnly && input.forceMissing !== true) {
             return yield* Effect.fail(
               "Historical checkpoint unavailable: original Git repository is required. Queue remains held; no new snapshot captured.",
             );

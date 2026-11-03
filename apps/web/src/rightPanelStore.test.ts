@@ -204,12 +204,8 @@ describe("rightPanelStore", () => {
       byThreadKey: Record<string, { surfaces: { id: string }[]; activeSurfaceId: string | null }>;
     };
     const persistedThread = Object.values(persisted.byThreadKey)[0];
-    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual([
-      "files",
-      "side-chat:side-1",
-      "side-chat:side-2",
-    ]);
-    expect(persistedThread?.activeSurfaceId).toBe("side-chat:side-2");
+    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual(["files"]);
+    expect(persistedThread?.activeSurfaceId).toBe("files");
   });
 
   it("gives each host/device its own tab and preserves renamed tabs", () => {

@@ -665,7 +665,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees start remote origin latest fetched branch local"],
   },
   {
-    id: "fallback-model",
+    id: "provider-error-fallback-model",
     title: "Fallback model",
     to: "/settings/general",
     scope: "environment-defaults",

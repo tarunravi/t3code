@@ -12895,7 +12895,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ["runs", "messages", "subagents"],
       {
         runIds: [runId, message.delegatedCompletion.parentRunId],
-        messageIds: [message.id],
+        delegatedCompletionParentRunId: message.delegatedCompletion.parentRunId,
         subagentRunIds: [message.delegatedCompletion.parentRunId],
       },
     );
@@ -12928,12 +12928,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Each run already exhausts the effect worker's bounded start retries.
     // Allow one successor per result, using persisted history so recovery
     // cannot reset the budget and later siblings keep their own retry.
+    const previousRuns = failedBeforeStart
+      ? (yield* projectionStore.getThreadRecords(threadId, ["runs"], {
+          runIds: projection.messages.flatMap((message) =>
+            message.runId !== null && message.runId !== runId ? [message.runId] : [],
+          ),
+          runStatuses: ["failed"],
+        })).runs
+      : [];
     const previousFailedMessageIds = new Set(
-      failedBeforeStart
-        ? projection.runs
-            .filter((run) => run.status === "failed" && run.startedAt === null && run.id !== runId)
-            .map((run) => run.userMessageId)
-        : [],
+      previousRuns.filter((run) => run.startedAt === null).map((run) => run.userMessageId),
     );
     const retriedTaskIds = new Set(
       projection.messages.flatMap((message) => {
