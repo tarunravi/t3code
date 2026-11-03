@@ -16,14 +16,14 @@ The test applies each overlay only to temporary source copies. It does not impor
 
 ## Build
 
-Requires Node 24.13 or newer, pnpm 11, Xcode command-line tools, and a code-signing identity.
+Requires the exact `engines.node` and `packageManager` versions in the selected source, Xcode command-line tools, and an existing code-signing identity. `T3_NODE` can select an existing matching Node executable. On the work Mac, the helper requires cached JS pnpm (`T3_PNPM_JS`), checks its version, and refuses known native-dispatch launchers before running them. It does not download tools or change security policy. If the usual Corepack cache now dispatches native pnpm, supply a verified JS entry point matching the source pin instead; do not retry the denied binary.
 
 ```sh
 security find-identity -v -p codesigning   # pick the identity's SHA-1
 T3_ORCH=1 T3_ORCH_HOME="$HOME/.t3" T3_SIGNING_IDENTITY=<sha1> scripts/orchestrator-mac/build.sh ~/t3-orchestrator-build
 ```
 
-The signed app lands in `<output-dir>/signed.noindex/T3Code.app`, with `build.log` and `BUILD-INFO.txt` beside it. The script refuses ad hoc signing and a dirty checkout. It finishes by running `verify-signature.sh`, which fails unless the designated requirement names the bundle id and certificate instead of a cdhash.
+The signed app lands in `<output-dir>/signed.noindex/T3Code.app`, with `build.log` and `BUILD-INFO.txt` beside it. The script refuses ad hoc signing and a dirty checkout. Packaging defers Mac runtime checks until real signing: verify signature and work-Mac Team/Santa policy, generate the compile cache with packaged Electron, sign again to seal the generated resources, validate the isolated packaged server, and verify the final signature. A failed check stops the build. Temporary probes stay outside the output tree so `~/node_modules` cannot mask missing dependencies.
 
 ## Why the signing identity matters
 
@@ -42,13 +42,13 @@ macOS stores each Accessibility and Screen Recording grant with the designated r
 
 ## Reinstall from inside T3
 
-Quitting T3 stops every agent in it, so an agent can't swap the app directly. `reinstall.sh` verifies the new build, records the active threads, and hands the swap to a one-shot launchd job outside T3's process tree. The job backs up the databases, quits T3, installs the new app, relaunches it, and starts a post-install thread. If a step after the swap fails, it restores the old app (and the database backups, if the new app had launched).
+Quitting T3 stops every agent in it, so an agent can't swap the app directly. `reinstall.sh` verifies the new build, records the active threads, and hands the swap to a one-shot launchd job outside T3's process tree. The job backs up the databases, quits T3, installs the new app, relaunches it, and continues the explicitly selected `--post-install-thread <existing-id>` with its existing model and settings. It never chooses a new model implicitly. Alternatively use `--no-post-install`. If a step after the swap fails, it restores the old app (and the database backups, if the new app had launched).
 
 From Codex Desktop, use `--no-post-install` to skip that provider-dependent thread. With no server runtime file, this option is accepted only when no process is running from a supported T3 app bundle; the hand-off records an empty active-thread list.
 
 ```sh
-scripts/orchestrator-mac/reinstall.sh --dry-run --exclude-thread <calling thread id>   # rehearse; changes nothing
-scripts/orchestrator-mac/reinstall.sh --exclude-thread <calling thread id>             # hand off
+scripts/orchestrator-mac/reinstall.sh --dry-run --post-install-thread <calling-thread-id> --exclude-thread <calling-thread-id>
+scripts/orchestrator-mac/reinstall.sh --post-install-thread <calling-thread-id> --exclude-thread <calling-thread-id>
 scripts/orchestrator-mac/reinstall.sh --no-post-install                               # skip the provider-dependent post-install thread
 scripts/orchestrator-mac/reinstall.sh --rollback ~/Backups/t3-reinstall-<ts>           # detached rollback
 scripts/orchestrator-mac/reinstall.sh --cleanup ~/Backups/t3-reinstall-<ts>            # after verification

@@ -24,7 +24,13 @@ echo "OK $app"
 grep -E '^(Identifier|Authority|TeamIdentifier|Timestamp)=' <<<"$details" || true
 echo "$requirement"
 
-if command -v santactl >/dev/null 2>&1; then
+if [[ "$(scutil --get ComputerName 2>/dev/null || hostname)" == SGMD6RQH4RH6J ]]; then
+  grep -q '^TeamIdentifier=5ZL939ZR9U$' <<<"$details" || fail "expected approved company Team 5ZL939ZR9U"
+  rule="$(santactl fileinfo "$app/Contents/MacOS/$(defaults read "$app/Contents/Info" CFBundleExecutable)" --key Rule 2>/dev/null)" \
+    || fail "could not read Santa policy"
+  [[ "$rule" == *"Allowed (TeamID)"* ]] || fail "Santa rule is '$rule', expected Allowed (TeamID)"
+  echo "$rule"
+elif command -v santactl >/dev/null 2>&1; then
   santactl fileinfo "$app/Contents/MacOS/$(defaults read "$app/Contents/Info" CFBundleExecutable)" \
     --key Rule 2>/dev/null || true
 fi

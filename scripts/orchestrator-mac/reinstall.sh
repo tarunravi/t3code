@@ -3,15 +3,15 @@
 # inside T3 itself. Quitting T3 kills every agent in it, so the swap runs as a
 # one-shot launchd job outside T3's process tree.
 #
-#   reinstall.sh [--dry-run] [--new-app <App.app>] [--exclude-thread <id>] [--grace <s>] [--no-post-install]
+#   reinstall.sh [--dry-run] [--new-app <App.app>] [--exclude-thread <id>] [--grace <s>] [--post-install-thread <id> | --no-post-install]
 #       Pre-flight, run by an agent inside T3: verifies the new app, records the
 #       active threads, and submits the hand-off to launchd. Returns at once.
 #       --dry-run uses a scratch dir, submits nothing, and then walks the
 #       hand-off in dry-run mode, so every step is printed and nothing changes.
 #   reinstall.sh --handoff <backup-dir> [--dry-run]
 #       The detached hand-off (launchd runs this): back up the databases, quit
-#       T3, swap the app, relaunch, wait for the server, and start a
-#       post-install thread unless --no-post-install was selected. Any failure after the swap rolls back.
+#       T3, swap the app, relaunch, wait for the server, and continue an
+#       existing post-install thread unless --no-post-install was selected. Any failure after the swap rolls back.
 #   reinstall.sh --cleanup <backup-dir> [--keep-backups N] [--dry-run]
 #       Run by the post-install agent once verification passes.
 #   reinstall.sh --rollback <backup-dir> [--dry-run]
@@ -30,7 +30,6 @@ older_installed="/Applications/T3 Code (Orchestrator).app"
 current_app=""
 label="com.t3tools.t3code.reinstall"
 work_mac="SGMD6RQH4RH6J"
-work_team="5ZL939ZR9U"
 uid="$(id -u)"
 
 machine="$(scutil --get ComputerName 2>/dev/null || hostname)"
@@ -46,6 +45,7 @@ backup_dir=""
 new_app="$HOME/t3-orchestrator-build/signed.noindex/$app_name.app"
 exclude_thread=""
 no_post_install=0
+post_install_thread=""
 grace=20
 keep_backups=2
 while [ $# -gt 0 ]; do
@@ -54,6 +54,7 @@ while [ $# -gt 0 ]; do
     --new-app) new_app="$2"; shift ;;
     --exclude-thread) exclude_thread="$2"; shift ;;
     --no-post-install) no_post_install=1 ;;
+    --post-install-thread) post_install_thread="${2:?--post-install-thread needs an existing thread id}"; shift ;;
     --grace) grace="$2"; shift ;;
     --handoff) mode=handoff; backup_dir="$2"; shift ;;
     --cleanup) mode=cleanup; backup_dir="$2"; shift ;;
@@ -78,11 +79,7 @@ run() {
 }
 
 open_app() {
-  if [ "$no_post_install" -eq 1 ]; then
-    run open -g "$1"
-  else
-    run open "$1"
-  fi
+  run open -g "$1"
 }
 
 find_node() {
@@ -100,20 +97,7 @@ find_node() {
 
 # Verifies signature stability, and on the work Mac the Team ID and Santa rule.
 verify_app() {
-  local app="$1" details rule
-  "$here/verify-signature.sh" "$app" "$bundle_id" || return 1
-  if [ "$machine" = "$work_mac" ]; then
-    details="$(codesign -dvv "$app" 2>&1)"
-    case "$details" in
-      *"TeamIdentifier=$work_team"*) ;;
-      *) log "not signed by Team $work_team"; return 1 ;;
-    esac
-    rule="$(santactl fileinfo "$app/Contents/MacOS/$(app_executable "$app")" --key Rule 2>/dev/null || true)"
-    case "$rule" in
-      *"Allowed (TeamID)"*) ;;
-      *) log "Santa rule is '$rule', expected Allowed (TeamID)"; return 1 ;;
-    esac
-  fi
+  "$here/verify-signature.sh" "$1" "$bundle_id"
 }
 
 app_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown; }
@@ -189,8 +173,8 @@ rpc() {
 post_install_launch() {
   local message_file="$1"
   shift
-  rpc launch --project-root "$HOME/Documents/brain" --title "T3 Code" \
-    --provider-instance codex --model gpt-6-luna --message-file "$message_file" "$@"
+  [ -n "$post_install_thread" ] || { log "select --post-install-thread or --no-post-install"; return 1; }
+  rpc resume --thread-id "$post_install_thread" --message-file "$message_file" "$@"
 }
 
 offline_reinstall_allowed() {
@@ -316,6 +300,11 @@ clear_job() {
 
 # ---------------------------------------------------------------- pre-flight
 preflight() {
+  if [ "$no_post_install" -eq 0 ]; then
+    [ -n "$post_install_thread" ] || die "select --post-install-thread <existing-id> to keep its model, or --no-post-install"
+  else
+    [ -z "$post_install_thread" ] || die "--post-install-thread conflicts with --no-post-install"
+  fi
   node="$(find_node)" || die "node >= 22 not found; set T3_NODE"
   log "machine $machine, data home $data_home, node $node"
   [ -d "$new_app" ] || die "new app not found: $new_app (build it with build.sh first)"
@@ -366,6 +355,7 @@ preflight() {
     printf 'data_home=%q\n' "$data_home"
     printf 'grace=%q\n' "$grace"
     printf 'no_post_install=%q\n' "$no_post_install"
+    printf 'post_install_thread=%q\n' "$post_install_thread"
     printf 'new_version=%q\n' "$(app_version "$new_app")"
     printf 'old_version=%q\n' "$(app_version "$current_app")"
     printf 'old_app=%q\n' "$current_app"
@@ -514,14 +504,14 @@ handoff() {
   if [ "$no_post_install" -eq 1 ]; then
     log "7/7 post-install thread skipped by request"
   else
-    log "7/7 start the post-install thread"
+    log "7/7 continue existing post-install thread $post_install_thread (no model change)"
     if [ "$dry_run" -eq 1 ]; then
       post_install_launch "$backup_dir/post-install-prompt.md" --dry-run || log "launch dry-run failed"
     elif ! post_install_launch "$backup_dir/post-install-prompt.md"; then
       # The new app is healthy, so keep it; a person can start this phase by hand.
-      log "could not start the post-install thread; start it manually with $backup_dir/post-install-prompt.md"
-      echo "installed; post-install thread not started" >"$backup_dir/handoff.status"
-      notify "T3 $new_version installed; start the post-install phase manually"
+      log "could not continue the post-install thread; continue it manually with $backup_dir/post-install-prompt.md"
+      echo "installed; post-install thread not continued" >"$backup_dir/handoff.status"
+      notify "T3 $new_version installed; continue the post-install phase manually"
       exit 0
     fi
   fi
@@ -529,7 +519,7 @@ handoff() {
   if [ "$no_post_install" -eq 1 ]; then
     notify "T3 $new_version installed"
   else
-    notify "T3 $new_version installed; post-install thread started"
+    notify "T3 $new_version installed; post-install thread continued"
   fi
   log "hand-off complete"
 }

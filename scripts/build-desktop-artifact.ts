@@ -2769,6 +2769,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  deferMacValidation = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
@@ -2820,6 +2821,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
+      ...(deferMacValidation ? { identity: null } : {}),
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -3562,6 +3564,20 @@ export const validateMacPackagedPayload = Effect.fn("desktopArtifact.validateMac
 const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(function* (
   options: ResolvedBuildOptions,
 ) {
+  const deferMacValidation = yield* Config.Boolean("T3CODE_DESKTOP_DEFER_MAC_VALIDATION").pipe(
+    Config.withDefault(false),
+  );
+  if (
+    deferMacValidation &&
+    (options.platform !== "mac" || options.target !== "dir" || !options.keepStage || options.signed)
+  ) {
+    return yield* Effect.fail(
+      new Error(
+        "External Mac signing requires an unsigned --platform mac --target dir --keep-stage build; finalize with orchestrator-mac/build.sh.",
+      ),
+    );
+  }
+  const pnpmJs = Option.getOrUndefined(yield* Config.String("T3_PNPM_JS").pipe(Config.option));
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -3883,6 +3899,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      deferMacValidation,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -3910,13 +3927,16 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   }
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
+  const installCommand = yield* resolveSpawnCommand(
+    pnpmJs ? process.execPath : "vp",
+    pnpmJs ? [pnpmJs, ...STAGE_INSTALL_ARGS] : [...STAGE_INSTALL_ARGS],
+  );
   yield* runCommand(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: stageAppDir,
       shell: installCommand.shell,
     }),
-    { label: "vp install --prod", verbose: options.verbose },
+    { label: pnpmJs ? "JS pnpm install --prod" : "vp install --prod", verbose: options.verbose },
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
@@ -3960,6 +3980,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     ...process.env,
   };
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
+  if (pnpmJs) buildEnv.npm_execpath = pnpmJs;
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {
       delete buildEnv[key];
@@ -4007,10 +4028,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
   );
   const builderArgs = [
-    "exec",
-    "--filter",
-    "@t3tools/desktop",
-    "--",
+    ...(pnpmJs
+      ? ["--filter", "@t3tools/desktop", "exec"]
+      : ["exec", "--filter", "@t3tools/desktop", "--"]),
     "electron-builder",
     "--projectDir",
     stageAppDir,
@@ -4019,7 +4039,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     "--publish",
     "never",
   ];
-  const builderCommand = yield* resolveSpawnCommand("vp", builderArgs, { env: buildEnv });
+  const builderCommand = yield* resolveSpawnCommand(
+    pnpmJs ? process.execPath : "vp",
+    pnpmJs ? [pnpmJs, ...builderArgs] : builderArgs,
+    { env: buildEnv },
+  );
   yield* runCommand(
     ChildProcess.make(builderCommand.command, builderCommand.args, {
       cwd: repoRoot,
@@ -4027,7 +4051,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       shell: builderCommand.shell,
     }),
     {
-      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+      label: `${pnpmJs ? "JS pnpm" : "vp"} electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
       verbose: options.verbose,
     },
   );
@@ -4055,8 +4079,18 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     });
   }
   // x64 builds on arm64 runners; the arm64 check covers the shared JS bundle.
-  if (options.platform === "mac" && options.arch === "arm64" && hostPlatform === "darwin") {
+  if (
+    !deferMacValidation &&
+    options.platform === "mac" &&
+    options.arch === "arm64" &&
+    hostPlatform === "darwin"
+  ) {
     yield* validateMacPackagedPayload({ stageDistDir, verbose: options.verbose });
+  }
+  if (deferMacValidation) {
+    yield* Effect.log(
+      "[desktop-artifact] Mac runtime validation pending external signing; not an installable, validated artifact.",
+    );
   }
 
   const copiedArtifacts = yield* copyDesktopBuildArtifacts(
@@ -4188,7 +4222,32 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);
 
 if (import.meta.main) {
-  Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
+  const action = Effect.gen(function* () {
+    if (process.argv[2] !== "--validate-mac-app") {
+      yield* Command.run(buildDesktopArtifactCli, { version: "0.0.0" });
+      return;
+    }
+    const [app, bundleId] = process.argv.slice(3);
+    if (!app || !bundleId || process.argv.length !== 5) {
+      return yield* Effect.fail(
+        new Error("usage: build-desktop-artifact.ts --validate-mac-app <App.app> <bundle-id>"),
+      );
+    }
+    const path = yield* Path.Path;
+    yield* runCommand(
+      ChildProcess.make("/bin/bash", [
+        path.join(yield* RepoRoot, "scripts/orchestrator-mac/verify-signature.sh"),
+        app,
+        bundleId,
+      ]),
+      { label: "signed Mac payload verification", verbose: true },
+    );
+    yield* verifyPackagedBundleIsSelfContained({
+      asarPath: path.join(app, "Contents/Resources/app.asar"),
+      verbose: true,
+    });
+  });
+  action.pipe(
     Effect.scoped,
     Effect.provide(cliRuntimeLayer),
     NodeRuntime.runMain,

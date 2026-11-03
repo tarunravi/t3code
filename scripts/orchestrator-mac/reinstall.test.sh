@@ -74,11 +74,10 @@ app_pids() { printf '4242\n'; }
 offline_reinstall_allowed && { echo "offline reinstall accepted while app process exists" >&2; exit 1; }
 
 rpc() {
-  [ "$1" = launch ] || { echo "expected launch RPC" >&2; return 1; }
+  [ "$1" = resume ] || { echo "expected resume RPC" >&2; return 1; }
   shift
   local args=("$@")
-  local expected=(--project-root "$HOME/Documents/brain" --title "T3 Code" --provider-instance codex \
-    --model gpt-6-luna --message-file "$tmp/post install.md" --dry-run)
+  local expected=(--thread-id existing-sol-thread --message-file "$tmp/post install.md" --dry-run)
   [ "${#args[@]}" -eq "${#expected[@]}" ] || { echo "unexpected post-install launch args: ${args[*]}" >&2; return 1; }
   local i
   for i in "${!expected[@]}"; do
@@ -88,6 +87,18 @@ rpc() {
     }
   done
 }
+post_install_thread=""
+post_install_launch "$tmp/post install.md" --dry-run && { echo "implicit model continuation was accepted" >&2; exit 1; }
+post_install_thread="existing-sol-thread"
 post_install_launch "$tmp/post install.md" --dry-run
+
+run() { last_run=("$@"); }
+for no_post_install in 0 1; do
+  open_app "$installed"
+  [ "${last_run[*]}" = "open -g $installed" ] || {
+    echo "reinstall must launch in the background" >&2
+    exit 1
+  }
+done
 
 echo "reinstall contracts: OK"

@@ -4,8 +4,9 @@
 //   t3-rpc.mjs health          --app <App.app> --base-dir <home>
 //   t3-rpc.mjs active-threads  --app <App.app> --base-dir <home> [--out FILE] [--exclude ID]
 //   t3-rpc.mjs launch          --app <App.app> --base-dir <home> --project-root DIR --title T --message-file F
-//                              [--provider-instance codex] [--model gpt-6-luna] [--dry-run]
-//   t3-rpc.mjs resume          --app <App.app> --base-dir <home> --state FILE [--text T] [--include-subagents] [--dry-run]
+//                              --provider-instance INSTANCE --model MODEL [--dry-run]
+//   t3-rpc.mjs resume          --app <App.app> --base-dir <home> (--state FILE | --thread-id ID)
+//                              [--message-file F | --text T] [--include-subagents] [--dry-run]
 //
 // The bearer token is minted with the app's own server CLI
 // (`auth session issue --token-only`) and never printed. The port comes from
@@ -190,9 +191,8 @@ function projectFor(shell, root) {
 
 export function resolveLaunchModelSelection(flags) {
   return {
-    instanceId:
-      typeof flags["provider-instance"] === "string" ? flags["provider-instance"] : "codex",
-    model: typeof flags.model === "string" ? flags.model : "gpt-6-luna",
+    instanceId: required(flags, "provider-instance"),
+    model: required(flags, "model"),
   };
 }
 
@@ -259,10 +259,15 @@ async function main() {
   }
 
   if (command === "resume") {
-    const statePath = required(flags, "state");
-    if (!NodeFS.existsSync(statePath)) throw new Error(`${statePath} not found`);
-    const state = JSON.parse(NodeFS.readFileSync(statePath, "utf8"));
-    const text = typeof flags.text === "string" ? flags.text : DEFAULT_RESUME_TEXT;
+    if (flags["thread-id"] && flags.state) throw new Error("choose --thread-id or --state, not both");
+    const state = flags["thread-id"]
+      ? { threads: [{ id: required(flags, "thread-id") }] }
+      : JSON.parse(NodeFS.readFileSync(required(flags, "state"), "utf8"));
+    const text = flags["message-file"]
+      ? NodeFS.readFileSync(required(flags, "message-file"), "utf8")
+      : typeof flags.text === "string"
+        ? flags.text
+        : DEFAULT_RESUME_TEXT;
     const targets = resumeTargets(state, flags["include-subagents"] === true);
     const conn = dryRun ? null : await connect(flags);
     let failures = 0;
