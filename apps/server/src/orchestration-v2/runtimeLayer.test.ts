@@ -1100,7 +1100,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           sourceThreadId: parentThreadId,
           targetThreadId: sideThreadId,
           sourcePoint: { type: "latest_stable" },
-          relationshipToParent: "side",
+          sideChat: true,
         });
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -1124,17 +1124,18 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const native = yield* openSideChat("native", modelSelection);
       assert.deepEqual(native.side.thread.lineage, {
         parentThreadId,
-        relationshipToParent: "side",
+        relationshipToParent: "fork",
+        sideChat: true,
         rootThreadId: parentThreadId,
       });
-      assert.isNull(native.side.thread.forkedFrom);
+      assert.equal(native.side.thread.forkedFrom?.type, "run");
       assert.equal(native.transfer.sourcePoint.runId, first.id);
       assert.equal(native.transfer.status, "pending");
-      assert.equal(native.side.contextHandoffs[0]?.strategy, "delta_since_target_last_seen");
-      assert.deepEqual(native.handoffText, [
-        "Refactor the parser.",
-        "Halfway through the parser refactor.",
-      ]);
+      assert.equal(native.side.contextHandoffs[0]?.strategy, "manual_context");
+      assert.deepEqual(native.handoffText, []);
+      const nativeDigest = native.side.contextHandoffs[0]!.summaryText;
+      assert.include(nativeDigest, "Refactor the parser.");
+      assert.include(nativeDigest, "Halfway through the parser refactor.");
 
       const portable = yield* openSideChat("portable", {
         instanceId: alternateInstanceId,
@@ -1142,12 +1143,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       });
       assert.equal(portable.transfer.resolution?.strategy, "portable_context");
       assert.equal(portable.side.contextHandoffs[0]?.strategy, "full_thread_summary");
-      assert.deepEqual(portable.handoffText, [
-        "Remember the anchor marker.",
-        "Anchor stored.",
-        "Refactor the parser.",
-        "Halfway through the parser refactor.",
-      ]);
+      assert.deepEqual(portable.handoffText, ["Remember the anchor marker.", "Anchor stored."]);
 
       const listed = yield* threads.listProjectThreads({ projectId, includeSubagents: true });
       assert.deepEqual(

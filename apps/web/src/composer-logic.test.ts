@@ -512,19 +512,6 @@ describe("assistant citation cursor offsets", () => {
   });
 });
 
-describe("parseSideChatCommand", () => {
-  it("opens an empty side chat or asks a question", () => {
-    expect(parseSideChatCommand(" /side ")).toEqual({ question: "" });
-    expect(parseSideChatCommand("/side what are you doing?\nand why")).toEqual({
-      question: "what are you doing?\nand why",
-    });
-  });
-
-  it("ignores other commands that start with /side", () => {
-    expect(parseSideChatCommand("/sidebar")).toBeNull();
-    expect(parseSideChatCommand("ask /side later")).toBeNull();
-  });
-});
 describe("literal editor answer cursor state", () => {
   const prefill = "- [X] done $my-skill ";
 

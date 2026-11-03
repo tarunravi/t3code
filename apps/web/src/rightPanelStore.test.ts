@@ -154,15 +154,20 @@ describe("rightPanelStore", () => {
     expect(useClosedViewStore.getState().entries).toHaveLength(1);
   });
 
-  it("keeps one side chat tab per thread and never persists it", () => {
+  it("keeps multiple side chat tabs and persists each thread reference", () => {
     const store = useRightPanelStore.getState();
     store.open(refA, "files");
     store.openSideChat(refA, ThreadId.make("side-1"));
     store.openSideChat(refA, ThreadId.make("side-2"));
     const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
-    expect(state.surfaces.map((surface) => surface.id)).toEqual(["files", "side-chat"]);
-    expect(state.surfaces[1]).toMatchObject({ threadId: "side-2" });
-    expect(state.activeSurfaceId).toBe("side-chat");
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "files",
+      "side-chat:side-1",
+      "side-chat:side-2",
+    ]);
+    expect(state.surfaces[1]).toMatchObject({ threadId: "side-1" });
+    expect(state.surfaces[2]).toMatchObject({ threadId: "side-2" });
+    expect(state.activeSurfaceId).toBe("side-chat:side-2");
 
     const persisted = useRightPanelStore.persist
       .getOptions()
@@ -170,8 +175,12 @@ describe("rightPanelStore", () => {
       byThreadKey: Record<string, { surfaces: { id: string }[]; activeSurfaceId: string | null }>;
     };
     const persistedThread = Object.values(persisted.byThreadKey)[0];
-    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual(["files"]);
-    expect(persistedThread?.activeSurfaceId).toBe("files");
+    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual([
+      "files",
+      "side-chat:side-1",
+      "side-chat:side-2",
+    ]);
+    expect(persistedThread?.activeSurfaceId).toBe("side-chat:side-2");
   });
 
   it("opens one tab per background task and never persists them", () => {
@@ -195,8 +204,12 @@ describe("rightPanelStore", () => {
       byThreadKey: Record<string, { surfaces: { id: string }[]; activeSurfaceId: string | null }>;
     };
     const persistedThread = Object.values(persisted.byThreadKey)[0];
-    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual(["files"]);
-    expect(persistedThread?.activeSurfaceId).toBe("files");
+    expect(persistedThread?.surfaces.map((surface) => surface.id)).toEqual([
+      "files",
+      "side-chat:side-1",
+      "side-chat:side-2",
+    ]);
+    expect(persistedThread?.activeSurfaceId).toBe("side-chat:side-2");
   });
 
   it("gives each host/device its own tab and preserves renamed tabs", () => {
