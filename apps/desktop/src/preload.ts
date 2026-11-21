@@ -272,6 +272,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     transcribe: (input: { locale: string; pcm: Uint8Array }) =>
       ipcRenderer.invoke(IpcChannels.APPLE_SPEECH_TRANSCRIBE_CHANNEL, input),
   },
+  codexSpeech: {
+    supported: () => ipcRenderer.invoke(IpcChannels.CODEX_SPEECH_SUPPORTED_CHANNEL, undefined),
+    transcribe: (input: { pcm: Uint8Array; language?: string }) =>
+      ipcRenderer.invoke(IpcChannels.CODEX_SPEECH_TRANSCRIBE_CHANNEL, input),
+  },
   openSystemSettings: (pane: string) =>
     ipcRenderer.invoke(IpcChannels.OPEN_SYSTEM_SETTINGS_CHANNEL, pane),
   probeRemoteEditors: () => ipcRenderer.invoke(IpcChannels.PROBE_REMOTE_EDITORS_CHANNEL, undefined),

@@ -1106,6 +1106,24 @@ export const DesktopAppleSpeechTranscribeInputSchema = Schema.Struct({
   pcm: Schema.Uint8Array,
 });
 
+/** `value` is the transcript from `transcribe`; failures carry a user-facing `message`. */
+export const DesktopCodexSpeechResultSchema = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), value: Schema.String }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    code: Schema.Literals(["unavailable", "failed"]),
+    message: Schema.String,
+  }),
+]);
+export type DesktopCodexSpeechResult = typeof DesktopCodexSpeechResultSchema.Type;
+
+export const DesktopCodexSpeechTranscribeInputSchema = Schema.Struct({
+  // 16 kHz mono Float32 PCM, at most five minutes.
+  pcm: Schema.Uint8Array,
+  language: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
+});
+export type DesktopCodexSpeechTranscribeInput = typeof DesktopCodexSpeechTranscribeInputSchema.Type;
+
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
@@ -1252,6 +1270,14 @@ export interface DesktopBridge {
     supportedLocales: () => Promise<readonly string[]>;
     prepare: (locale: string) => Promise<DesktopAppleSpeechResult>;
     transcribe: (input: { locale: string; pcm: Uint8Array }) => Promise<DesktopAppleSpeechResult>;
+  };
+  /**
+   * Dictation through the ChatGPT/Codex login on this device (`~/.codex/auth.json`), sent to
+   * the Codex transcription endpoint from the main process; absent in older desktop builds.
+   */
+  codexSpeech?: {
+    supported: () => Promise<boolean>;
+    transcribe: (input: DesktopCodexSpeechTranscribeInput) => Promise<DesktopCodexSpeechResult>;
   };
 }
 

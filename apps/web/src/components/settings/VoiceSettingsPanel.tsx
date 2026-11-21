@@ -92,8 +92,10 @@ import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import {
   useEnvironmentSpeechInput,
   APPLE_SPEECH_LABEL,
+  CODEX_SPEECH_LABEL,
   useVoiceTranscriptionDestination,
 } from "../../speech/useEnvironmentSpeechInput";
+import { useCodexSpeechSupported } from "../../speech/codexSpeech";
 import { ComposerSpeechRecordingPill } from "../chat/ComposerSpeechButton";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -152,6 +154,7 @@ import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const OFF = "off";
 const DEVICE = "device";
+const CODEX = "codex";
 function CloudSpeechLogo({ provider }: { provider: CloudSpeechProvider }) {
   if (provider === "openrouter")
     return <ProviderPackageIcon icon={openRouterIcon} aria-hidden className="size-4 shrink-0" />;
@@ -1356,6 +1359,8 @@ export function VoiceSettingsPanel() {
   const appleSpeechLabel = appleSpeechAvailable
     ? APPLE_SPEECH_LABEL
     : gt("Apple Speech (unavailable)");
+  const codexSpeechAvailable = useCodexSpeechSupported();
+  const codexSpeechLabel = codexSpeechAvailable ? CODEX_SPEECH_LABEL : gt("Codex (unavailable)");
   const canManageKey = useEnvironmentScope(destination.environmentId, AuthSettingsWriteScope);
   const [pendingCloud, setPendingCloud] = useState<{
     provider: CloudSpeechProvider;
@@ -1412,13 +1417,15 @@ export function VoiceSettingsPanel() {
       })),
     }));
   const cloudChoices = cloudGroups.flatMap((group) => group.choices);
-  const destinationValue = destination.device
-    ? DEVICE
-    : destination.cloudProvider
-      ? JSON.stringify(["cloud", destination.environmentId, destination.cloudProvider])
-      : destination.environmentId
-        ? JSON.stringify(["environment", destination.environmentId])
-        : OFF;
+  const destinationValue = destination.codex
+    ? CODEX
+    : destination.device
+      ? DEVICE
+      : destination.cloudProvider
+        ? JSON.stringify(["cloud", destination.environmentId, destination.cloudProvider])
+        : destination.environmentId
+          ? JSON.stringify(["environment", destination.environmentId])
+          : OFF;
   const cloudEnvironment = environments.find(
     (env) => env.environmentId === pendingCloud?.environmentId,
   );
@@ -1438,7 +1445,7 @@ export function VoiceSettingsPanel() {
     <SettingsPageContainer
       searchTargetFallbacks={{
         "speech-language":
-          model || destination.cloudProvider || destination.device
+          model || destination.cloudProvider || destination.device || destination.codex
             ? undefined
             : "voice-transcription-destination",
         "speech-models": prepared ? undefined : "voice-transcription-destination",
@@ -1552,6 +1559,7 @@ export function VoiceSettingsPanel() {
                   const chosen = environmentChoices.find((choice) => choice.value === value);
                   if (value === OFF) chooseAudioDestination(null);
                   else if (value === DEVICE) chooseAudioDestination({ kind: "device" });
+                  else if (value === CODEX) chooseAudioDestination({ kind: "codex" });
                   else if (chosen)
                     chooseAudioDestination({
                       kind: "environment",
@@ -1566,7 +1574,13 @@ export function VoiceSettingsPanel() {
                 >
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
-                      {destination.device ? (
+                      {destination.codex ? (
+                        <ProviderInstanceIcon
+                          driverKind={ProviderDriverKind.make("codex")}
+                          displayName={CODEX_SPEECH_LABEL}
+                          iconClassName="size-4"
+                        />
+                      ) : destination.device ? (
                         <LaptopIcon aria-hidden className="size-4" />
                       ) : destination.cloudProvider ? (
                         <CloudSpeechLogo provider={destination.cloudProvider} />
@@ -1576,13 +1590,16 @@ export function VoiceSettingsPanel() {
                         <MicOffIcon aria-hidden className="size-4" />
                       )}
                       <span className="truncate">
-                        {destination.device
-                          ? appleSpeechLabel
-                          : destination.cloudProvider
-                            ? CLOUD_SPEECH_LABELS[destination.cloudProvider]
-                            : destination.environmentId
-                              ? (chosenEnvironment?.label ?? gt("Chosen environment (unavailable)"))
-                              : gt("Off")}
+                        {destination.codex
+                          ? codexSpeechLabel
+                          : destination.device
+                            ? appleSpeechLabel
+                            : destination.cloudProvider
+                              ? CLOUD_SPEECH_LABELS[destination.cloudProvider]
+                              : destination.environmentId
+                                ? (chosenEnvironment?.label ??
+                                  gt("Chosen environment (unavailable)"))
+                                : gt("Off")}
                         {destination.cloudProvider && (
                           <span className="text-muted-foreground">
                             {" via "}
@@ -1600,17 +1617,34 @@ export function VoiceSettingsPanel() {
                       <T>Off</T>
                     </span>
                   </SelectItem>
-                  {(appleSpeechAvailable || destination.device) && (
+                  {(appleSpeechAvailable ||
+                    destination.device ||
+                    codexSpeechAvailable ||
+                    destination.codex) && (
                     <SelectGroup>
                       <SelectGroupLabel>
                         <T>On this Mac</T>
                       </SelectGroupLabel>
-                      <SelectItem value={DEVICE}>
-                        <span className="flex items-center gap-2">
-                          <LaptopIcon aria-hidden className="size-4" />
-                          {appleSpeechLabel}
-                        </span>
-                      </SelectItem>
+                      {(appleSpeechAvailable || destination.device) && (
+                        <SelectItem value={DEVICE}>
+                          <span className="flex items-center gap-2">
+                            <LaptopIcon aria-hidden className="size-4" />
+                            {appleSpeechLabel}
+                          </span>
+                        </SelectItem>
+                      )}
+                      {(codexSpeechAvailable || destination.codex) && (
+                        <SelectItem value={CODEX}>
+                          <span className="flex items-center gap-2">
+                            <ProviderInstanceIcon
+                              driverKind={ProviderDriverKind.make("codex")}
+                              displayName={CODEX_SPEECH_LABEL}
+                              iconClassName="size-4"
+                            />
+                            {codexSpeechLabel}
+                          </span>
+                        </SelectItem>
+                      )}
                     </SelectGroup>
                   )}
                   {environmentChoices.length > 0 && (
@@ -1698,14 +1732,17 @@ export function VoiceSettingsPanel() {
             close={() => setPendingCloud(null)}
           />
         )}
-        {!destination.cloudProvider && !destination.device && catalog.loading ? (
+        {!destination.cloudProvider &&
+        !destination.device &&
+        !destination.codex &&
+        catalog.loading ? (
           <SettingsRow
             title={gt("Language")}
             description={gt("Checking which languages the model supports…")}
             control={<Skeleton shape="card" className="h-8 w-40 sm:h-7" />}
           />
         ) : null}
-        {(model || destination.cloudProvider || destination.device) && (
+        {(model || destination.cloudProvider || destination.device || destination.codex) && (
           <SettingsRow
             {...setting("speech-language")}
             title={gt("Language")}
@@ -1714,25 +1751,27 @@ export function VoiceSettingsPanel() {
                 ? gt(
                     "Automatic uses your Mac’s language. The first use of a language downloads it.",
                   )
-                : destination.cloudProvider
-                  ? gt("The provider detects your language automatically.")
-                  : model?.supportsLanguageDetection
-                    ? gt("{model} detects the language automatically.", { model: model.model })
-                    : model
-                      ? gt("{model} uses one fixed language.", { model: model.model })
-                      : gt("This model uses one fixed language.")
+                : destination.codex
+                  ? gt("Codex uses the language you pick, or detects it automatically.")
+                  : destination.cloudProvider
+                    ? gt("The provider detects your language automatically.")
+                    : model?.supportsLanguageDetection
+                      ? gt("{model} detects the language automatically.", { model: model.model })
+                      : model
+                        ? gt("{model} uses one fixed language.", { model: model.model })
+                        : gt("This model uses one fixed language.")
             }
             control={
               <SpeechLanguageSelect
                 automaticLabel={
-                  destination.device
+                  destination.device || destination.codex
                     ? gt("Auto", { $context: "automatic language detection" })
                     : undefined
                 }
                 model={
                   destination.device
                     ? { languages: appleSpeechLanguages, supportsLanguageDetection: true }
-                    : destination.cloudProvider
+                    : destination.codex || destination.cloudProvider
                       ? cloudSpeechLanguages
                       : model
                 }
@@ -1761,14 +1800,18 @@ export function VoiceSettingsPanel() {
           description={
             destination.device
               ? gt("Apple Speech handles silence itself.")
-              : destination.cloudProvider === "openai"
-                ? gt("OpenAI handles silence itself.")
-                : gt("Skip silence and background noise before transcribing.")
+              : destination.codex
+                ? gt("Codex handles silence itself.")
+                : destination.cloudProvider === "openai"
+                  ? gt("OpenAI handles silence itself.")
+                  : gt("Skip silence and background noise before transcribing.")
           }
           control={
             <Switch
               aria-label={gt("Silence filtering")}
-              disabled={destination.device || destination.cloudProvider === "openai"}
+              disabled={
+                destination.device || destination.codex || destination.cloudProvider === "openai"
+              }
               checked={settings.speechSilenceFiltering}
               onCheckedChange={(checked) =>
                 void updateClientSettings({ speechSilenceFiltering: checked })
@@ -1782,12 +1825,14 @@ export function VoiceSettingsPanel() {
           description={
             destination.device
               ? gt("Not available with Apple Speech.")
-              : gt("Drop “um” and “uh” from transcripts.")
+              : destination.codex
+                ? gt("Not available with Codex.")
+                : gt("Drop “um” and “uh” from transcripts.")
           }
           control={
             <Switch
               aria-label={gt("Remove filler words")}
-              disabled={destination.device}
+              disabled={destination.device || destination.codex}
               checked={settings.speechRemoveFillerWords}
               onCheckedChange={(checked) =>
                 void updateClientSettings({ speechRemoveFillerWords: checked })
