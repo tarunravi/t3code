@@ -10,6 +10,7 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  type CloudSpeechProvider,
   type EnvironmentSpeechModel,
   type ProjectId,
   type SpeechCustomWords,
@@ -21,7 +22,11 @@ import { act, render, stubGlobal } from "../../test/render";
 import { AppRouteModal } from "../components/AppRouteModal";
 import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
 import { VoiceInputSetup } from "../components/chat/VoiceInputSetup";
-import type { createBrowserVoiceInputPlatform } from "./browserVoiceInput";
+import type {
+  createAppleSpeechVoiceInputPlatform,
+  createBrowserVoiceInputPlatform,
+  createCodexVoiceInputPlatform,
+} from "./browserVoiceInput";
 import { useEnvironmentSpeechInput } from "./useEnvironmentSpeechInput";
 import {
   chooseAudioDestination,
@@ -181,15 +186,21 @@ vi.mock("./appleSpeech", () => ({
 }));
 vi.mock("./browserVoiceInput", () => ({
   createAppleSpeechVoiceInputPlatform: (
-    input: Omit<Parameters<typeof createBrowserVoiceInputPlatform>[0], "prepared">,
+    input: Parameters<typeof createAppleSpeechVoiceInputPlatform>[0],
   ) => mockPlatform("apple-speech", input),
+  createCodexVoiceInputPlatform: (input: Parameters<typeof createCodexVoiceInputPlatform>[0]) =>
+    mockPlatform("codex", input),
   createBrowserVoiceInputPlatform: (input: Parameters<typeof createBrowserVoiceInputPlatform>[0]) =>
     mockPlatform(input.prepared.environmentId, input),
 }));
 
 function mockPlatform(
   environmentId: string,
-  input: Omit<Parameters<typeof createBrowserVoiceInputPlatform>[0], "prepared">,
+  input: {
+    readonly getTranscriptionOptions: () => SpeechTranscriptionOptions;
+    readonly cloudProvider?: CloudSpeechProvider | undefined;
+    readonly cloudModel?: string | undefined;
+  },
 ) {
   mocks.platforms.push(environmentId);
   return {
@@ -209,7 +220,7 @@ function mockPlatform(
           transcribe: async () => {
             mocks.transcribeCalls.push(
               input.cloudProvider
-                ? `${[input.cloudProvider, (input as { cloudModel?: string }).cloudModel].filter(Boolean).join(":")} via ${environmentId}`
+                ? `${[input.cloudProvider, input.cloudModel].filter(Boolean).join(":")} via ${environmentId}`
                 : environmentId,
             );
             const next = mocks.transcripts.shift() ?? "dictated";

@@ -29,6 +29,7 @@ import { chooseRecordingMicrophone } from "./browserMicrophones";
 import {
   createAppleSpeechVoiceInputPlatform,
   createBrowserVoiceInputPlatform,
+  createCodexVoiceInputPlatform,
 } from "./browserVoiceInput";
 import { runEnvironmentSpeech } from "./runEnvironmentSpeech";
 import { bindAudioGrant, readCleanupGrant } from "./voiceConsent";
@@ -79,11 +80,13 @@ export type VoiceInputSessionActivity = {
 };
 
 type SessionKey = {
-  /** Null is Apple Speech, which transcribes on this Mac without an environment. */
+  /** Null is a desktop engine (Apple Speech or Codex), which needs no environment. */
   readonly prepared: PreparedConnection | null;
   readonly grantId: string;
   readonly cloudProvider: CloudSpeechProvider | undefined;
   readonly cloudModel: CloudSpeechModelId | undefined;
+  /** Codex dictation through the desktop app's Codex login; `prepared` is null then. */
+  readonly codex: boolean;
 };
 
 const SILENT_ACTIVITY: VoiceInputSessionActivity = { level: 0, preview: null };
@@ -180,17 +183,19 @@ export class VoiceInputSession {
         if (!this.disposed) void this.controller.interruptRecording(message, null, code);
       },
     };
-    const platform = key.prepared
-      ? createBrowserVoiceInputPlatform({
-          ...platformInput,
-          prepared: key.prepared,
-          cloudProvider: key.cloudProvider,
-          cloudModel: key.cloudModel,
-          onText: (preview) => {
-            if (!this.disposed) this.publishActivity({ ...this.activity, preview });
-          },
-        })
-      : createAppleSpeechVoiceInputPlatform(platformInput);
+    const platform = key.codex
+      ? createCodexVoiceInputPlatform(platformInput)
+      : key.prepared
+        ? createBrowserVoiceInputPlatform({
+            ...platformInput,
+            prepared: key.prepared,
+            cloudProvider: key.cloudProvider,
+            cloudModel: key.cloudModel,
+            onText: (preview) => {
+              if (!this.disposed) this.publishActivity({ ...this.activity, preview });
+            },
+          })
+        : createAppleSpeechVoiceInputPlatform(platformInput);
     const postProcess: NonNullable<VoiceInputControllerDependencies["postProcess"]> = (
       transcript,
       options,
@@ -382,7 +387,8 @@ function sameKey(session: VoiceInputSession, key: SessionKey): boolean {
     session.key.prepared === key.prepared &&
     session.key.grantId === key.grantId &&
     session.key.cloudProvider === key.cloudProvider &&
-    session.key.cloudModel === key.cloudModel
+    session.key.cloudModel === key.cloudModel &&
+    session.key.codex === key.codex
   );
 }
 
@@ -421,19 +427,22 @@ export function useRetainedVoiceInputSession(input: {
   readonly prepared: PreparedConnection | null;
   readonly grantId: string | null;
   readonly onDevice?: boolean | undefined;
+  readonly codex?: boolean | undefined;
   readonly cloudProvider?: CloudSpeechProvider | undefined;
   readonly cloudModel?: CloudSpeechModelId | undefined;
 }): VoiceInputSession | null {
   const { grantId, cloudProvider, cloudModel } = input;
-  const prepared = input.onDevice ? null : input.prepared;
-  const ready = (input.onDevice === true || prepared !== null) && grantId !== null;
+  const codex = input.codex === true;
+  const desktopEngine = input.onDevice === true || codex;
+  const prepared = desktopEngine ? null : input.prepared;
+  const ready = (desktopEngine || prepared !== null) && grantId !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains the shared recording session for this destination while mounted
   useEffect(() => {
     if (!ready || !grantId || typeof navigator === "undefined") return;
-    return retainVoiceInputSession({ prepared, grantId, cloudProvider, cloudModel });
-  }, [ready, prepared, grantId, cloudProvider, cloudModel]);
+    return retainVoiceInputSession({ prepared, grantId, cloudProvider, cloudModel, codex });
+  }, [ready, prepared, grantId, cloudProvider, cloudModel, codex]);
   return useSyncExternalStore(subscribeRegistry, () =>
-    ready && grantId ? findSession({ prepared, grantId, cloudProvider, cloudModel }) : null,
+    ready && grantId ? findSession({ prepared, grantId, cloudProvider, cloudModel, codex }) : null,
   );
 }
 
