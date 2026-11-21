@@ -48,6 +48,8 @@ import {
 
 /** A product name, shown untranslated. */
 export const APPLE_SPEECH_LABEL = "Apple Speech";
+/** A product name, shown untranslated. */
+export const CODEX_SPEECH_LABEL = "Codex";
 
 const INITIAL_SETUP = {
   open: false,
@@ -118,7 +120,7 @@ type HookInput = {
  * Microphone audio leaves this device only for the environment the person chose in
  * Voice settings. Nothing is inferred from the primary or the draft's environment, and
  * the recording is abandoned the moment that choice changes or its connection drops.
- * Apple Speech ("device") keeps audio on this Mac and needs no environment.
+ * Apple Speech ("device") and Codex ("codex") run in the desktop app and need no environment.
  */
 export function useVoiceTranscriptionDestination() {
   const gt = useGT();
@@ -127,8 +129,9 @@ export function useVoiceTranscriptionDestination() {
   const grant = choice === "off" ? null : choice;
   const appleSpeechAvailable = useAppleSpeechLocales().length > 0;
   const device = hydrated && grant?.destination.kind === "device";
+  const codex = hydrated && grant?.destination.kind === "codex";
   const environmentId =
-    hydrated && grant && grant.destination.kind !== "device"
+    hydrated && grant && grant.destination.kind !== "device" && grant.destination.kind !== "codex"
       ? grant.destination.environmentId
       : null;
   const environment = useEnvironment(environmentId);
@@ -145,17 +148,20 @@ export function useVoiceTranscriptionDestination() {
     ...(hydrated && choice === null ? { offerFirstRunSetup: true } : {}),
     environmentId,
     ...(device ? { device: true, onDevice: appleSpeechAvailable } : {}),
+    ...(codex ? { codex: true } : {}),
     ...(provider ? { cloudProvider: provider } : {}),
     ...(model ? { cloudModel: model } : {}),
     grantId: grant?.id ?? null,
     label: device
       ? APPLE_SPEECH_LABEL
-      : provider && environment
-        ? gt("{provider} via {environment}", {
-            provider: CLOUD_SPEECH_LABELS[provider],
-            environment: environment.label,
-          })
-        : (environment?.label ?? null),
+      : codex
+        ? CODEX_SPEECH_LABEL
+        : provider && environment
+          ? gt("{provider} via {environment}", {
+              provider: CLOUD_SPEECH_LABELS[provider],
+              environment: environment.label,
+            })
+          : (environment?.label ?? null),
     prepared: supported && canDictate ? connection : null,
   };
 }
@@ -165,6 +171,7 @@ export function useEnvironmentSpeechInput(input: HookInput) {
   const destination = useVoiceTranscriptionDestination();
   const prepared = destination.prepared;
   const onDevice = destination.onDevice === true;
+  const codex = destination.codex === true;
   const grantId = destination.grantId;
   const cloudProvider = destination.cloudProvider;
   const cloudModel = destination.cloudModel;
@@ -206,6 +213,7 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     prepared,
     grantId,
     onDevice,
+    codex,
     cloudProvider,
     cloudModel,
   });
@@ -396,7 +404,7 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     if (!session || voiceInputBlocksSubmission(session.state)) return;
     const request = ++startRequestRef.current;
     const owner = latestRef.current.input.ownerKey;
-    if (onDevice) {
+    if (onDevice || codex) {
       await session.start(createTarget());
       return;
     }
@@ -519,6 +527,7 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     grantId === null
       ? Boolean(destination.offerFirstRunSetup) && input.offerSetup !== false
       : onDevice ||
+        codex ||
         (prepared !== null &&
           (cloudProvider !== undefined ||
             (status?.prepared === prepared && status.value?.supported !== false)));

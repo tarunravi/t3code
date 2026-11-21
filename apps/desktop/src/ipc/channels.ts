@@ -140,6 +140,8 @@ export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission"
 export const APPLE_SPEECH_AVAILABLE_CHANNEL = "desktop:apple-speech-available";
 export const APPLE_SPEECH_PREPARE_CHANNEL = "desktop:apple-speech-prepare";
 export const APPLE_SPEECH_TRANSCRIBE_CHANNEL = "desktop:apple-speech-transcribe";
+export const CODEX_SPEECH_SUPPORTED_CHANNEL = "desktop:codex-speech-supported";
+export const CODEX_SPEECH_TRANSCRIBE_CHANNEL = "desktop:codex-speech-transcribe";
 
 export const PREVIEW_RECORDING_INPUT_CHANNEL = "desktop:preview-recording-input";
 
