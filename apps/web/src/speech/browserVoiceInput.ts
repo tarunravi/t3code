@@ -147,7 +147,7 @@ export function createBrowserVoiceInputPlatform(input: {
   });
 }
 
-async function waitForAppleSpeech<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
+async function waitForSpeechBridge<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
   const aborted = Promise.withResolvers<never>();
   const onAbort = () => aborted.reject(signal.reason);
   signal.addEventListener("abort", onAbort, { once: true });
@@ -175,7 +175,7 @@ export function createAppleSpeechVoiceInputPlatform(input: {
     const system = window.desktopBridge?.getPreferredSystemLanguages?.() ?? [];
     if (!appleSpeech) throw new Error("Apple Speech is not available.");
     signal.throwIfAborted();
-    const prepared = await waitForAppleSpeech(
+    const prepared = await waitForSpeechBridge(
       appleSpeech.prepare(
         resolveAppleSpeechLocale(readAppleSpeechLocales(), speechLanguage, system) ??
           navigator.language,
@@ -205,12 +205,72 @@ export function createAppleSpeechVoiceInputPlatform(input: {
             code: "cancelled",
             message: m(msg("Voice transcription was cancelled.")),
           });
-        const result = await waitForAppleSpeech(
+        const result = await waitForSpeechBridge(
           appleSpeech.transcribe({ locale, pcm }),
           transcriptionSignal,
         );
         throwIfVoiceTranscriptionAborted(transcriptionSignal);
         if (!result.ok) throw new Error("Apple Speech could not transcribe.");
+        return result.value;
+      },
+    };
+  });
+}
+
+/**
+ * Records like the other desktop paths, then transcribes through the Codex login on this
+ * device. Audio goes to the Codex transcription endpoint from the desktop main process.
+ */
+export function createCodexVoiceInputPlatform(input: {
+  readonly hasAudioConsent: () => boolean;
+  readonly getTranscriptionOptions: () => SpeechTranscriptionOptions;
+  readonly getMicrophoneId: () => string | Promise<string>;
+  readonly onLevel: (level: number) => void;
+  readonly onDurationLimit: () => void;
+  readonly onError: (message: string, code?: VoiceInputErrorCode) => void;
+}) {
+  return createBrowserPcmCapture(input, async ({ signal }) => {
+    const codexSpeech = window.desktopBridge?.codexSpeech;
+    if (!codexSpeech)
+      throw new VoiceTranscriptionError({
+        code: "unavailable",
+        message: m(msg("Codex dictation needs the T3 Code desktop app.")),
+      });
+    signal.throwIfAborted();
+    const supported = await waitForSpeechBridge(codexSpeech.supported(), signal);
+    throwIfVoiceTranscriptionAborted(signal);
+    if (!supported)
+      throw new VoiceTranscriptionError({
+        code: "unavailable",
+        message: m(
+          msg(
+            "Sign in to Codex on this device to use Codex dictation, or pick another destination.",
+          ),
+        ),
+      });
+    const { speechLanguage } = input.getTranscriptionOptions();
+    const language = speechLanguage === "auto" ? undefined : speechLanguage;
+    return {
+      locale: language ?? "auto",
+      transcribe: async (uri, { signal: transcriptionSignal }) => {
+        const response = await fetch(uri, { signal: transcriptionSignal });
+        const pcm = new Uint8Array(await response.arrayBuffer());
+        throwIfVoiceTranscriptionAborted(transcriptionSignal);
+        if (!input.hasAudioConsent())
+          throw new VoiceTranscriptionError({
+            code: "cancelled",
+            message: m(msg("Voice transcription was cancelled.")),
+          });
+        const result = await waitForSpeechBridge(
+          codexSpeech.transcribe({ pcm, ...(language ? { language } : {}) }),
+          transcriptionSignal,
+        );
+        throwIfVoiceTranscriptionAborted(transcriptionSignal);
+        if (!result.ok)
+          throw new VoiceTranscriptionError({
+            code: result.code === "unavailable" ? "unavailable" : "transcription-failed",
+            message: result.message,
+          });
         return result.value;
       },
     };

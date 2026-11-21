@@ -13,10 +13,12 @@ import {
 // Separate keys: a stale window saving ordinary preferences must not restore either grant.
 const AUDIO_KEY = "t3code:voice-audio-grant:v1";
 const CLEANUP_KEY = "t3code:voice-cleanup-grant:v1";
-// "device" is Apple Speech in the macOS desktop app. Audio stays on this device, so it stays out of the shared contract.
+// "device" (Apple Speech) and "codex" (the desktop app's Codex login) name no environment,
+// so both stay out of the shared contract, which only describes environment destinations.
 const AudioDestination = Schema.Union([
   VoiceTranscriptionDestination,
   Schema.Struct({ kind: Schema.Literal("device") }),
+  Schema.Struct({ kind: Schema.Literal("codex") }),
 ]);
 export type AudioDestination = typeof AudioDestination.Type;
 const Grant = Schema.Struct({ id: Schema.String, destination: AudioDestination });
