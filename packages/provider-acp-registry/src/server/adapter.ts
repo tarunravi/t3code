@@ -26,6 +26,7 @@ import { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation, type SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -120,20 +121,78 @@ export function registerMistralVibeAcpExtensions(context: AcpAdapterV2ExtensionC
   );
 }
 
-export function acpRegistryPromptFailure(agentId: string, cause: unknown) {
-  return makeProviderFailure({
-    cause,
-    ...(isAcpRequestError(cause)
-      ? {
-          message: cause.errorMessage,
-          code: String(cause.code),
-          class:
-            agentId === "mistral-vibe" && cause.code === MISTRAL_VIBE_RATE_LIMITED
-              ? ("usage_limit" as const)
-              : ("provider_error" as const),
-        }
-      : { class: "provider_error" as const }),
-  });
+// Devin answers session/prompt with e.g. "Reached request rate limit. ... Your limit will
+// reset in 23 seconds (at 22:57 UTC)."; other agents word theirs similarly.
+const USAGE_LIMIT_MESSAGE =
+  /\brate[\s_-]?limit|\busage[\s_-]limit|\bquota[\s_-](?:exhausted|exceeded)/i;
+const RESET_AT_ISO =
+  /\b(?:resets?|until|at)\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))/i;
+const RESET_IN = /\b(?:resets?|retry|try again)\b[^.\d]*?\bin\s+(\d[\w\s.,]*)/i;
+const RESET_IN_PART =
+  /(\d+(?:\.\d+)?)\s*(milliseconds?|ms|minutes?|mins?|m|seconds?|secs?|s|hours?|hrs?|h|days?|d)\b/gi;
+const RESET_AT_UTC_CLOCK = /\bat\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*UTC\b/i;
+// A minute-precision clock time just behind now is this reset, not tomorrow's.
+const RESET_CLOCK_GRACE_MS = 5 * 60_000;
+const DAY_MS = 86_400_000;
+
+function resetUnitMs(unit: string): number {
+  const lower = unit.toLowerCase();
+  if (lower === "ms" || lower.startsWith("milli")) return 1;
+  if (lower.startsWith("s")) return 1_000;
+  if (lower.startsWith("m")) return 60_000;
+  if (lower.startsWith("h")) return 3_600_000;
+  return DAY_MS;
+}
+
+/** Reads when a usage limit lifts: an ISO timestamp, "reset in N units", or "at HH:MM UTC". */
+function usageLimitResetAt(message: string, now: DateTime.Utc): string | undefined {
+  const iso = RESET_AT_ISO.exec(message)?.[1];
+  if (iso !== undefined && Option.isSome(DateTime.make(iso))) return iso;
+
+  const relative = RESET_IN.exec(message)?.[1];
+  if (relative !== undefined) {
+    let delayMs = 0;
+    for (const [, amount, unit] of relative.matchAll(RESET_IN_PART)) {
+      delayMs += Number(amount) * resetUnitMs(unit!);
+    }
+    if (delayMs > 0) return DateTime.formatIso(DateTime.add(now, { milliseconds: delayMs }));
+  }
+
+  const clock = RESET_AT_UTC_CLOCK.exec(message);
+  if (clock === null) return undefined;
+  const hour = Number(clock[1]);
+  const minute = Number(clock[2]);
+  const second = clock[3] === undefined ? 0 : Number(clock[3]);
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  const nowMs = DateTime.toEpochMillis(now);
+  let resetMs = DateTime.toEpochMillis(
+    DateTime.setPartsUtc(now, { hour, minute, second, millisecond: 0 }),
+  );
+  if (resetMs < nowMs - RESET_CLOCK_GRACE_MS) resetMs += DAY_MS;
+  return DateTime.formatIso(DateTime.makeUnsafe(resetMs));
+}
+
+export function acpRegistryPromptFailure(
+  agentId: string,
+  cause: unknown,
+  now: DateTime.Utc = DateTime.nowUnsafe(),
+) {
+  if (!isAcpRequestError(cause)) {
+    return makeProviderFailure({ cause, class: "provider_error" });
+  }
+  const request = { cause, message: cause.errorMessage, code: String(cause.code) };
+  if (agentId === "mistral-vibe" && cause.code === MISTRAL_VIBE_RATE_LIMITED) {
+    return makeProviderFailure({ ...request, class: "usage_limit" });
+  }
+  if (USAGE_LIMIT_MESSAGE.test(cause.errorMessage)) {
+    return makeProviderFailure({
+      ...request,
+      class: "usage_limit",
+      retryable: true,
+      resetAt: usageLimitResetAt(cause.errorMessage, now) ?? null,
+    });
+  }
+  return makeProviderFailure({ ...request, class: "provider_error" });
 }
 
 function makeAcpRegistryRuntime(
