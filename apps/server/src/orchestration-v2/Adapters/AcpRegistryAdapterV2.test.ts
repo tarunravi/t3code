@@ -653,7 +653,14 @@ describe("AcpRegistryAdapterV2", () => {
       code: "-31001",
       retryable: null,
     });
-    assert.equal(acpRegistryPromptFailure("other-agent", limit).class, "provider_error");
+    // The -31001 code only reads as a rate limit for Mistral; other agents need the phrase.
+    assert.equal(
+      acpRegistryPromptFailure(
+        "other-agent",
+        new EffectAcpErrors.AcpRequestError({ code: -31001, errorMessage: "Turn failed." }),
+      ).class,
+      "provider_error",
+    );
     assert.equal(
       acpRegistryPromptFailure("mistral-vibe", new Error("private defect")).message,
       "Provider turn failed.",
