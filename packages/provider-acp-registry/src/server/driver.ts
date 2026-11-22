@@ -25,6 +25,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HttpClient from "effect/http/HttpClient";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { AcpRegistryAdapterV2Driver, type AcpRegistryAdapterV2DriverEnv } from "./adapter.ts";
@@ -65,6 +66,7 @@ import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpRegistryAuth from "./auth.ts";
 import * as AcpRegistryAuthenticationState from "./authenticationState.ts";
+import { readDevinUsageLimits } from "./devinUsageLimits.ts";
 import {
   acpRegistryCurrentModelOptions,
   acpRegistryModelsToDiscover,
@@ -610,6 +612,7 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
 export type AcpRegistryDriverEnv =
   | AcpRegistryAdapterV2DriverEnv
   | Digest.Digest
+  | HttpClient.HttpClient
   | ProviderHost.ProviderHost;
 
 export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryDriverEnv> = {
@@ -649,6 +652,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
     const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcess.Environment;
     const host = yield* ProviderHost.ProviderHost;
+    const httpClient = yield* HttpClient.HttpClient;
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -778,6 +782,23 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         yield* coordinator.getUrlAuthAction(instanceId),
       );
     });
+    // Devin is the only registry agent whose plan quota T3 can read. The manager keeps usage only
+    // from checkProvider and checkUsageLimits; enrichment's snapshots never replace it.
+    const checkDevinUsageLimits =
+      effectiveConfig.agentId.trim().toLowerCase() === "devin"
+        ? readDevinUsageLimits(processEnvironment).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+          )
+        : undefined;
+    const withDevinUsageLimits = (provider: ServerProvider) =>
+      checkDevinUsageLimits === undefined ||
+      !provider.enabled ||
+      !provider.installed ||
+      provider.auth.status === "unauthenticated"
+        ? Effect.succeed(provider)
+        : checkDevinUsageLimits.pipe(Effect.map((usageLimits) => ({ ...provider, usageLimits })));
     // A local executable's version comes only from probing it, so readiness checks reuse the last report.
     const reportedLocalVersion = yield* Ref.make<string | null>(null);
     const checkProvider = checkAcpRegistryProviderReadiness(readinessInput).pipe(
@@ -792,6 +813,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         ),
       ),
       Effect.flatMap(withLiveRuntimeState),
+      Effect.flatMap(withDevinUsageLimits),
     );
     const modelsToDiscover = Effect.fn("AcpRegistryDriver.modelsToDiscover")(function* (
       provider: ServerProvider,
@@ -995,6 +1017,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       // Inspection may fetch the registry when its disk cache is missing; creation must not wait on that.
       initialSnapshot: () => buildInitialAcpRegistrySnapshot(readinessInput),
       checkProvider,
+      ...(checkDevinUsageLimits === undefined ? {} : { checkUsageLimits: checkDevinUsageLimits }),
       enrichSnapshot: Effect.fn("enrichSnapshot")(function* ({
         snapshot,
         getSnapshot,

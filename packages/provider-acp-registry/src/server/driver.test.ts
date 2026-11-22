@@ -17,6 +17,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -1049,6 +1051,12 @@ const driverLayer = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
       ProviderEventLoggers.NoOpProviderEventLoggers,
     ),
   ),
+  Layer.provideMerge(
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => Effect.die(`unexpected HTTP request to ${request.url}`)),
+    ),
+  ),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
@@ -1071,6 +1079,70 @@ it.layer(driverLayer, { excludeTestServices: true })("AcpRegistryDriver", (it) =
         installed: false,
         message: "Checking ACP Registry agent readiness...",
       });
+    }),
+  );
+
+  it.effect("publishes Devin's plan quota from the provider check and usage refresh", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "acp-driver-" });
+      const agentPath = path.join(directory, "agent.mjs");
+      const modelsPath = path.join(directory, "models.json");
+      yield* fileSystem.writeFileString(agentPath, fakeAgentSource);
+      yield* fileSystem.writeFileString(modelsPath, JSON.stringify(["devin-model"]));
+      yield* fileSystem.makeDirectory(path.join(directory, "devin"));
+      yield* fileSystem.writeFileString(
+        path.join(directory, "devin", "credentials.toml"),
+        'windsurf_api_key = "secret-token"\n',
+      );
+      let weeklyPercentage = 14;
+      const quotaClient = HttpClient.make((request) =>
+        Effect.sync(() =>
+          HttpClientResponse.fromWeb(
+            request,
+            request.url.endsWith("/api/organizations")
+              ? Response.json([{ org_id: "org-1" }])
+              : Response.json({
+                  is_quota_plan: true,
+                  weekly_percentage: weeklyPercentage,
+                  hide_daily_quota: true,
+                }),
+          ),
+        ),
+      );
+
+      const instance = yield* AcpRegistryDriver.create({
+        instanceId: identity.instanceId,
+        displayName: identity.displayName,
+        enabled: true,
+        environment: [{ name: "XDG_DATA_HOME", value: directory, sensitive: false }],
+        config: decodeSettings({ agentId: "devin" }),
+      }).pipe(
+        Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, {
+          ...catalogWithInspection({
+            status: "ready",
+            agentId: "devin",
+            version: "1.0.0",
+            distribution: "npx",
+          }),
+          resolve: () =>
+            Effect.succeed({
+              distribution: "npx" as const,
+              spawn: { command: process.execPath, args: [agentPath, modelsPath] },
+            }),
+        }),
+        Effect.provideService(HttpClient.HttpClient, quotaClient),
+      );
+      const weeklyUsage = (snapshot: ServerProvider) =>
+        snapshot.usageLimits?.windows.map((window) => [window.id, window.usedPercent]);
+
+      expect(weeklyUsage(yield* instance.snapshot.refresh)).toEqual([["weekly", 14]]);
+      expect(weeklyUsage(yield* instance.snapshot.getSnapshot)).toEqual([["weekly", 14]]);
+
+      weeklyPercentage = 40;
+      yield* instance.snapshot.refreshUsage ?? Effect.die("Devin must refresh usage on its own");
+      expect(weeklyUsage(yield* instance.snapshot.getSnapshot)).toEqual([["weekly", 40]]);
     }),
   );
 
