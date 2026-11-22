@@ -1,39 +1,39 @@
 diff --git a/apps/desktop/package.json b/apps/desktop/package.json
-index ddef3ca9eb..e9345fa67e 100644
+index 0a3285108c..46a8dc6103 100644
 --- a/apps/desktop/package.json
 +++ b/apps/desktop/package.json
-@@ -40,5 +40,5 @@
+@@ -44,5 +44,5 @@
      "tailwindcss": "^4.0.0",
      "vite-plus": "catalog:"
    },
--  "productName": "T3 Code (Alpha)"
+-  "productName": "T3 Code (Beta)"
 +  "productName": "T3 Code"
  }
 diff --git a/apps/desktop/src/app/DesktopEnvironment.ts b/apps/desktop/src/app/DesktopEnvironment.ts
-index 6a8bc8e0ea..2065fb373f 100644
+index d012b5afe6..442118ade2 100644
 --- a/apps/desktop/src/app/DesktopEnvironment.ts
 +++ b/apps/desktop/src/app/DesktopEnvironment.ts
-@@ -114,7 +114,7 @@ export function resolveDesktopAppBranding(input: {
+@@ -107,7 +107,7 @@ export function resolveDesktopAppBranding(input: {
    return {
      baseName: APP_BASE_NAME,
      stageLabel,
 -    displayName: `${APP_BASE_NAME} (${stageLabel})`,
-+    displayName: stageLabel === "Alpha" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
++    displayName: stageLabel === "Beta" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
    };
  }
  
 diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
-index 9b2e26c8f4..903fa6e6ca 100644
+index b6bb677fb4..c5568c62a5 100644
 --- a/scripts/build-desktop-artifact.ts
 +++ b/scripts/build-desktop-artifact.ts
-@@ -2722,6 +2722,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
-       extendInfo: {
-         NSScreenCaptureUsageDescription:
-           "T3 Code captures the active window when you use the window capture shortcut.",
+@@ -2901,6 +2901,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+           "T3 Code lets commands run by terminals and coding agents control other apps.",
+         NSSpeechRecognitionUsageDescription:
+           "T3 Code transcribes your dictation on this Mac when you choose Apple Speech.",
 +        LSEnvironment: {
 +          T3CODE_HOME: "__T3CODE_HOME__",
 +          T3CODE_DISABLE_AUTO_UPDATE: "true",
 +        },
-       },
-       protocols: [
-         {
+         // macOS lists an app under Default web browser only when it opens web
+         // pages as documents as well as http and https links (see protocols).
+         CFBundleDocumentTypes: [
