@@ -28,7 +28,7 @@
       // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
       // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
       // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
-      // does not trace.
+      // does not trace. orchestrator-mac/build.sh runs sign-app.cjs by path.
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
@@ -36,6 +36,7 @@
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",
+        "orchestrator-mac/sign-app.cjs",
         // e2e loads its config and the scenarios by path, and starts the app script.
         "e2e.config.ts",
         "prove-scenario.ts",
