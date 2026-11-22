@@ -26,6 +26,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HttpClient from "effect/http/HttpClient";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { AcpRegistryAdapterV2Driver, type AcpRegistryAdapterV2DriverEnv } from "./adapter.ts";
@@ -65,6 +66,7 @@ import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpRegistryAuth from "./auth.ts";
 import * as AcpRegistryAuthenticationState from "./authenticationState.ts";
+import { readDevinUsageLimits } from "./devinUsageLimits.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
@@ -641,6 +643,8 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
     const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcess.Environment;
     const host = yield* ProviderHost.ProviderHost;
+    // Optional so instances can be created where the client layer is absent (tests).
+    const httpClient = yield* Effect.serviceOption(HttpClient.HttpClient);
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -763,6 +767,20 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(SecureRandom.SecureRandom, random),
+      // Devin is the only registry agent whose plan quota T3 can read.
+      Effect.filterOrElse(
+        (provider) =>
+          !provider.installed ||
+          effectiveConfig.agentId.trim().toLowerCase() !== "devin" ||
+          Option.isNone(httpClient),
+        (provider) =>
+          readDevinUsageLimits(processEnvironment).pipe(
+            Effect.map((usageLimits) => ({ ...provider, usageLimits })),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(HttpClient.HttpClient, Option.getOrThrow(httpClient)),
+          ),
+      ),
     );
     const enrichmentCache = yield* Ref.make<AcpRegistryEnrichmentCache>({
       generation: 0,
