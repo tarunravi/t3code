@@ -92,6 +92,23 @@ describe("transcribeCodexSpeech", () => {
     if (!result.ok) assert.equal(result.code, "failed");
   });
 
+  it("gives up with a timeout error when Codex never answers", async () => {
+    let attempts = 0;
+    const stalled: CodexTranscribeDeps["fetchImpl"] = (_url, init) => {
+      attempts += 1;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason));
+      });
+    };
+    const result = await transcribeCodexSpeech({ pcm }, { ...deps(stalled), timeoutMs: 20 });
+    assert.deepEqual(result, {
+      ok: false,
+      code: "failed",
+      message: "Codex took too long to answer the transcription request. Try again.",
+    });
+    assert.strictEqual(attempts, 1);
+  });
+
   it("rejects oversized audio without calling the endpoint", async () => {
     const { calls, fetchImpl } = fetchSequence([]);
     const result = await transcribeCodexSpeech(

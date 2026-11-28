@@ -14,6 +14,8 @@ const MAX_PCM_BYTES = SPEECH_SAMPLE_RATE * Float32Array.BYTES_PER_ELEMENT * 5 * 
 // The endpoint intermittently answers 403 to non-browser clients; a short retry covers it.
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS: ReadonlyArray<number> = [500, 1_000];
+// A stalled connection would otherwise leave dictation spinning with no answer.
+const REQUEST_TIMEOUT_MS = 60_000;
 
 export interface CodexCredentials {
   readonly accessToken: string;
@@ -76,10 +78,16 @@ export interface CodexTranscribeFetchResponse {
 export interface CodexTranscribeDeps {
   readonly fetchImpl: (
     url: string,
-    init: { method: string; headers: Record<string, string>; body: FormData },
+    init: {
+      method: string;
+      headers: Record<string, string>;
+      body: FormData;
+      signal: AbortSignal;
+    },
   ) => Promise<CodexTranscribeFetchResponse>;
   readonly readCredentials?: () => CodexCredentials;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly timeoutMs?: number;
 }
 
 function unavailable(message: string): DesktopCodexSpeechResult {
@@ -119,6 +127,10 @@ export async function transcribeCodexSpeech(
 ): Promise<DesktopCodexSpeechResult> {
   const readCredentials = deps.readCredentials ?? readCodexTokens;
   const sleep = deps.sleep ?? defaultSleep;
+  const timeoutMs = deps.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  // A timed-out attempt is not retried: two more would keep the user waiting minutes.
+  const timedOut = () =>
+    failed("Codex took too long to answer the transcription request. Try again.");
   let credentials: CodexCredentials;
   try {
     credentials = readCredentials();
@@ -147,14 +159,17 @@ export async function transcribeCodexSpeech(
 
   let lastError = failed("Transcription failed.");
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const signal = AbortSignal.timeout(timeoutMs);
     let response: CodexTranscribeFetchResponse;
     try {
       response = await deps.fetchImpl(CODEX_TRANSCRIBE_URL, {
         method: "POST",
         headers,
         body: form,
+        signal,
       });
     } catch {
+      if (signal.aborted) return timedOut();
       lastError = failed("The transcription request could not reach Codex. Try again later.");
       if (attempt < MAX_ATTEMPTS) {
         await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 1_000);
@@ -170,6 +185,7 @@ export async function transcribeCodexSpeech(
         }
         return { ok: true, value: payload.text };
       } catch {
+        if (signal.aborted) return timedOut();
         return failed("Transcription returned an unreadable response.");
       }
     }
