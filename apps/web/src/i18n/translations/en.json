@@ -13106,5 +13106,13 @@
   "c63d942911808821": "Green",
   "75f923f6e3e41def": "White",
   "04cabf0f2aa08368": "Black",
-  "a992afd4cdaa1317": "Cancel drawing"
+  "a992afd4cdaa1317": "Cancel drawing",
+  "10f09611876e172d": "Selected instance",
+  "66a97c6589866b61": "Model accounts",
+  "62a4bc7ec49a21a4": "One Google account",
+  "b9faa5f1210ab3f1": "No models yet",
+  "818c5cbbd06247f1": "Account for {model}",
+  "6cfc220afaa9ba85": "Every Antigravity model runs on the instance you pick. To run some models on another Google account, add another Antigravity instance and sign it in to that account.",
+  "a33c68674fc630eb": "Sign in and refresh the Antigravity instances to list their models here.",
+  "18fd278ad4c10ce1": "New turns with a model run on its chosen account, whichever Antigravity instance you picked the model from."
 }

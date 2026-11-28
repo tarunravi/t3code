@@ -20,6 +20,8 @@ import {
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
+  requiredScopesForServerSettingsPatch,
+  routeAntigravityModelSelection,
   ServerSettings,
   ServerSettingsPatch,
   withIdleCompaction,
@@ -167,6 +169,73 @@ it("drops a hand-edited non-string hidden tag and keeps the rest of the settings
   });
   expect(settings.hiddenThreadTags).toEqual(["private"]);
   expect(settings.hideTaggedThreads).toBe(true);
+});
+
+describe("Antigravity model accounts", () => {
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const accountA = ProviderInstanceId.make("antigravity");
+  const accountB = ProviderInstanceId.make("antigravity_work");
+  const settings = decodeServerSettings({
+    providerInstances: {
+      [accountA]: { driver: antigravity, enabled: true },
+      [accountB]: { driver: antigravity, enabled: true, displayName: "Work account" },
+      off: { driver: antigravity, enabled: false },
+      codex: { driver: "codex", enabled: true },
+    },
+    antigravityModelAccounts: {
+      "gemini-4-neon": accountA,
+      "gemini-4-hydrogen": accountB,
+      "gemini-4-argon": "off",
+      "gpt-5": "codex",
+      "gemini-4-carbon": "removed",
+    },
+  });
+  const select = (instanceId: string, model: string) => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    model,
+  });
+
+  it("decodes settings saved before routes existed", () => {
+    expect(decodeServerSettings({}).antigravityModelAccounts).toEqual({});
+  });
+
+  it("runs each mapped model on its account, whichever instance picked it", () => {
+    expect(routeAntigravityModelSelection(settings, select(accountA, "gemini-4-hydrogen"))).toEqual(
+      select(accountB, "gemini-4-hydrogen"),
+    );
+    expect(routeAntigravityModelSelection(settings, select(accountB, "gemini-4-neon"))).toEqual(
+      select(accountA, "gemini-4-neon"),
+    );
+    const options = { instanceId: accountA, model: "gemini-4-hydrogen", options: [] };
+    expect(routeAntigravityModelSelection(settings, options)).toEqual({
+      ...options,
+      instanceId: accountB,
+    });
+  });
+
+  it("keeps the picked instance for unmapped models and unusable routes", () => {
+    for (const selection of [
+      select(accountA, "gemini-4-flash"),
+      select(accountB, "gemini-4-hydrogen"),
+      select(accountA, "gemini-4-argon"),
+      select(accountA, "gpt-5"),
+      select(accountA, "gemini-4-carbon"),
+      select("codex", "gemini-4-hydrogen"),
+    ]) {
+      expect(routeAntigravityModelSelection(settings, selection)).toBe(selection);
+    }
+  });
+
+  it("patches one route at a time and needs provider authority", () => {
+    expect(
+      decodeServerSettingsPatch({
+        antigravityModelAccounts: { "gemini-4-neon": accountA, "gemini-4-hydrogen": null },
+      }).antigravityModelAccounts,
+    ).toEqual({ "gemini-4-neon": accountA, "gemini-4-hydrogen": null });
+    expect(requiredScopesForServerSettingsPatch({ antigravityModelAccounts: { x: null } })).toEqual(
+      ["providers:manage"],
+    );
+  });
 });
 
 describe("ServerSettings secret providers", () => {

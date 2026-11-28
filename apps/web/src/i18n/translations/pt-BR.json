@@ -13098,5 +13098,13 @@
   "c63d942911808821": "Verde",
   "75f923f6e3e41def": "Branco",
   "04cabf0f2aa08368": "Preto",
-  "a992afd4cdaa1317": "Cancelar desenho"
+  "a992afd4cdaa1317": "Cancelar desenho",
+  "10f09611876e172d": "Instância selecionada",
+  "66a97c6589866b61": "Contas por modelo",
+  "62a4bc7ec49a21a4": "Uma conta Google",
+  "b9faa5f1210ab3f1": "Nenhum modelo ainda",
+  "818c5cbbd06247f1": "Conta para {model}",
+  "6cfc220afaa9ba85": "Cada modelo do Antigravity roda na instância que você escolher. Para rodar alguns modelos em outra conta Google, adicione outra instância do Antigravity e entre nela com essa conta.",
+  "a33c68674fc630eb": "Entre e atualize as instâncias do Antigravity para listar os modelos delas aqui.",
+  "18fd278ad4c10ce1": "Novos turnos com um modelo rodam na conta escolhida para ele, seja qual for a instância do Antigravity em que você escolheu o modelo."
 }

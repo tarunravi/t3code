@@ -49,6 +49,7 @@ import {
   PreviewZoomFactor,
 } from "./preview.ts";
 import {
+  defaultInstanceIdForDriver,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderDriverKind,
@@ -1640,6 +1641,10 @@ export const ServerSettings = Schema.Struct({
   textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /** Antigravity model slug to the Antigravity instance, one per Google account, that runs it. */
+  antigravityModelAccounts: Schema.Record(TrimmedNonEmptyString, ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1714,6 +1719,41 @@ export const resolveProjectProviderInstanceEnabled = (
   return instanceConfig !== undefined
     ? resolveProviderInstanceEnabled(instanceConfig)
     : isUnconfiguredDefaultInstanceEnabled(instanceId);
+};
+
+const ANTIGRAVITY_DRIVER = ProviderDriverKind.make("antigravity");
+
+const configuredInstance = (
+  settings: Pick<ServerSettings, "providerInstances">,
+  instanceId: ProviderInstanceId,
+) =>
+  Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+
+/**
+ * Moves an Antigravity selection to the instance its model is routed to. A route to a missing,
+ * disabled, or non-Antigravity instance is ignored, so the selected instance runs it.
+ */
+export const routeAntigravityModelSelection = (
+  settings: Pick<ServerSettings, "providerInstances" | "antigravityModelAccounts">,
+  selection: ModelSelection,
+): ModelSelection => {
+  const targetId = Object.hasOwn(settings.antigravityModelAccounts, selection.model)
+    ? settings.antigravityModelAccounts[selection.model]
+    : undefined;
+  if (targetId === undefined || targetId === selection.instanceId) return selection;
+  const sourceDriver =
+    configuredInstance(settings, selection.instanceId)?.driver ??
+    (selection.instanceId === defaultInstanceIdForDriver(ANTIGRAVITY_DRIVER)
+      ? ANTIGRAVITY_DRIVER
+      : undefined);
+  const target = configuredInstance(settings, targetId);
+  return sourceDriver === ANTIGRAVITY_DRIVER &&
+    target?.driver === ANTIGRAVITY_DRIVER &&
+    resolveProviderInstanceEnabled(target)
+    ? { ...selection, instanceId: targetId }
+    : selection;
 };
 
 /** The text generator a selection names, if any; it takes precedence over a provider instance. */
@@ -2036,6 +2076,10 @@ export const ServerSettingsPatch = Schema.Struct({
   textGenerators: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(TextGeneratorConfig)),
   ),
+  // Merge per model; null removes a route.
+  antigravityModelAccounts: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(ProviderInstanceId)),
+  ),
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
@@ -2083,7 +2127,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providerInstances" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
-      key === "secretProviders"
+      key === "secretProviders" ||
+      key === "antigravityModelAccounts"
     ) {
       changesProviders = true;
     } else {

@@ -301,6 +301,7 @@ export function layerWithRegistry<Error>(
       store: ProjectionStore.ProjectionStoreV2Shape,
     ) => ProjectionStore.ProjectionStoreV2Shape;
     readonly managedPolicy?: ManagedPolicyDocument;
+    readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
     /** The instances the ingestor reads snapshots from, such as an endpoint behind a hub. */
     readonly providerInstances?: Partial<
       ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]
@@ -355,6 +356,7 @@ export function layerWithRegistry<Error>(
     Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
       ServerSettings.layerTest(
         {
+          ...options.serverSettings,
           responseStreamingMode: "turn",
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}

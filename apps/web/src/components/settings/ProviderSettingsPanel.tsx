@@ -104,6 +104,7 @@ import { useSecretSources } from "./SecretSourceInput";
 import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import { AntigravityModelAccountsSection } from "./AntigravityModelAccountsSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
@@ -595,6 +596,10 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.projectProviderInstanceOverrides === true,
   );
+  const supportsAntigravityModelAccounts = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.antigravityModelAccounts === true,
+  );
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1019,6 +1024,18 @@ export function EnvironmentProviderSettings({
         modelPreferences={settings.providerModelPreferences?.[row.instanceId]}
         favorites={favorites}
         actions={actions}
+        modelAccounts={
+          mode === "editor" && row.driver === "antigravity" && supportsAntigravityModelAccounts ? (
+            <AntigravityModelAccountsSection
+              providers={serverProviders}
+              routes={settings.antigravityModelAccounts}
+              readOnly={readOnly}
+              onRouteChange={(model, instanceId) =>
+                updateSettings({ antigravityModelAccounts: { [model]: instanceId } })
+              }
+            />
+          ) : undefined
+        }
       />
     );
   };
@@ -1308,6 +1325,7 @@ function ProviderInstanceRow({
   modelPreferences,
   favorites,
   actions,
+  modelAccounts,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
@@ -1330,6 +1348,7 @@ function ProviderInstanceRow({
     | undefined;
   readonly favorites: UnifiedSettings["favorites"];
   readonly actions: ProviderInstanceRowActions;
+  readonly modelAccounts: ReactNode;
 }) {
   const gt = useGT();
   const allProjects = useProjects();
@@ -1396,6 +1415,7 @@ function ProviderInstanceRow({
         ) : undefined
       }
       canWriteSettings={canWriteSettings}
+      modelAccounts={modelAccounts}
       setup={
         mode === "editor" && driver === "antigravity" ? (
           <ProviderSetupSection

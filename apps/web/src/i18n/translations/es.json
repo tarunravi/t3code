@@ -13093,5 +13093,13 @@
   "c63d942911808821": "Verde",
   "75f923f6e3e41def": "Blanco",
   "04cabf0f2aa08368": "Negro",
-  "a992afd4cdaa1317": "Cancelar dibujo"
+  "a992afd4cdaa1317": "Cancelar dibujo",
+  "10f09611876e172d": "Instancia seleccionada",
+  "66a97c6589866b61": "Cuentas por modelo",
+  "62a4bc7ec49a21a4": "Una cuenta de Google",
+  "b9faa5f1210ab3f1": "Aún no hay modelos",
+  "818c5cbbd06247f1": "Cuenta para {model}",
+  "6cfc220afaa9ba85": "Cada modelo de Antigravity se ejecuta en la instancia que elijas. Para ejecutar algunos modelos con otra cuenta de Google, añade otra instancia de Antigravity e inicia sesión en ella con esa cuenta.",
+  "a33c68674fc630eb": "Inicia sesión y actualiza las instancias de Antigravity para ver aquí sus modelos.",
+  "18fd278ad4c10ce1": "Los nuevos turnos con un modelo se ejecutan en la cuenta elegida para él, sin importar desde qué instancia de Antigravity elegiste el modelo."
 }

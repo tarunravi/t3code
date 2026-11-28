@@ -403,6 +403,7 @@ export function applyServerSettingsPatch(
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
+    antigravityModelAccounts: antigravityModelAccountsPatch,
     secretProviders: secretProvidersPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
@@ -622,6 +623,14 @@ export function applyServerSettingsPatch(
       : {}),
     ...(textGeneratorsPatch !== undefined
       ? { textGenerators: mergeSettingsEntries(current.textGenerators, textGeneratorsPatch) }
+      : {}),
+    ...(antigravityModelAccountsPatch !== undefined
+      ? {
+          antigravityModelAccounts: mergeSettingsEntries(
+            current.antigravityModelAccounts,
+            antigravityModelAccountsPatch,
+          ),
+        }
       : {}),
     ...(secretProvidersPatch !== undefined
       ? { secretProviders: mergeSettingsEntries(current.secretProviders, secretProvidersPatch) }

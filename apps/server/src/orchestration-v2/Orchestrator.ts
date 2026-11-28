@@ -14,6 +14,7 @@ import {
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadIssueKeysEqual } from "@t3tools/contracts";
+import { routeCommandModelAccount } from "./modelAccountRouting.ts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -16962,7 +16963,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+  const dispatchWithReceipt = Effect.fnUntraced(function* (
+    requestedCommand: OrchestrationV2ServerCommand,
+  ) {
+    const command =
+      "modelSelection" in requestedCommand && requestedCommand.modelSelection !== undefined
+        ? routeCommandModelAccount(
+            yield* serverSettings.getSettings.pipe(Effect.orDie),
+            requestedCommand,
+          )
+        : requestedCommand;
     // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
     // outside the locks its commit takes, so a fork right after a turn starts from that turn.
     if (

@@ -13099,5 +13099,13 @@
   "c63d942911808821": "Zielony",
   "75f923f6e3e41def": "Biały",
   "04cabf0f2aa08368": "Czarny",
-  "a992afd4cdaa1317": "Anuluj rysowanie"
+  "a992afd4cdaa1317": "Anuluj rysowanie",
+  "10f09611876e172d": "Wybrana instancja",
+  "66a97c6589866b61": "Konta dla modeli",
+  "62a4bc7ec49a21a4": "Jedno konto Google",
+  "b9faa5f1210ab3f1": "Brak modeli",
+  "818c5cbbd06247f1": "Konto dla {model}",
+  "6cfc220afaa9ba85": "Każdy model Antigravity działa na wybranej instancji. Aby uruchamiać niektóre modele na innym koncie Google, dodaj kolejną instancję Antigravity i zaloguj ją na to konto.",
+  "a33c68674fc630eb": "Zaloguj się i odśwież instancje Antigravity, aby wyświetlić tu ich modele.",
+  "18fd278ad4c10ce1": "Nowe tury z modelem działają na wybranym dla niego koncie, niezależnie od instancji Antigravity, z której wybrano model."
 }

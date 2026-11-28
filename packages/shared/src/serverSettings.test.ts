@@ -101,6 +101,18 @@ describe("serverSettings helpers", () => {
     expect([on.idleCompaction, on.compactIdleThreads]).toEqual(["beforeCacheExpires", true]);
   });
 
+  it("adds and clears Antigravity model routes one model at a time", () => {
+    const accountA = ProviderInstanceId.make("antigravity");
+    const accountB = ProviderInstanceId.make("antigravity_work");
+    const routed = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      antigravityModelAccounts: { "gemini-4-neon": accountA, "gemini-4-hydrogen": accountB },
+    });
+    expect(
+      applyServerSettingsPatch(routed, {
+        antigravityModelAccounts: { "gemini-4-hydrogen": null },
+      }).antigravityModelAccounts,
+    ).toEqual({ "gemini-4-neon": accountA });
+  });
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
