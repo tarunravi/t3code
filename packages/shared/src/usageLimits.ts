@@ -242,15 +242,34 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
 
 // Include every enabled login, even unreadable workspaces.
 function accountKeyResolver(reports: Iterable<AccountReport>) {
-  const workspaces = new Map<string, Set<string>>();
-  for (const report of reports) {
+  const reportList = [...reports];
+  // A report naming both an email and a credential lets a report with only that credential, such
+  // as a hub reading of a local login, resolve to the same account. A credential seen with two
+  // emails names neither.
+  const emailByCredential = new Map<string, string | null>();
+  for (const report of reportList) {
+    const emailKey = accountKey(report.driver, report.email);
+    const credentialKey = accountKey(report.driver, undefined, report.usageLimits);
+    if (!emailKey || !credentialKey) continue;
+    const known = emailByCredential.get(credentialKey);
+    emailByCredential.set(
+      credentialKey,
+      known === undefined || known === emailKey ? emailKey : null,
+    );
+  }
+  const identityKey = (report: AccountReport): string | null => {
     const key = accountKey(report.driver, report.email, report.usageLimits);
+    return (key && emailByCredential.get(key)) || key;
+  };
+  const workspaces = new Map<string, Set<string>>();
+  for (const report of reportList) {
+    const key = identityKey(report);
     if (key && report.workspaceId) {
       workspaces.set(key, (workspaces.get(key) ?? new Set()).add(report.workspaceId));
     }
   }
   return (report: AccountReport): string | null => {
-    const key = accountKey(report.driver, report.email, report.usageLimits);
+    const key = identityKey(report);
     if (!key) return null;
     if (report.workspaceId) return `${key}:${report.workspaceId}`;
     const known = workspaces.get(key);

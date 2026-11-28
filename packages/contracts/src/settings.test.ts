@@ -200,14 +200,14 @@ describe("Antigravity model accounts", () => {
   });
 
   it("runs each mapped model on its account, whichever instance picked it", () => {
-    expect(routeAntigravityModelSelection(settings, select(accountA, "gemini-4-hydrogen"))).toEqual(
-      select(accountB, "gemini-4-hydrogen"),
-    );
-    expect(routeAntigravityModelSelection(settings, select(accountB, "gemini-4-neon"))).toEqual(
-      select(accountA, "gemini-4-neon"),
-    );
+    expect(
+      routeAntigravityModelSelection(settings, null, select(accountA, "gemini-4-hydrogen")),
+    ).toEqual(select(accountB, "gemini-4-hydrogen"));
+    expect(
+      routeAntigravityModelSelection(settings, null, select(accountB, "gemini-4-neon")),
+    ).toEqual(select(accountA, "gemini-4-neon"));
     const options = { instanceId: accountA, model: "gemini-4-hydrogen", options: [] };
-    expect(routeAntigravityModelSelection(settings, options)).toEqual({
+    expect(routeAntigravityModelSelection(settings, null, options)).toEqual({
       ...options,
       instanceId: accountB,
     });
@@ -222,8 +222,23 @@ describe("Antigravity model accounts", () => {
       select(accountA, "gemini-4-carbon"),
       select("codex", "gemini-4-hydrogen"),
     ]) {
-      expect(routeAntigravityModelSelection(settings, selection)).toBe(selection);
+      expect(routeAntigravityModelSelection(settings, null, selection)).toBe(selection);
     }
+  });
+
+  it("ignores a route to an account the project disables", () => {
+    const project = ProjectId.make("project-personal");
+    const withOverride = {
+      ...settings,
+      projectSettingsOverrides: {
+        [project]: { providerInstances: { [accountB]: { enabled: false } } },
+      },
+    };
+    const selection = select(accountA, "gemini-4-hydrogen");
+    expect(routeAntigravityModelSelection(withOverride, project, selection)).toBe(selection);
+    expect(routeAntigravityModelSelection(withOverride, null, selection)).toEqual(
+      select(accountB, "gemini-4-hydrogen"),
+    );
   });
 
   it("patches one route at a time and needs provider authority", () => {

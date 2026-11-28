@@ -667,13 +667,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     onSessionStarted,
     onConfigOptionsUpdated,
     onAvailableCommands,
-    // The new sign-in may be another account. Clear and republish its limits so a failed read
-    // cannot fall back to them; the session start then reads the new account's limits.
+    // The new sign-in may be another account. Clear and republish its limits and email so a failed
+    // read cannot fall back to them; the session start then reads the new account's.
     onSignedIn: resetUsage.pipe(
       Effect.andThen(
         SubscriptionRef.update(metadata, (state) => {
-          const { usageLimits: _previousAccount, ...draft } = state.draft;
-          return { ...state, draft };
+          const { usageLimits: _previousLimits, ...draft } = state.draft;
+          const { email: _previousEmail, ...auth } = draft.auth;
+          return { ...state, draft: { ...draft, auth } };
         }),
       ),
       Effect.andThen(

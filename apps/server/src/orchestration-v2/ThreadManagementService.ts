@@ -77,6 +77,7 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 import { checkOutput, outputRequestProblem } from "./runOutput.ts";
+import { routeCommandModelAccount } from "./modelAccountRouting.ts";
 import { routineSpan } from "@t3tools/shared/observability";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
@@ -846,10 +847,26 @@ const make = Effect.gen(function* () {
     }
   };
 
+  // Routes before validation, so the enablement check sees the account that will run the turn.
+  // A thread that cannot be read routes machine-wide; validation then reports the failure.
+  const routeDispatchModelAccount = (command: OrchestrationV2ServerCommand) =>
+    serverSettings.getSettings.pipe(
+      Effect.orDie,
+      Effect.flatMap((settings) =>
+        routeCommandModelAccount(settings, command, (threadId) =>
+          orchestrator.getThreadRecords(threadId, []).pipe(
+            Effect.map((projection): ProjectId | null => projection.thread.projectId),
+            Effect.orElseSucceed(() => null),
+          ),
+        ),
+      ),
+    );
+
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
     ensureCommandTranscripts(command).pipe(
-      Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
+      Effect.andThen(routeDispatchModelAccount(command)),
+      Effect.tap(assertDispatchTargetEnabled),
+      Effect.flatMap(orchestrator.dispatch),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (

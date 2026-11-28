@@ -77,7 +77,9 @@ export function ThreadDetailsUsage({
     >
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
         {resolved?.kind === "pool"
-          ? resolved.windows.map((window) => <PoolRow key={window.id} window={window} now={now} />)
+          ? resolved.rows.map(({ key, window, accountLabel }) => (
+              <PoolRow key={key} window={window} accountLabel={accountLabel} now={now} />
+            ))
           : resolved &&
             (quotas.length === 0 || limitsNotice(resolved.limits) === null) && (
               <InstanceRows limits={resolved.limits} now={now} />
@@ -232,7 +234,15 @@ function LimitRow({
   );
 }
 
-function PoolRow({ window, now }: { readonly window: LimitPoolWindow; readonly now: number }) {
+function PoolRow({
+  window,
+  accountLabel,
+  now,
+}: {
+  readonly window: LimitPoolWindow;
+  readonly accountLabel: string | null;
+  readonly now: number;
+}) {
   const gt = useGT();
   const m = useMessages();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
@@ -251,7 +261,7 @@ function PoolRow({ window, now }: { readonly window: LimitPoolWindow; readonly n
       : null;
   return (
     <UsageRow
-      label={window.label}
+      label={accountLabel ? `${accountLabel} · ${window.label}` : window.label}
       fill={left}
       tone={limitTone(left)}
       tick={window.paceRemainingPercent}

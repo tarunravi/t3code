@@ -106,7 +106,7 @@ function shown(
   if (resolved?.kind !== "pool") return resolved;
   return {
     kind: resolved.kind,
-    rows: resolved.windows.map((window) => ({
+    rows: resolved.rows.map(({ window }) => ({
       label: window.label,
       left: window.remainingPercent,
       accounts: window.members.length,
@@ -147,6 +147,43 @@ describe("resolveThreadDetailsLimits", () => {
       kind: "pool",
       rows: [{ label: "Session", left: 70, accounts: 1, from: { hubs: ["Hub"], signedIn: false } }],
     });
+  });
+});
+
+describe("resolveThreadDetailsLimits for Antigravity accounts behind a hub", () => {
+  it("gives each account its own keyed, labeled row", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const gemini = (usedPercent: number): ServerProviderUsageLimits => ({
+      checkedAt,
+      windows: [{ id: "gemini-5h", kind: "session", label: "Gemini · 5-hour", usedPercent }],
+    });
+    const instance: ServerProvider = {
+      ...claudeInstance(unsupported),
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: antigravity,
+    };
+    const source: UsageLimitSourceSnapshot = {
+      ...hub("Hub", []),
+      accounts: [
+        { id: "a.json", driver: antigravity, email: "me@gmail.com", usageLimits: gemini(10) },
+        { id: "b.json", driver: antigravity, email: "me@work.example", usageLimits: gemini(70) },
+      ],
+    };
+    const resolved = resolveThreadDetailsLimits(
+      instance.instanceId,
+      null,
+      [instance],
+      [source],
+      now,
+    );
+    if (resolved?.kind !== "pool") throw new Error("expected a pool");
+    expect(
+      resolved.rows.map(({ accountLabel, window }) => [accountLabel, window.remainingPercent]),
+    ).toEqual([
+      ["me@gmail.com", 90],
+      ["me@work.example", 30],
+    ]);
+    expect(new Set(resolved.rows.map((row) => row.key)).size).toBe(2);
   });
 });
 

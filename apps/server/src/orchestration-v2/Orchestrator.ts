@@ -16968,9 +16968,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     const command =
       "modelSelection" in requestedCommand && requestedCommand.modelSelection !== undefined
-        ? routeCommandModelAccount(
+        ? yield* routeCommandModelAccount(
             yield* serverSettings.getSettings.pipe(Effect.orDie),
             requestedCommand,
+            (threadId) =>
+              findThread(threadId).pipe(Effect.map((thread) => thread?.projectId ?? null)),
           )
         : requestedCommand;
     // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,

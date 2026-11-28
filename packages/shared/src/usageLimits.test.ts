@@ -2139,6 +2139,50 @@ describe("Antigravity limits per Google account", () => {
     expect(pool?.accounts).toHaveLength(1);
   });
 
+  it("merges a local login with its hub reading, which names only the Google account fingerprint", () => {
+    const hubReading = (fingerprint: string, usedPercent: number) => ({
+      id: `antigravity-${fingerprint}.json`,
+      driver: ProviderDriverKind.make("antigravity"),
+      usageLimits: {
+        checkedAt: "2026-09-03T11:30:00.000Z",
+        credentialFingerprint: fingerprint,
+        windows: [{ ...gemini, usedPercent }],
+      },
+    });
+    const result = collectLimitPools(
+      collectLimitAccounts(
+        new Map([
+          [
+            EnvironmentId.make("local"),
+            {
+              entry: { target: { label: "Local" } },
+              serverConfig: {
+                providers: [
+                  antigravity("antigravity", "me@gmail.com", 10),
+                  antigravity("antigravity_work", "me@work.example", 20),
+                ],
+                usageLimitSources: [
+                  {
+                    id: UsageLimitSourceId.make("hub"),
+                    kind: "cliproxy" as const,
+                    label: "hub",
+                    checkedAt: "2026-09-03T11:30:00.000Z",
+                    accounts: [
+                      hubReading("fingerprint-me@gmail.com", 40),
+                      hubReading("fingerprint-someone-else", 50),
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        ]),
+      ),
+      now,
+    );
+    expect(result.map((pool) => pool.windows[0]?.remainingPercent)).toEqual([60, 80, 50]);
+  });
+
   it("still pools interchangeable Codex accounts", () => {
     const codex = (instanceId: string, email: string) =>
       provider({

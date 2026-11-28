@@ -17,9 +17,16 @@ import {
 } from "@t3tools/shared/usageLimits";
 import { limitsNotice } from "@t3tools/shared/usageLimitsCopy";
 
+export interface ThreadDetailsPoolRow {
+  readonly key: string;
+  readonly window: LimitPoolWindow;
+  /** Names the account of a per-account pool, so two accounts' same window read apart. */
+  readonly accountLabel: string | null;
+}
+
 export type ThreadDetailsLimits =
   | { readonly kind: "instance"; readonly limits: ServerProviderUsageLimits }
-  | { readonly kind: "pool"; readonly windows: readonly LimitPoolWindow[] };
+  | { readonly kind: "pool"; readonly rows: readonly ThreadDetailsPoolRow[] };
 
 // collectLimitAccounts keys its input by environment; the card reads one, so any id serves.
 const CARD_ENVIRONMENT = EnvironmentId.make("thread-details");
@@ -121,7 +128,19 @@ function hubPool(
     ],
   ]);
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
-  return pools.length > 0 ? { kind: "pool", windows: pools.flatMap(displayLimitWindows) } : null;
+  if (pools.length === 0) return null;
+  return {
+    kind: "pool",
+    rows: pools.flatMap((pool) =>
+      displayLimitWindows(pool).map((window) => ({
+        key: `${pool.key}:${window.id}`,
+        window,
+        accountLabel: pool.account
+          ? (pool.account.displayName ?? pool.account.email ?? null)
+          : null,
+      })),
+    ),
+  };
 }
 
 export function poolSources(window: LimitPoolWindow) {

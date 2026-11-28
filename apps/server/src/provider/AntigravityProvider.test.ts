@@ -1146,26 +1146,31 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
     }),
   );
 
-  it.effect("names the signed-in Google account from its quota read until sign-out", () =>
-    Effect.gen(function* () {
-      const readResult = yield* Deferred.make<ServerProviderUsageLimits>();
-      const harness = yield* makeHarness({
-        probeUsage: Deferred.await(readResult),
-        usageAccountEmail: Effect.succeed("me@work.example"),
-      });
-      const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
-      yield* harness.initialize;
-      yield* Deferred.succeed(readResult, { checkedAt: "2026-10-09T12:00:00.000Z", windows: [] });
-      expect((yield* published)?.auth.email).toBe("me@work.example");
-      yield* harness.provider.onSessionStarted(started, "/workspace");
-      expect((yield* harness.provider.snapshot.getSnapshot).auth).toMatchObject({
-        status: "authenticated",
-        email: "me@work.example",
-      });
-      expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBe("me@work.example");
-      yield* harness.provider.onSignedOut;
-      expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBeUndefined();
-    }),
+  it.effect(
+    "names the signed-in Google account from its quota read until sign-in or sign-out",
+    () =>
+      Effect.gen(function* () {
+        const readResult = yield* Deferred.make<ServerProviderUsageLimits>();
+        const harness = yield* makeHarness({
+          probeUsage: Deferred.await(readResult),
+          usageAccountEmail: Effect.succeed("me@work.example"),
+        });
+        const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
+        yield* harness.initialize;
+        yield* Deferred.succeed(readResult, { checkedAt: "2026-10-09T12:00:00.000Z", windows: [] });
+        expect((yield* published)?.auth.email).toBe("me@work.example");
+        yield* harness.provider.onSessionStarted(started, "/workspace");
+        expect((yield* harness.provider.snapshot.getSnapshot).auth).toMatchObject({
+          status: "authenticated",
+          email: "me@work.example",
+        });
+        expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBe("me@work.example");
+        yield* harness.provider.onSignedIn;
+        expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBeUndefined();
+        yield* harness.provider.onSessionStarted(started, "/workspace");
+        yield* harness.provider.onSignedOut;
+        expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBeUndefined();
+      }),
   );
 
   it.effect("a quota read for the previous account is dropped after a new sign-in", () =>

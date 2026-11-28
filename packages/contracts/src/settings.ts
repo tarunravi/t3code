@@ -1733,10 +1733,15 @@ const configuredInstance = (
 
 /**
  * Moves an Antigravity selection to the instance its model is routed to. A route to a missing,
- * disabled, or non-Antigravity instance is ignored, so the selected instance runs it.
+ * non-Antigravity instance, or one disabled for the project, is ignored, so the selected
+ * instance runs it.
  */
 export const routeAntigravityModelSelection = (
-  settings: Pick<ServerSettings, "providerInstances" | "antigravityModelAccounts">,
+  settings: Pick<
+    ServerSettings,
+    "providerInstances" | "projectSettingsOverrides" | "antigravityModelAccounts"
+  >,
+  projectId: ProjectId | null,
   selection: ModelSelection,
 ): ModelSelection => {
   const targetId = Object.hasOwn(settings.antigravityModelAccounts, selection.model)
@@ -1751,7 +1756,7 @@ export const routeAntigravityModelSelection = (
   const target = configuredInstance(settings, targetId);
   return sourceDriver === ANTIGRAVITY_DRIVER &&
     target?.driver === ANTIGRAVITY_DRIVER &&
-    resolveProviderInstanceEnabled(target)
+    resolveProjectProviderInstanceEnabled(settings, projectId, targetId)
     ? { ...selection, instanceId: targetId }
     : selection;
 };

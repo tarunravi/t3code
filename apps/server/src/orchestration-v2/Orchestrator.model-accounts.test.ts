@@ -21,6 +21,7 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 const antigravity = ProviderDriverKind.make("antigravity");
 const accountA = ProviderInstanceId.make("antigravity");
 const accountB = ProviderInstanceId.make("antigravity_work");
+const personalProject = ProjectId.make("project:model-accounts-personal");
 const adapter = (instanceId: ProviderInstanceId) =>
   ({
     instanceId,
@@ -42,6 +43,9 @@ const layerTest = Layer.mergeAll(
         providerInstances: {
           [accountA]: { driver: antigravity, enabled: true },
           [accountB]: { driver: antigravity, enabled: true },
+        },
+        projectSettingsOverrides: {
+          [personalProject]: { providerInstances: { [accountB]: { enabled: false } } },
         },
         antigravityModelAccounts: { "gemini-4-neon": accountA, "gemini-4-hydrogen": accountB },
       },
@@ -84,6 +88,39 @@ it.effect("records each mapped Antigravity model on the account that runs it", (
     assert.deepEqual(switched.thread.modelSelection, {
       instanceId: accountA,
       model: "gemini-4-neon",
+    });
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps the picked account when the route's account is disabled for the project", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:model-accounts-personal");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-model-accounts-personal"),
+      threadId,
+      projectId: personalProject,
+      title: "Model accounts",
+      modelSelection: { instanceId: accountA, model: "gemini-4-hydrogen" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.model-selection.set",
+      commandId: CommandId.make("switch-model-accounts-personal"),
+      threadId,
+      modelSelection: { instanceId: accountA, model: "gemini-4-hydrogen" },
+    });
+    const thread = yield* projections.getThreadProjection(threadId);
+    assert.deepEqual(thread.thread.modelSelection, {
+      instanceId: accountA,
+      model: "gemini-4-hydrogen",
     });
   }).pipe(Effect.provide(layerTest)),
 );

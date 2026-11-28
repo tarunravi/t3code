@@ -219,6 +219,64 @@ it.effect(
   },
 );
 
+it.effect(
+  "the dispatch chokepoint checks the Antigravity account a model is routed to, not the picked one",
+  () => {
+    const projectId = ProjectId.make("project:thread-management:chokepoint");
+    const threadId = ThreadId.make("thread:thread-management:chokepoint");
+    const picked = ProviderInstanceId.make("antigravity");
+    const routed = ProviderInstanceId.make("antigravity_work");
+    const dispatched: Array<unknown> = [];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: { id: threadId, projectId, deletedAt: null },
+            } as unknown as OrchestrationV2ThreadProjection),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push("modelSelection" in command ? command.modelSelection : undefined);
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+        }),
+      ),
+      Layer.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [picked]: { driver: ProviderDriverKind.make("antigravity"), enabled: true },
+            [routed]: { driver: ProviderDriverKind.make("antigravity"), enabled: true },
+          },
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [picked]: { enabled: false } } },
+          },
+          antigravityModelAccounts: { "gemini-4-hydrogen": routed },
+        }),
+      ),
+      Layer.provideMerge(layerReceiptsTest),
+    );
+
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:thread-management:chokepoint-routed"),
+        threadId,
+        messageId: MessageId.make("message:thread-management:chokepoint-routed"),
+        text: "Hello",
+        attachments: [],
+        modelSelection: { instanceId: picked, model: "gemini-4-hydrogen" },
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      expect(dispatched).toEqual([{ instanceId: routed, model: "gemini-4-hydrogen" }]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
 it.effect.each([
   { label: "fails a send that starts a turn", running: false },
   { label: "still steers a running turn", running: true },
