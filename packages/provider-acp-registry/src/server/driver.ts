@@ -66,6 +66,7 @@ import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpRegistryAuth from "./auth.ts";
 import * as AcpRegistryAuthenticationState from "./authenticationState.ts";
+import { isDevinAgent } from "./devinAcp.ts";
 import { readDevinUsageLimits } from "./devinUsageLimits.ts";
 import {
   acpRegistryCurrentModelOptions,
@@ -784,14 +785,13 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
     });
     // Devin is the only registry agent whose plan quota T3 can read. The manager keeps usage only
     // from checkProvider and checkUsageLimits; enrichment's snapshots never replace it.
-    const checkDevinUsageLimits =
-      effectiveConfig.agentId.trim().toLowerCase() === "devin"
-        ? readDevinUsageLimits(processEnvironment).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-          )
-        : undefined;
+    const checkDevinUsageLimits = isDevinAgent(effectiveConfig)
+      ? readDevinUsageLimits(processEnvironment).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        )
+      : undefined;
     const withDevinUsageLimits = (provider: ServerProvider) =>
       checkDevinUsageLimits === undefined ||
       !provider.enabled ||

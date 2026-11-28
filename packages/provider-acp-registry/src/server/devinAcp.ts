@@ -2,6 +2,12 @@ import type * as AcpSchema from "effect-acp/compat";
 import type { AcpToolCallState } from "@t3tools/provider-acp/server/runtimeModel";
 import type { AcpAdapterV2SubagentUpdate } from "@t3tools/provider-acp/server/adapter";
 
+import type { AcpRegistrySettings } from "../settings.ts";
+
+/** Whether the settings run the registry's Devin agent; a local command named "devin" is the user's own. */
+export const isDevinAgent = (settings: Pick<AcpRegistrySettings, "source" | "agentId">) =>
+  settings.source !== "local" && settings.agentId.trim().toLowerCase() === "devin";
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)

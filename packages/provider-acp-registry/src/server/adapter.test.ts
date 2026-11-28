@@ -12,11 +12,18 @@ describe("acpRegistryPromptFailure", () => {
     const at = (iso: string) => DateTime.makeUnsafe(iso);
     const cases = [
       {
-        name: "Devin request limit, relative reset",
+        // Resuming 23 seconds later would hit the limit again; the resume waits at least 30.
+        name: "Devin request limit, relative reset sooner than the minimum resume delay",
         message:
           "Reached request rate limit. Please switch to a different model or contact support. Your limit will reset in 23 seconds (at 22:57 UTC).",
         now: at("2026-11-22T22:56:40Z"),
-        resetAt: "2026-11-22T22:57:03.000Z",
+        resetAt: "2026-11-22T22:57:10.000Z",
+      },
+      {
+        name: "relative reset with a thousands separator",
+        message: "Reached request rate limit. Your limit will reset in 1,000 seconds.",
+        now: at("2026-11-22T22:00:00Z"),
+        resetAt: "2026-11-22T22:16:40.000Z",
       },
       {
         // The minute-precision clock already passed; the seconds count still wins.

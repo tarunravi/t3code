@@ -8,6 +8,7 @@ import {
   normalizeDevinToolCall,
   extractDevinSubagentUpdate,
   devinAnswerablePermissionOptions,
+  isDevinAgent,
 } from "./devinAcp.ts";
 import { extractDroidElicitationForm } from "./droidAcp.ts";
 import { makeKimiPromptOutcomeWatch } from "./kimiAcp.ts";
@@ -134,6 +135,8 @@ const RESET_IN_PART =
 const RESET_AT_UTC_CLOCK = /\bat\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*UTC\b/i;
 // A minute-precision clock time just behind now is this reset, not tomorrow's.
 const RESET_CLOCK_GRACE_MS = 5 * 60_000;
+// A limit that resets seconds away would resume, fail again, and resume in a tight loop.
+const MIN_RESUME_DELAY_MS = 30_000;
 const DAY_MS = 86_400_000;
 
 function resetUnitMs(unit: string): number {
@@ -153,7 +156,9 @@ function usageLimitResetAt(message: string, now: DateTime.Utc): string | undefin
   const relative = RESET_IN.exec(message)?.[1];
   if (relative !== undefined) {
     let delayMs = 0;
-    for (const [, amount, unit] of relative.matchAll(RESET_IN_PART)) {
+    for (const [, amount, unit] of relative
+      .replace(/(\d),(?=\d{3}\b)/g, "$1")
+      .matchAll(RESET_IN_PART)) {
       delayMs += Number(amount) * resetUnitMs(unit!);
     }
     if (delayMs > 0) return DateTime.formatIso(DateTime.add(now, { milliseconds: delayMs }));
@@ -186,11 +191,18 @@ export function acpRegistryPromptFailure(
     return makeProviderFailure({ ...request, class: "usage_limit" });
   }
   if (USAGE_LIMIT_MESSAGE.test(cause.errorMessage)) {
+    const resetAt = usageLimitResetAt(cause.errorMessage, now);
+    const earliestResumeMs = DateTime.toEpochMillis(now) + MIN_RESUME_DELAY_MS;
     return makeProviderFailure({
       ...request,
       class: "usage_limit",
       retryable: true,
-      resetAt: usageLimitResetAt(cause.errorMessage, now) ?? null,
+      resetAt:
+        resetAt === undefined
+          ? null
+          : Date.parse(resetAt) < earliestResumeMs
+            ? DateTime.formatIso(DateTime.makeUnsafe(earliestResumeMs))
+            : resetAt,
     });
   }
   return makeProviderFailure({ ...request, class: "provider_error" });
@@ -256,7 +268,7 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
   const registryAgentId = options.settings.source === "local" ? "" : options.settings.agentId;
   const startupKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : registryAgentId;
-  const isDevin = registryAgentId === "devin";
+  const isDevin = isDevinAgent(options.settings);
   const isAntigravityCli =
     options.settings.source === "local" &&
     /^(?:agy|antigravity)(?:\.(?:exe|cmd|bat))?$/i.test(
@@ -349,7 +361,7 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
           : {}),
     // A live probe verified glm-acp-agent's per-turn usage. Devin's is enabled without one yet:
     // a prompt response without usage leaves the turn's usage unavailable, as before.
-    ...(isGlm || registryAgentId === "devin" ? { reportsPerTurnPromptUsage: true } : {}),
+    ...(isGlm || isDevin ? { reportsPerTurnPromptUsage: true } : {}),
     ...(watchKimiPromptOutcome === undefined
       ? {}
       : {
