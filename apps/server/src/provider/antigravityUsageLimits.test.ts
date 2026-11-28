@@ -68,6 +68,7 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
     tokenStatus?: number;
     refreshToken?: string;
     userId?: string;
+    email?: string;
     userInfoAt?: number;
     missingToken?: boolean;
     authMethod?: "oauth-personal" | "oauth-business" | "gemini-api-key";
@@ -115,7 +116,7 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
         return HttpClientResponse.fromWeb(
           request,
           options.userId
-            ? Response.json({ id: options.userId, email: "someone@example.com" })
+            ? Response.json({ id: options.userId, email: options.email ?? "someone@example.com" })
             : Response.json({}, { status: 403 }),
         );
       }
@@ -598,6 +599,36 @@ describe("Antigravity subscription limits", () => {
       expect(machineB.credentialFingerprint).toBe(machineA.credentialFingerprint);
       expect(otherAccount.credentialFingerprint).not.toBe(machineA.credentialFingerprint);
       expect(JSON.stringify(machineA)).not.toMatch(/google-user-1|someone@example.com/);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("reports each signed-in Google account's email beside its limits", () =>
+    Effect.gen(function* () {
+      const personal = yield* fixture({
+        refreshToken: "refresh-a",
+        userId: "google-user-1",
+        email: "me@gmail.com",
+      });
+      const work = yield* fixture({
+        refreshToken: "refresh-b",
+        userId: "google-user-2",
+        email: "me@work.example",
+      });
+      const personalLimits = yield* personal.probe;
+      const workLimits = yield* work.probe;
+      expect(yield* personal.accountEmail).toBe("me@gmail.com");
+      expect(yield* work.accountEmail).toBe("me@work.example");
+      expect(workLimits.credentialFingerprint).not.toBe(personalLimits.credentialFingerprint);
+      expect(workLimits.windows.map((window) => window.id)).toEqual(
+        personalLimits.windows.map((window) => window.id),
+      );
+      // A new sign-in may be another account, so the old email must not label it.
+      yield* personal.clear;
+      expect(yield* personal.accountEmail).toBeUndefined();
+
+      const unnamed = yield* fixture({});
+      yield* unnamed.probe;
+      expect(yield* unnamed.accountEmail).toBeUndefined();
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 

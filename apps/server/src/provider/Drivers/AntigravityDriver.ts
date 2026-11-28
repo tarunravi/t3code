@@ -672,6 +672,7 @@ export const AntigravityDriver: ProviderDriver<
       stampIdentity: classifyModels,
       probe,
       probeUsage: usage.probe,
+      usageAccountEmail: usage.accountEmail,
       clearUsage: usage.clear,
       auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
       ...(rememberedRuntimeModes ? { rememberedRuntimeModes } : {}),

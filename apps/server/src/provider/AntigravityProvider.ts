@@ -214,6 +214,8 @@ interface AntigravityProviderOptions {
   >;
   readonly supportsTextGeneration: Effect.Effect<boolean>;
   readonly probeUsage?: Effect.Effect<ServerProviderUsageLimits>;
+  /** The Google account email the last usage probe read, if it reported one. */
+  readonly usageAccountEmail?: Effect.Effect<string | undefined>;
   readonly clearUsage?: Effect.Effect<void>;
   readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities;
   readonly auth?: { readonly type: string; readonly label: string };
@@ -328,16 +330,22 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       usageRead,
       options.probeUsage.pipe(
         Effect.flatMap((probed) =>
-          SubscriptionRef.update(metadata, (state) => ({
-            ...state,
-            draft: {
-              ...state.draft,
-              usageLimits: resolveUsageLimitsAfterProbe({
-                published: state.draft.usageLimits,
-                probed,
-              }),
-            },
-          })),
+          Effect.flatMap(options.usageAccountEmail ?? Effect.undefined, (email) =>
+            SubscriptionRef.update(metadata, (state) => ({
+              ...state,
+              draft: {
+                ...state.draft,
+                // A quota read with a saved sign-in names the account before any session starts.
+                ...(email && state.draft.auth.status !== "unauthenticated"
+                  ? { auth: { ...state.draft.auth, email } }
+                  : {}),
+                usageLimits: resolveUsageLimitsAfterProbe({
+                  published: state.draft.usageLimits,
+                  probed,
+                }),
+              },
+            })),
+          ),
         ),
         // Enrichment cannot change published limits; a health check publishes them.
         Effect.andThen(
@@ -500,6 +508,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             status: "authenticated",
             type: options.auth?.type ?? "oauth-personal",
             label: options.auth?.label ?? "Google account",
+            // Sign-out clears the email, so one kept here belongs to this sign-in.
+            ...(draft.auth.email ? { email: draft.auth.email } : {}),
           },
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult, thinkingLevels, {

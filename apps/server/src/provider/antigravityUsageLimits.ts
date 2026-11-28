@@ -53,7 +53,10 @@ const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
   expires_in: Schema.Number.check(Schema.isGreaterThan(0)),
 });
-const UserInfo = Schema.Struct({ id: Schema.NonEmptyString });
+const UserInfo = Schema.Struct({
+  id: Schema.NonEmptyString,
+  email: Schema.optional(Schema.String),
+});
 const Quota = Schema.Struct({
   remainingFraction: Schema.optional(Schema.Number),
   resetTime: Schema.optional(Schema.String),
@@ -336,9 +339,17 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   );
   const readKeyringSecret = input.readKeyringSecret ?? readCliKeyringSecret(platform, architecture);
   let cached:
-    | { fingerprint: string; account: string; accessToken: string; expiresAt: number }
+    | {
+        fingerprint: string;
+        account: string;
+        email: string | undefined;
+        accessToken: string;
+        expiresAt: number;
+      }
     | undefined;
   let generation = 0;
+  // The Google account of the last read, so settings and the Usage tab can name each account.
+  let accountEmail: string | undefined;
 
   const request = (request: HttpClientRequest.HttpClientRequest) =>
     client.execute(request).pipe(
@@ -346,6 +357,27 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.json),
       Effect.timeout("10 seconds"),
+    );
+  const readAccount = (
+    accessToken: string,
+    fallback: Effect.Effect<string, never, Digest.Digest>,
+  ) =>
+    request(
+      HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
+        HttpClientRequest.setHeaders({ Authorization: `Bearer ${accessToken}` }),
+      ),
+    ).pipe(
+      Effect.flatMap((response) =>
+        Effect.all({
+          fingerprint: antigravityAccountFingerprint(response),
+          email: decodeUserInfo(response).pipe(
+            Effect.map((info) => info.email?.trim() || undefined),
+          ),
+        }),
+      ),
+      Effect.catch(() =>
+        fallback.pipe(Effect.map((fingerprint) => ({ fingerprint, email: undefined }))),
+      ),
     );
   const read = Effect.gen(function* () {
     const startedGeneration = generation;
@@ -356,6 +388,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
     const now = yield* Clock.currentTimeMillis;
     let accessToken: string;
     let account: string;
+    let email: string | undefined;
     let projectId: string | undefined;
     if (!(yield* fs.exists(tokenPath))) {
       cached = undefined;
@@ -382,14 +415,10 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         });
       }
       accessToken = token.access_token;
-      account = yield* request(
-        HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
-          HttpClientRequest.setHeaders({ Authorization: `Bearer ${accessToken}` }),
-        ),
-      ).pipe(
-        Effect.flatMap(antigravityAccountFingerprint),
-        Effect.catch(() => sha256(`antigravity-cli\0${token.refresh_token || accessToken}`)),
-      );
+      ({ fingerprint: account, email } = yield* readAccount(
+        accessToken,
+        sha256(`antigravity-cli\0${token.refresh_token || accessToken}`),
+      ));
     } else {
       const token = yield* fs.readFileString(tokenPath).pipe(Effect.flatMap(decodeTokenFile));
       projectId = token.project_id;
@@ -410,18 +439,15 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         ).pipe(Effect.flatMap(decodeTokenResponse));
         accessToken = refreshed.access_token;
         // Use Google account IDs to merge accounts across environments; refresh tokens differ per machine.
-        account = yield* request(
-          HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
-            HttpClientRequest.setHeaders({ Authorization: `Bearer ${accessToken}` }),
-          ),
-        ).pipe(
-          Effect.flatMap(antigravityAccountFingerprint),
-          Effect.orElseSucceed(() => fingerprint),
-        );
+        ({ fingerprint: account, email } = yield* readAccount(
+          accessToken,
+          Effect.succeed(fingerprint),
+        ));
         if (generation === startedGeneration) {
           cached = {
             fingerprint,
             account,
+            email,
             accessToken,
             expiresAt: now + refreshed.expires_in * 1000,
           };
@@ -429,6 +455,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       } else {
         accessToken = cached.accessToken;
         account = cached.account;
+        email = cached.email;
       }
     }
     const endpoints = ENDPOINTS[input.authMethod];
@@ -480,6 +507,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         message: "Antigravity did not return usable quota information.",
       });
     }
+    if (generation === startedGeneration) accountEmail = email;
     return { ...makeUsageLimits({ checkedAt, windows }), credentialFingerprint: account };
   });
   const probe = read.pipe(
@@ -497,8 +525,10 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   );
   return {
     probe,
+    accountEmail: Effect.sync(() => accountEmail),
     clear: Effect.sync(() => {
       cached = undefined;
+      accountEmail = undefined;
       generation++;
     }),
   };

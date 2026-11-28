@@ -529,7 +529,10 @@ export interface LimitPoolWindow {
 }
 
 export interface LimitPool {
+  readonly key: string;
   readonly driver: ServerProvider["driver"];
+  /** The one account of a pool that is not shared across accounts. */
+  readonly account: LimitAccount | null;
   readonly accounts: readonly LimitAccount[];
   readonly windows: readonly LimitPoolWindow[];
 }
@@ -581,17 +584,24 @@ const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   other: 3,
 };
 
+// Antigravity accounts are not interchangeable: model routes pin each model to one account.
+const POOLS_PER_ACCOUNT: ReadonlySet<string> = new Set(["antigravity"]);
+
 export function collectLimitPools(
   accounts: readonly LimitAccount[],
   now: number,
 ): readonly LimitPool[] {
-  const byDriver = new Map<ServerProvider["driver"], LimitAccount[]>();
+  const byPool = new Map<string, LimitAccount[]>();
   for (const account of accounts) {
-    const list = byDriver.get(account.driver);
+    const key = POOLS_PER_ACCOUNT.has(account.driver)
+      ? `${account.driver}:${account.key}`
+      : account.driver;
+    const list = byPool.get(key);
     if (list) list.push(account);
-    else byDriver.set(account.driver, [account]);
+    else byPool.set(key, [account]);
   }
-  return [...byDriver].map(([driver, members]) => {
+  return [...byPool].map(([key, members]) => {
+    const driver = members[0]!.driver;
     const orderWindow = members
       .flatMap((account) => account.limits.windows)
       .sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind])[0];
@@ -610,7 +620,13 @@ export function collectLimitPools(
         accountSortName(left).localeCompare(accountSortName(right)) ||
         left.key.localeCompare(right.key),
     );
-    return { driver, accounts: sorted, windows: poolWindows(sorted, now) };
+    return {
+      key,
+      driver,
+      account: POOLS_PER_ACCOUNT.has(driver) ? members[0]! : null,
+      accounts: sorted,
+      windows: poolWindows(sorted, now),
+    };
   });
 }
 

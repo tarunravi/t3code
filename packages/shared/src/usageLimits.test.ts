@@ -2084,3 +2084,71 @@ describe("ChatGPT sharing presentation", () => {
     ).toBe(false);
   });
 });
+
+describe("Antigravity limits per Google account", () => {
+  const gemini = { ...window, id: "gemini-5h", label: "Gemini · 5-hour" };
+  const antigravity = (instanceId: string, email: string | undefined, usedPercent: number) =>
+    provider({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: ProviderDriverKind.make("antigravity"),
+      displayName: instanceId === "antigravity" ? "Antigravity" : "Antigravity work",
+      auth: { status: "authenticated", ...(email ? { email } : {}) },
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        credentialFingerprint: `fingerprint-${email ?? instanceId}`,
+        windows: [{ ...gemini, usedPercent }],
+      },
+    });
+  const pools = (providers: ServerProvider[]) =>
+    collectLimitPools(
+      collectLimitAccounts(
+        new Map([
+          [
+            EnvironmentId.make("local"),
+            { entry: { target: { label: "Local" } }, serverConfig: { providers } },
+          ],
+        ]),
+      ),
+      now,
+    );
+
+  it("shows one labeled block per account instead of pooling them", () => {
+    const result = pools([
+      antigravity("antigravity", "me@gmail.com", 10),
+      antigravity("antigravity_work", "me@work.example", 70),
+    ]);
+    expect(
+      result.map((pool) => [
+        pool.account?.email,
+        pool.account?.displayName,
+        pool.windows[0]?.remainingPercent,
+      ]),
+    ).toEqual([
+      ["me@gmail.com", "Antigravity", 90],
+      ["me@work.example", "Antigravity work", 30],
+    ]);
+    expect(new Set(result.map((pool) => pool.key)).size).toBe(2);
+  });
+
+  it("merges instances signed in to the same account", () => {
+    const [pool, ...rest] = pools([
+      antigravity("antigravity", "me@gmail.com", 10),
+      antigravity("antigravity_work", "ME@gmail.com", 10),
+    ]);
+    expect(rest).toEqual([]);
+    expect(pool?.accounts).toHaveLength(1);
+  });
+
+  it("still pools interchangeable Codex accounts", () => {
+    const codex = (instanceId: string, email: string) =>
+      provider({
+        instanceId: ProviderInstanceId.make(instanceId),
+        auth: { status: "authenticated", email },
+        usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] },
+      });
+    const result = pools([codex("codex", "a@example.com"), codex("codex_b", "b@example.com")]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ key: "codex", account: null });
+    expect(result[0]?.accounts).toHaveLength(2);
+  });
+});

@@ -141,6 +141,7 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     readonly enabled?: boolean;
     readonly safe?: boolean;
     readonly probeUsage?: Effect.Effect<ServerProviderUsageLimits>;
+    readonly usageAccountEmail?: Effect.Effect<string | undefined>;
     readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   } = {},
 ) {
@@ -158,6 +159,7 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
       stampIdentity: (snapshot) => Effect.succeed({ ...snapshot, instanceId, driver }),
       ...(options.auth ? { auth: options.auth } : {}),
       ...(options.probeUsage ? { probeUsage: options.probeUsage } : {}),
+      ...(options.usageAccountEmail ? { usageAccountEmail: options.usageAccountEmail } : {}),
       ...(options.rememberedRuntimeModes
         ? { rememberedRuntimeModes: options.rememberedRuntimeModes }
         : {}),
@@ -1141,6 +1143,28 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       } satisfies ServerProviderUsageLimits;
       yield* Deferred.succeed(readResult, limits);
       expect((yield* published)?.usageLimits).toEqual(limits);
+    }),
+  );
+
+  it.effect("names the signed-in Google account from its quota read until sign-out", () =>
+    Effect.gen(function* () {
+      const readResult = yield* Deferred.make<ServerProviderUsageLimits>();
+      const harness = yield* makeHarness({
+        probeUsage: Deferred.await(readResult),
+        usageAccountEmail: Effect.succeed("me@work.example"),
+      });
+      const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
+      yield* harness.initialize;
+      yield* Deferred.succeed(readResult, { checkedAt: "2026-10-09T12:00:00.000Z", windows: [] });
+      expect((yield* published)?.auth.email).toBe("me@work.example");
+      yield* harness.provider.onSessionStarted(started, "/workspace");
+      expect((yield* harness.provider.snapshot.getSnapshot).auth).toMatchObject({
+        status: "authenticated",
+        email: "me@work.example",
+      });
+      expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBe("me@work.example");
+      yield* harness.provider.onSignedOut;
+      expect((yield* harness.provider.snapshot.getSnapshot).auth.email).toBeUndefined();
     }),
   );
 
