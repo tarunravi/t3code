@@ -3016,6 +3016,69 @@ describe("AcpRegistryAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect("counts per-turn usage that Devin reports on its prompt response", () =>
+    Effect.gen(function* () {
+      const session = yield* openClaudeReplaySession(
+        [
+          // Per-turn usage arrives on the v1 prompt response.
+          ...claudeFrames.open.map((entry) =>
+            entry.frame.method === "initialize" && entry.type === "emit_inbound"
+              ? {
+                  ...entry,
+                  frame: {
+                    ...entry.frame,
+                    result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] },
+                  },
+                }
+              : entry,
+          ),
+          {
+            type: "expect_outbound",
+            frame: { kind: "request", method: "session/prompt", params: "<any>" },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              kind: "response",
+              method: "session/prompt",
+              result: {
+                stopReason: "end_turn",
+                usage: {
+                  totalTokens: 4_000,
+                  inputTokens: 3_000,
+                  outputTokens: 1_000,
+                  cachedReadTokens: 2_000,
+                },
+              },
+            },
+          },
+          claudeFrames.closeRequest,
+          claudeFrames.closed,
+        ],
+        undefined,
+        false,
+        "devin",
+      );
+      yield* session.runtime.startTurn(session.turnInput(1)).pipe(Effect.forkScoped);
+      const events = yield* session.until((event) => event.type === "turn.terminal");
+      const completed = events.findLast(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      assert.deepEqual(
+        completed?.type === "provider_turn.updated" ? completed.providerTurn.turnTokenUsage : null,
+        {
+          usageScope: "main_agent",
+          usageStatus: "complete",
+          hasSubagents: false,
+          inputTokens: 3_000,
+          outputTokens: 1_000,
+          cachedInputTokens: 2_000,
+        },
+      );
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect("surfaces Mistral's retry notice for a local vibe command", () =>
     Effect.gen(function* () {
       const session = yield* openClaudeReplaySession(

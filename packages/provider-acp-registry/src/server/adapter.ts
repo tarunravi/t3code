@@ -347,8 +347,9 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
         : isOpenCode
           ? { extractElicitationForm: extractOpenCodeElicitationForm }
           : {}),
-    // glm-acp-agent is the one agent whose per-turn usage a live probe has verified.
-    ...(isGlm ? { reportsPerTurnPromptUsage: true } : {}),
+    // A live probe verified glm-acp-agent's per-turn usage. Devin's is enabled without one yet:
+    // a prompt response without usage leaves the turn's usage unavailable, as before.
+    ...(isGlm || registryAgentId === "devin" ? { reportsPerTurnPromptUsage: true } : {}),
     ...(watchKimiPromptOutcome === undefined
       ? {}
       : {
